@@ -121,7 +121,9 @@ public class PersonsController : ControllerBase
             return NotFound(new { message = "Pessoa não encontrada." });
 
         // Salvar arquivo no disco
-        var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "uploads", "photos");
+        var uploadsRoot = Environment.GetEnvironmentVariable("UPLOADS_PATH")
+            ?? Path.Combine(Directory.GetCurrentDirectory(), "uploads");
+        var uploadsPath = Path.Combine(uploadsRoot, "photos");
         Directory.CreateDirectory(uploadsPath);
 
         var extension = Path.GetExtension(file.FileName);

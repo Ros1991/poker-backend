@@ -211,7 +211,8 @@ app.UseSerilogRequestLogging();
 app.UseCors("AllowFrontend");
 
 // Servir arquivos estáticos (uploads de fotos)
-var uploadsPath = Path.Combine(app.Environment.ContentRootPath, "uploads");
+var uploadsPath = Environment.GetEnvironmentVariable("UPLOADS_PATH")
+    ?? Path.Combine(app.Environment.ContentRootPath, "uploads");
 if (!Directory.Exists(uploadsPath))
     Directory.CreateDirectory(uploadsPath);
 
