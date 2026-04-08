@@ -12,4 +12,5 @@ public class CreateRankingRequest
     public string? ScoringFormula { get; set; }
     public string? ScoringTable { get; set; } // JSON: [{"position":1,"points":23},...]
     public decimal? AccumulatedPrize { get; set; }
+    public int? DiscardCount { get; set; }
 }

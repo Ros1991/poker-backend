@@ -14,6 +14,7 @@ public class Ranking : SoftDeletableEntity
     public string? ScoringFormula { get; set; }
     public string? ScoringTable { get; set; } // JSON: [{"position":1,"points":23},...]
     public decimal AccumulatedPrize { get; set; } // Total acumulado para premiação do ranking
+    public int DiscardCount { get; set; } = 0; // Piores resultados que cada jogador pode descartar
 
     // Navigation
     public HomeGame HomeGame { get; set; } = null!;
