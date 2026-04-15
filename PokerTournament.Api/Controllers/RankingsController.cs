@@ -261,7 +261,7 @@ public class HomeGameRankingsController : ControllerBase
                 };
             })
             .OrderByDescending(l => l.TotalPoints)
-            .ThenBy(l => l.BestPosition)
+            .ThenByDescending(l => l.AveragePoints)
             .ToList();
 
         for (int i = 0; i < leaderboard.Count; i++)
