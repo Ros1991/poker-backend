@@ -7,4 +7,6 @@ public class RankingLeaderboardResponse
     public decimal TotalPoints { get; set; }
     public int TournamentsPlayed { get; set; }
     public int? BestPosition { get; set; }
+    public decimal DiscardedPoints { get; set; }
+    public decimal AveragePoints { get; set; }
 }

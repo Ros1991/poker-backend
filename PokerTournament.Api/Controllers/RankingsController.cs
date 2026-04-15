@@ -255,7 +255,9 @@ public class HomeGameRankingsController : ControllerBase
                     },
                     TotalPoints = kept.Sum(),
                     TournamentsPlayed = g.Count(),
-                    BestPosition = g.Min(s => s.Position)
+                    BestPosition = g.Min(s => s.Position),
+                    DiscardedPoints = realPoints.Sum() - kept.Sum(),
+                    AveragePoints = g.Count() > 0 ? Math.Round(g.Sum(s => s.Points) / g.Count(), 2) : 0
                 };
             })
             .OrderByDescending(l => l.TotalPoints)
