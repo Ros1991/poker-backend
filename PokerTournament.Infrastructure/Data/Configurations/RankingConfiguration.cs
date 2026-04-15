@@ -57,6 +57,10 @@ public class RankingConfiguration : IEntityTypeConfiguration<Ranking>
             .HasColumnType("decimal(10,2)")
             .HasDefaultValue(0m);
 
+        builder.Property(r => r.DiscardCount)
+            .HasColumnName("discard_count")
+            .HasDefaultValue(0);
+
         builder.HasOne(r => r.HomeGame)
             .WithMany(h => h.Rankings)
             .HasForeignKey(r => r.HomeGameId)
