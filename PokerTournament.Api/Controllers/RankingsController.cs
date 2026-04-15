@@ -275,7 +275,21 @@ public class HomeGameRankingsController : ControllerBase
             var row = table.FirstOrDefault(p => p.Position == position);
             return row?.Points ?? 0m;
         }
-        // Fórmula padrão: (playerCount - position + 1), mínimo 0
+
+        if (!string.IsNullOrWhiteSpace(ranking.ScoringFormula))
+        {
+            try
+            {
+                var engine = new Jint.Engine();
+                engine.SetValue("posicao", position);
+                engine.SetValue("jogadores", playerCount);
+                var result = engine.Evaluate(ranking.ScoringFormula);
+                var val = Convert.ToDecimal(result.ToObject());
+                return Math.Max(0, Math.Round(val, 2));
+            }
+            catch { /* fallback */ }
+        }
+
         return Math.Max(0, playerCount - position + 1);
     }
 

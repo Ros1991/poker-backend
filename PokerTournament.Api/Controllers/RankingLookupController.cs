@@ -151,6 +151,23 @@ public class RankingsController : ControllerBase
             var row = table.FirstOrDefault(p => p.Position == position);
             return row?.Points ?? 0m;
         }
+
+        // Avaliar fórmula JavaScript customizada
+        if (!string.IsNullOrWhiteSpace(ranking.ScoringFormula))
+        {
+            try
+            {
+                var engine = new Jint.Engine();
+                engine.SetValue("posicao", position);
+                engine.SetValue("jogadores", playerCount);
+                var result = engine.Evaluate(ranking.ScoringFormula);
+                var val = Convert.ToDecimal(result.ToObject());
+                return Math.Max(0, Math.Round(val, 2));
+            }
+            catch { /* fallback */ }
+        }
+
+        // Fallback padrão
         return Math.Max(0, playerCount - position + 1);
     }
 
