@@ -103,13 +103,21 @@ public class RankingsController : ControllerBase
         }).ToList();
 
         var discard = Math.Max(0, ranking.DiscardCount);
+        var totalEtapas = tournamentIds.Count;
+        // Slots a manter = totalEtapas - descarte (faltas contam como 0)
+        var slotsToKeep = Math.Max(1, totalEtapas - discard);
 
         var leaderboard = scores
             .GroupBy(s => s.PersonId)
             .Select(g =>
             {
-                var ordered = g.OrderByDescending(s => s.Points).ToList();
-                var keep = ordered.Take(Math.Max(0, ordered.Count - discard)).ToList();
+                // Pontos reais em ordem decrescente
+                var realPoints = g.OrderByDescending(s => s.Points).Select(s => s.Points).ToList();
+                // Preencher faltas como 0 até totalEtapas
+                var absences = totalEtapas - realPoints.Count;
+                for (int i = 0; i < absences; i++) realPoints.Add(0m);
+                // Manter apenas os N melhores (descartando piores, incluindo faltas)
+                var kept = realPoints.Take(slotsToKeep).ToList();
                 var first = g.First();
                 return new RankingLeaderboardResponse
                 {
@@ -121,8 +129,8 @@ public class RankingsController : ControllerBase
                         PhotoUrl = first.Person.PhotoUrl,
                         IsActive = first.Person.IsActive
                     },
-                    TotalPoints = keep.Sum(s => s.Points),
-                    TournamentsPlayed = ordered.Count,
+                    TotalPoints = kept.Sum(),
+                    TournamentsPlayed = g.Count(),
                     BestPosition = g.Min(s => s.Position)
                 };
             })
