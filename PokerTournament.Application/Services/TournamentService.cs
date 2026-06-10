@@ -96,6 +96,31 @@ public class TournamentService
             }
         }
 
+        // Feature staff/ranking: cria os custos automáticos (Amount inicia em 0; cresce por entrada)
+        if (tournament.StaffAmount is > 0)
+        {
+            tournament.CostExtras.Add(new CostExtra
+            {
+                Description = "Staff (casa)",
+                Amount = 0,
+                CostType = "Staff",
+                Beneficiary = homeGame.PixBeneficiary ?? homeGame.Name,
+                PixKey = homeGame.PixKey,
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
+            });
+        }
+        if (tournament.RankingId.HasValue && tournament.RankingContribMode is not null
+            && tournament.RankingContribValue is > 0)
+        {
+            tournament.CostExtras.Add(new CostExtra
+            {
+                Description = "Acumulado do ranking",
+                Amount = 0,
+                CostType = "RankingAccumulated",
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
+            });
+        }
+
         _db.Tournaments.Add(tournament);
         await _db.SaveChangesAsync(ct);
 
@@ -144,9 +169,50 @@ public class TournamentService
             }
         }
 
+        // Garante custos automáticos caso staff/ranking tenham sido definidos só na edição.
+        await EnsureAutoCostsAsync(tournament, ct);
+
         await _db.SaveChangesAsync(ct);
 
         return _mapper.Map<TournamentResponse>(tournament);
+    }
+
+    /// <summary>Cria (idempotente) os custos automáticos de staff/ranking se faltarem.</summary>
+    private async Task EnsureAutoCostsAsync(Tournament tournament, CancellationToken ct)
+    {
+        var existing = await _db.CostExtras
+            .Where(c => c.TournamentId == tournament.Id)
+            .ToListAsync(ct);
+
+        if (tournament.StaffAmount is > 0 && existing.All(c => c.CostType != "Staff"))
+        {
+            var homeGame = await _db.HomeGames
+                .FirstOrDefaultAsync(h => h.Id == tournament.HomeGameId, ct);
+            _db.CostExtras.Add(new CostExtra
+            {
+                TournamentId = tournament.Id,
+                Description = "Staff (casa)",
+                Amount = 0,
+                CostType = "Staff",
+                Beneficiary = homeGame?.PixBeneficiary ?? homeGame?.Name,
+                PixKey = homeGame?.PixKey,
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
+            });
+        }
+
+        if (tournament.RankingId.HasValue && tournament.RankingContribMode is not null
+            && tournament.RankingContribValue is > 0
+            && existing.All(c => c.CostType != "RankingAccumulated"))
+        {
+            _db.CostExtras.Add(new CostExtra
+            {
+                TournamentId = tournament.Id,
+                Description = "Acumulado do ranking",
+                Amount = 0,
+                CostType = "RankingAccumulated",
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
+            });
+        }
     }
 
     public async Task<List<TournamentBlindLevelResponse>> GetBlindLevelsAsync(
@@ -245,6 +311,22 @@ public class TournamentService
 
             case TournamentStatus.Finished:
                 tournament.IsTimerRunning = false;
+                // Feature ranking: soma o acumulado final no Ranking.AccumulatedPrize (idempotente via snapshot)
+                if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is null)
+                {
+                    var rankingCost = await _db.CostExtras.FirstOrDefaultAsync(
+                        c => c.TournamentId == tournament.Id && c.CostType == "RankingAccumulated", ct);
+                    var accrued = rankingCost?.Amount ?? 0m;
+                    if (accrued > 0)
+                    {
+                        var ranking = await _db.Rankings.FirstOrDefaultAsync(
+                            r => r.Id == tournament.RankingId.Value, ct);
+                        if (ranking is not null)
+                            ranking.AccumulatedPrize += accrued;
+                    }
+                    tournament.RankingPrizeAccrued = accrued;
+                    tournament.RankingAccruedAt = DateTimeOffset.UtcNow;
+                }
                 break;
 
             case TournamentStatus.Cancelled:

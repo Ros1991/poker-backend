@@ -7,5 +7,6 @@ public enum TransactionType
     Addon,
     Payment,
     Refund,
-    PrizePayment
+    PrizePayment,
+    Settlement
 }

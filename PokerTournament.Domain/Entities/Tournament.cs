@@ -59,6 +59,14 @@ public class Tournament : SoftDeletableEntity
     public string? Notes { get; set; }
     // PIX do responsável pelo torneio no dia (opcional) — informado na criação
     public string? ResponsiblePixKey { get; set; }
+
+    // Staff (comissão da casa) e contribuição ao ranking
+    public decimal? StaffAmount { get; set; }         // valor de staff por jogador (por entrada)
+    public string? RankingContribMode { get; set; }   // PerPlayer | Percent | null
+    public decimal? RankingContribValue { get; set; } // valor por jogador OU percentual (10 = 10%)
+    public decimal? RankingPrizeAccrued { get; set; } // snapshot já somado ao ranking (anti-dobra)
+    public DateTimeOffset? RankingAccruedAt { get; set; }
+
     public bool IsActive { get; set; } = true;
     public Guid? CreatedBy { get; set; }
 

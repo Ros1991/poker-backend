@@ -55,7 +55,12 @@ public class EntryService
             if (entry.Status == nameof(EntryStatus.Active) || entry.Status == nameof(EntryStatus.Registered))
                 tournament.PlayersRemaining = Math.Max(0, tournament.PlayersRemaining - 1);
             tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - entry.TotalDue);
-            tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+
+            // Feature staff/ranking: decrementa os custos automáticos por entrada
+            await BumpAutoCostAsync(tournamentId, "Staff", -(tournament.StaffAmount ?? 0m), ct);
+            await BumpAutoCostAsync(tournamentId, "RankingAccumulated",
+                tournament.RankingContribMode == "PerPlayer" ? -(tournament.RankingContribValue ?? 0m) : 0m, ct);
+            await RecalcAutoCostsAndTotals(tournament, ct);
         }
 
         await _db.SaveChangesAsync(ct);
@@ -95,6 +100,14 @@ public class EntryService
             .CountAsync(e => e.TournamentId == tournamentId
                           && e.PersonId == request.PersonId, ct) + 1;
 
+        // Feature staff/ranking: o jogador paga buy-in + staff + ranking(fixo).
+        // No modo % o ranking não é cobrado por jogador (sai do bolo no recálculo).
+        var staffPart = tournament.StaffAmount ?? 0m;
+        var rankingFixedPart = tournament.RankingContribMode == "PerPlayer"
+            ? (tournament.RankingContribValue ?? 0m)
+            : 0m;
+        var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
+
         var entry = new TournamentEntry
         {
             Id = Guid.NewGuid(),
@@ -107,9 +120,9 @@ public class EntryService
             RebuyTotal = 0,
             AddonPurchased = false,
             AddonAmount = 0,
-            TotalDue = tournament.BuyInAmount,
-            TotalPaid = request.BuyInPaid ? tournament.BuyInAmount : 0,
-            Balance = request.BuyInPaid ? 0 : tournament.BuyInAmount,
+            TotalDue = entryCost,
+            TotalPaid = request.BuyInPaid ? entryCost : 0,
+            Balance = request.BuyInPaid ? 0 : entryCost,
             PaymentStatus = request.BuyInPaid
                 ? nameof(Domain.Enums.PaymentStatus.Paid)
                 : nameof(Domain.Enums.PaymentStatus.Pending),
@@ -132,11 +145,15 @@ public class EntryService
             CreatedBy = registeredBy
         });
 
-        // Atualizar contadores do torneio
+        // Atualizar contadores do torneio (receita = tudo que entra)
         tournament.TotalEntries++;
         tournament.PlayersRemaining++;
-        tournament.TotalPrizePool += tournament.BuyInAmount;
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        tournament.TotalPrizePool += entryCost;
+
+        // Acumular staff e ranking-fixo (custos automáticos crescem por entrada)
+        await BumpAutoCostAsync(tournamentId, "Staff", staffPart, ct);
+        await BumpAutoCostAsync(tournamentId, "RankingAccumulated", rankingFixedPart, ct);
+        await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
 
@@ -193,7 +210,7 @@ public class EntryService
 
         tournament.TotalRebuys += request.Quantity;
         tournament.TotalPrizePool += (tournament.RebuyAmount ?? 0) * request.Quantity;
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -250,7 +267,7 @@ public class EntryService
 
         tournament.TotalAddons++;
         tournament.TotalPrizePool += addonValue;
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -288,7 +305,7 @@ public class EntryService
 
         tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - 1);
         tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - rebuyValue);
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -327,7 +344,7 @@ public class EntryService
 
         tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
         tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - addonValue);
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -607,5 +624,42 @@ public class EntryService
             < 0 => nameof(Domain.Enums.PaymentStatus.Overpaid),
             _ => nameof(Domain.Enums.PaymentStatus.Pending)
         };
+    }
+
+    // Ajusta (incrementa/decrementa) o valor de um custo automático (staff/ranking-fixo).
+    private async Task BumpAutoCostAsync(Guid tournamentId, string costType, decimal delta, CancellationToken ct)
+    {
+        if (delta == 0m) return;
+        var cost = await _db.CostExtras
+            .FirstOrDefaultAsync(c => c.TournamentId == tournamentId && c.CostType == costType, ct);
+        if (cost is not null)
+            cost.Amount = Math.Max(0m, cost.Amount + delta);
+    }
+
+    // Recalcula o custo de ranking no modo % e os totais (TotalCosts/NetPrizePool) do torneio.
+    private async Task RecalcAutoCostsAndTotals(Tournament tournament, CancellationToken ct)
+    {
+        var costs = await _db.CostExtras
+            .Where(c => c.TournamentId == tournament.Id)
+            .ToListAsync(ct);
+
+        if (tournament.RankingContribMode == "Percent" && tournament.RankingContribValue is > 0)
+        {
+            var rankingCost = costs.FirstOrDefault(c => c.CostType == "RankingAccumulated");
+            if (rankingCost is not null)
+            {
+                var staff = costs.Where(c => c.CostType == "Staff").Sum(c => c.Amount);
+                var manual = costs
+                    .Where(c => c.CostType != "Staff" && c.CostType != "RankingAccumulated")
+                    .Sum(c => c.Amount);
+                var baseForPct = tournament.TotalPrizePool - staff - manual;
+                var raw = (tournament.RankingContribValue!.Value / 100m) * baseForPct;
+                // arredonda ao múltiplo de 10 mais próximo (>= 0)
+                rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
+            }
+        }
+
+        tournament.TotalCosts = costs.Sum(c => c.Amount);
+        await RecalcAutoCostsAndTotals(tournament, ct);
     }
 }

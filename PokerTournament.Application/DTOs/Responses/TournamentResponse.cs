@@ -45,6 +45,10 @@ public class TournamentResponse
 
     public string? Notes { get; set; }
     public string? ResponsiblePixKey { get; set; }
+    public decimal? StaffAmount { get; set; }
+    public string? RankingContribMode { get; set; }
+    public decimal? RankingContribValue { get; set; }
+    public decimal? RankingPrizeAccrued { get; set; }
     public bool IsActive { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }

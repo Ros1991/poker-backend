@@ -111,6 +111,97 @@ public class PaymentService
         };
     }
 
+    /// <summary>
+    /// Abatimento: o favorecido de um custo quita sua dívida contra esse custo.
+    /// Duas pernas atômicas — quita o saldo do jogador E reduz o "a pagar" do custo.
+    /// Ex.: dono deve 300, staff tem 1000 a receber → dono deve 0, staff a pagar = 700.
+    /// </summary>
+    public async Task<EntryResponse> SettleAgainstCostAsync(
+        Guid tournamentId, Guid entryId, Guid costExtraId, decimal amount, Guid? createdBy = null, CancellationToken ct = default)
+    {
+        var entry = await _db.TournamentEntries
+            .Include(e => e.Person)
+            .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
+            ?? throw new DomainException("Inscrição não encontrada.");
+
+        var cost = await _db.CostExtras
+            .FirstOrDefaultAsync(c => c.Id == costExtraId && c.TournamentId == tournamentId, ct)
+            ?? throw new DomainException("Custo não encontrado.");
+
+        if (amount <= 0)
+            throw new DomainException("Valor do abatimento deve ser positivo.");
+
+        // Triplo-Min: nunca abate além do que o jogador deve nem além do que o custo comporta.
+        var settle = Math.Min(amount, Math.Min(entry.Balance, cost.Amount - cost.PaidAmount));
+        if (settle <= 0)
+            throw new DomainException("Nada a abater (jogador sem saldo devedor ou custo já quitado).");
+
+        // Perna 1: quita a dívida do jogador
+        entry.TotalPaid += settle;
+        entry.Balance = entry.TotalDue - entry.TotalPaid;
+        entry.PaymentStatus = RecalcPaymentStatus(entry.Balance, entry.TotalPaid);
+
+        // Perna 2: credita o custo (reduz o "a pagar" = Amount - PaidAmount)
+        cost.PaidAmount += settle;
+        cost.PaymentStatus = cost.PaidAmount >= cost.Amount
+            ? nameof(PaymentStatus.Paid)
+            : nameof(PaymentStatus.PartiallyPaid);
+        if (cost.PaymentStatus == nameof(PaymentStatus.Paid))
+        {
+            cost.PaidAt = DateTimeOffset.UtcNow;
+            cost.PaymentMethod = "Compensacao";
+        }
+
+        // Trilha de auditoria (reversível pelo estorno, que já trata PixDestinationId)
+        _db.Transactions.Add(new Transaction
+        {
+            TournamentId = tournamentId,
+            EntryId = entryId,
+            Type = nameof(TransactionType.Settlement),
+            Amount = settle,
+            Description = $"Abatimento de {entry.Person.FullName} no custo {cost.Description}",
+            PaymentMethod = "Compensacao",
+            PixDestinationId = costExtraId,
+            CreatedBy = createdBy
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return MapEntry(entry);
+    }
+
+    private static string RecalcPaymentStatus(decimal balance, decimal totalPaid)
+    {
+        if (Math.Abs(balance) < 0.005m) return nameof(PaymentStatus.Paid);
+        if (balance > 0 && totalPaid > 0) return nameof(PaymentStatus.PartiallyPaid);
+        if (balance < 0) return nameof(PaymentStatus.Overpaid);
+        return nameof(PaymentStatus.Pending);
+    }
+
+    private static EntryResponse MapEntry(TournamentEntry entry) => new()
+    {
+        Id = entry.Id,
+        TournamentId = entry.TournamentId,
+        PersonId = entry.PersonId,
+        Status = entry.Status,
+        BuyInPaid = entry.BuyInPaid,
+        BuyInAmount = entry.BuyInAmount,
+        RebuyCount = entry.RebuyCount,
+        RebuyTotal = entry.RebuyTotal,
+        AddonPurchased = entry.AddonPurchased,
+        AddonAmount = entry.AddonAmount,
+        TotalDue = entry.TotalDue,
+        TotalPaid = entry.TotalPaid,
+        Balance = entry.Balance,
+        PaymentStatus = entry.PaymentStatus,
+        Person = new PersonResponse
+        {
+            Id = entry.Person.Id,
+            FullName = entry.Person.FullName,
+            Nickname = entry.Person.Nickname,
+            PhotoUrl = entry.Person.PhotoUrl
+        }
+    };
+
     public async Task<PaymentSummaryResponse> GetPaymentSummaryAsync(
         Guid tournamentId, CancellationToken ct = default)
     {

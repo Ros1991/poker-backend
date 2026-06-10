@@ -37,6 +37,7 @@ public class CostExtrasController : ControllerBase
             c.Id,
             c.Description,
             c.Amount,
+            c.CostType,
             c.Beneficiary,
             c.PixKey,
             c.PixKeyType,
@@ -74,17 +75,10 @@ public class CostExtrasController : ControllerBase
         costExtra.CreatedBy = userId;
 
         _db.CostExtras.Add(costExtra);
+        await _db.SaveChangesAsync(ct);
 
-        // Atualizar total de custos do torneio
-        var tournament = await _db.Tournaments
-            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
-
-        if (tournament is not null)
-        {
-            tournament.TotalCosts += request.Amount;
-            tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
-        }
-
+        // Recalcular custos/líquido (custo manual reduz a base do ranking %).
+        await RecomputeTournamentFinancials(tournamentId, ct);
         await _db.SaveChangesAsync(ct);
 
         return CreatedAtAction(nameof(GetById), new { tournamentId, id = costExtra.Id },
@@ -102,20 +96,15 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
-        var oldAmount = costExtra.Amount;
+        // Preserva o CostType (request manual sempre traz "Manual"/vazio).
+        var preservedCostType = costExtra.CostType;
         _mapper.Map(request, costExtra);
-
-        // Atualizar total de custos
-        var tournament = await _db.Tournaments
-            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
-
-        if (tournament is not null)
-        {
-            tournament.TotalCosts += (request.Amount - oldAmount);
-            tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
-        }
-
+        costExtra.CostType = preservedCostType;
         await _db.SaveChangesAsync(ct);
+
+        await RecomputeTournamentFinancials(tournamentId, ct);
+        await _db.SaveChangesAsync(ct);
+
         return Ok(new { costExtra.Id, costExtra.Description, costExtra.Amount });
     }
 
@@ -129,16 +118,14 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
-        var tournament = await _db.Tournaments
-            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
-
-        if (tournament is not null)
-        {
-            tournament.TotalCosts -= costExtra.Amount;
-            tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
-        }
+        // Custos automáticos (Staff/Ranking acumulado) são editáveis mas não removíveis.
+        if (costExtra.CostType is "Staff" or "RankingAccumulated")
+            return BadRequest(new { message = "Custo automático (staff/ranking) não pode ser removido. Edite o valor se necessário." });
 
         _db.CostExtras.Remove(costExtra);
+        await _db.SaveChangesAsync(ct);
+
+        await RecomputeTournamentFinancials(tournamentId, ct);
         await _db.SaveChangesAsync(ct);
 
         return NoContent();
@@ -179,6 +166,37 @@ public class CostExtrasController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { message = "Pagamento revertido." });
+    }
+
+    /// <summary>
+    /// Recalcula custos automáticos e líquido. Ranking % = múltiplo de 10 de
+    /// (% × (receita − staff − custos manuais)). Chamar após gravar mudanças em custos.
+    /// </summary>
+    private async Task RecomputeTournamentFinancials(Guid tournamentId, CancellationToken ct)
+    {
+        var tournament = await _db.Tournaments
+            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
+        if (tournament is null) return;
+
+        var costs = await _db.CostExtras
+            .Where(c => c.TournamentId == tournamentId)
+            .ToListAsync(ct);
+
+        if (tournament.RankingContribMode == "Percent" && tournament.RankingContribValue is > 0)
+        {
+            var rankingCost = costs.FirstOrDefault(c => c.CostType == "RankingAccumulated");
+            if (rankingCost is not null)
+            {
+                var staff = costs.Where(c => c.CostType == "Staff").Sum(c => c.Amount);
+                var manual = costs.Where(c => c.CostType != "Staff" && c.CostType != "RankingAccumulated").Sum(c => c.Amount);
+                var baseForPct = tournament.TotalPrizePool - staff - manual;
+                var raw = (tournament.RankingContribValue!.Value / 100m) * baseForPct;
+                rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
+            }
+        }
+
+        tournament.TotalCosts = costs.Sum(c => c.Amount);
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
     }
 
     private Guid GetUserId()

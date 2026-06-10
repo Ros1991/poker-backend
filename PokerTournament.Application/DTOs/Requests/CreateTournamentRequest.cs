@@ -19,4 +19,7 @@ public class CreateTournamentRequest
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;
     public string? ResponsiblePixKey { get; set; }
+    public decimal? StaffAmount { get; set; }
+    public string? RankingContribMode { get; set; }
+    public decimal? RankingContribValue { get; set; }
 }

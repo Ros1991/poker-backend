@@ -44,6 +44,7 @@ public class CostExtraConfiguration : IEntityTypeConfiguration<CostExtra>
         builder.Property(c => c.PaidAt).HasColumnName("paid_at");
         builder.Property(c => c.CreatedBy).HasColumnName("created_by");
         builder.Property(c => c.Notes).HasColumnName("notes");
+        builder.Property(c => c.CostType).HasColumnName("cost_type").IsRequired().HasMaxLength(30).HasDefaultValue("Manual");
 
         builder.HasOne(c => c.Tournament)
             .WithMany(t => t.CostExtras)

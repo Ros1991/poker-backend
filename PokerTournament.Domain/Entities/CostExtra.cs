@@ -15,6 +15,8 @@ public class CostExtra : BaseEntity
     public DateTimeOffset? PaidAt { get; set; }
     public Guid? CreatedBy { get; set; }
     public string? Notes { get; set; }
+    // Tipo: Manual | Staff | RankingAccumulated (Staff/Ranking são auto-gerados e não deletáveis)
+    public string CostType { get; set; } = "Manual";
 
     // Navigation
     public Tournament Tournament { get; set; } = null!;

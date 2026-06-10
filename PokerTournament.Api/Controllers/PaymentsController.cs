@@ -33,6 +33,16 @@ public class PaymentsController : ControllerBase
         return Ok(result);
     }
 
+    [HttpPost("entries/{entryId:guid}/settle-against-cost")]
+    public async Task<ActionResult<EntryResponse>> SettleAgainstCost(
+        Guid tournamentId, Guid entryId, [FromBody] SettleAgainstCostRequest request, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var result = await _paymentService.SettleAgainstCostAsync(
+            tournamentId, entryId, request.CostExtraId, request.Amount, userId, ct);
+        return Ok(result);
+    }
+
     [HttpGet("entries/{entryId:guid}")]
     public async Task<ActionResult> GetByEntry(
         Guid tournamentId, Guid entryId, CancellationToken ct)
