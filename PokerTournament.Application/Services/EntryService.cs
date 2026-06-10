@@ -923,7 +923,16 @@ public class EntryService
 
     private static void RecalculateBalance(TournamentEntry entry, Tournament tournament)
     {
+        // O devido inclui staff + ranking-fixo (mesma fórmula do cadastro), além de
+        // buy-in, rebuys e addon. Sem isso, rebuy/addon zeravam o staff/ranking do saldo.
+        var staffPart = tournament.StaffAmount ?? 0m;
+        var rankingFixedPart = tournament.RankingContribMode == "PerPlayer"
+            ? (tournament.RankingContribValue ?? 0m)
+            : 0m;
+
         entry.TotalDue = entry.BuyInAmount
+            + staffPart
+            + rankingFixedPart
             + entry.RebuyTotal
             + (entry.AddonPurchased ? entry.AddonAmount : 0);
 
