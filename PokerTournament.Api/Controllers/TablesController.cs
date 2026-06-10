@@ -237,6 +237,22 @@ public class TablesController : ControllerBase
         });
     }
 
+    [HttpPost("unseat")]
+    public async Task<ActionResult> Unseat(
+        Guid tournamentId, [FromBody] UnseatPlayerRequest request, CancellationToken ct)
+    {
+        var entry = await _db.TournamentEntries
+            .FirstOrDefaultAsync(e => e.Id == request.EntryId && e.TournamentId == tournamentId, ct)
+            ?? throw new DomainException("Inscrição não encontrada.");
+
+        // Remove o jogador da mesa SEM eliminá-lo (continua ativo, mas sem assento)
+        entry.TableId = null;
+        entry.SeatNumber = null;
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Jogador removido da mesa." });
+    }
+
     [HttpPut("{tableId:guid}/dealer")]
     public async Task<ActionResult> SetDealer(
         Guid tournamentId, Guid tableId, [FromBody] SetTableDealerRequest request, CancellationToken ct)
