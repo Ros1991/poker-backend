@@ -665,6 +665,24 @@ public class EntryService
                     // Finalizar torneio automaticamente quando sobra 1 jogador
                     tournament.Status = nameof(TournamentStatus.Finished);
                     tournament.IsTimerRunning = false;
+
+                    // O auto-finish NÃO passa pelo UpdateStatusAsync, então o acúmulo do
+                    // ranking precisa acontecer aqui (idempotente via RankingPrizeAccrued).
+                    if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is null)
+                    {
+                        var rankingCost = await _db.CostExtras.FirstOrDefaultAsync(
+                            c => c.TournamentId == tournament.Id && c.CostType == "RankingAccumulated", ct);
+                        var accrued = rankingCost?.Amount ?? 0m;
+                        if (accrued > 0)
+                        {
+                            var ranking = await _db.Rankings.FirstOrDefaultAsync(
+                                r => r.Id == tournament.RankingId.Value, ct);
+                            if (ranking is not null)
+                                ranking.AccumulatedPrize += accrued;
+                        }
+                        tournament.RankingPrizeAccrued = accrued;
+                        tournament.RankingAccruedAt = DateTimeOffset.UtcNow;
+                    }
                 }
             }
 
@@ -742,8 +760,9 @@ public class EntryService
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
-        if (entry.Status != nameof(EntryStatus.Eliminated))
-            throw new DomainException("Jogador não está eliminado.");
+        if (entry.Status != nameof(EntryStatus.Eliminated)
+            && entry.Status != nameof(EntryStatus.Awarded))
+            throw new DomainException("Jogador não está eliminado nem premiado.");
 
         // Encontrar a eliminação mais recente
         var elimination = await _db.Eliminations
@@ -761,6 +780,7 @@ public class EntryService
         entry.FinalPosition = null;
         entry.EliminatedAt = null;
         entry.EliminatedById = null;
+        entry.PrizeAmount = null;
 
         // Restaurar mesa/posicao se ainda estiver disponivel
         if (entry.EliminationTableId.HasValue && entry.EliminationSeatNumber.HasValue)
@@ -801,24 +821,104 @@ public class EntryService
         entry.EliminationTableId = null;
         entry.EliminationSeatNumber = null;
 
-        // Reverter o "campeão automático": se sobrava só 1 (Awarded), volta para Active
-        var awardedChampion = await _db.TournamentEntries
+        // Reverter o "campeão automático": ele nunca foi eliminado (EliminatedAt == null).
+        var champion = await _db.TournamentEntries
             .FirstOrDefaultAsync(e => e.TournamentId == tournamentId
                                    && e.Status == nameof(EntryStatus.Awarded)
+                                   && e.EliminatedAt == null
                                    && e.Id != entryId, ct);
-        if (awardedChampion != null)
+        if (champion != null)
         {
-            awardedChampion.Status = nameof(EntryStatus.Active);
-            awardedChampion.FinalPosition = null;
-            // DATA-03: reverter a finalização automática do torneio ao desfazer a eliminação do campeão
-            if (tournament.Status == nameof(TournamentStatus.Finished))
-                tournament.Status = nameof(TournamentStatus.InProgress);
+            champion.Status = nameof(EntryStatus.Active);
+            champion.FinalPosition = null;
+            champion.PrizeAmount = null;
         }
 
-        tournament.PlayersRemaining++;
+        // Reabrir o torneio se estava finalizado e reverter o acúmulo no ranking.
+        if (tournament.Status == nameof(TournamentStatus.Finished))
+        {
+            tournament.Status = nameof(TournamentStatus.InProgress);
+            if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is > 0)
+            {
+                var ranking = await _db.Rankings.FirstOrDefaultAsync(
+                    r => r.Id == tournament.RankingId.Value, ct);
+                if (ranking is not null)
+                    ranking.AccumulatedPrize = Math.Max(0m, ranking.AccumulatedPrize - tournament.RankingPrizeAccrued.Value);
+                tournament.RankingPrizeAccrued = null;
+                tournament.RankingAccruedAt = null;
+            }
+        }
+
+        // Recalcular posição/ITM/prêmio de TODOS os que já saíram (a posição de todos muda)
+        // e define PlayersRemaining a partir dos ativos.
+        await RecomputeStandingsAsync(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
+    }
+
+    /// <summary>
+    /// Recalcula posição final, ITM (premiado/eliminado) e vínculo de prêmio de TODOS os
+    /// jogadores que já saíram, a partir da ordem de eliminação (último a sair = melhor
+    /// posição entre os que saíram). Usado ao desfazer eliminação. Não rebaixa quem já foi
+    /// pago (PaidOut). Define tournament.PlayersRemaining = nº de ativos.
+    /// </summary>
+    private async Task RecomputeStandingsAsync(Tournament tournament, CancellationToken ct)
+    {
+        var entries = await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournament.Id)
+            .ToListAsync(ct);
+
+        var activeCount = entries.Count(e => e.Status == nameof(EntryStatus.Active));
+
+        var finished = entries
+            .Where(e => e.Status == nameof(EntryStatus.Eliminated)
+                     || e.Status == nameof(EntryStatus.Awarded)
+                     || e.Status == nameof(EntryStatus.PaidOut))
+            .OrderByDescending(e => e.EliminatedAt ?? DateTimeOffset.MinValue)
+            .ToList();
+
+        var prizes = await _db.TournamentPrizes
+            .Where(p => p.TournamentId == tournament.Id)
+            .ToListAsync(ct);
+        var effectivePrizeCount = prizes.Count > 0
+            ? prizes.Count
+            : PrizeService.SuggestPrizeCount(tournament.TotalEntries);
+
+        // Limpa vínculos de prêmio que não sejam de jogadores já pagos (religados abaixo).
+        var paidIds = entries
+            .Where(e => e.Status == nameof(EntryStatus.PaidOut))
+            .Select(e => e.Id)
+            .ToHashSet();
+        foreach (var p in prizes)
+            if (!p.EntryId.HasValue || !paidIds.Contains(p.EntryId.Value))
+                p.EntryId = null;
+
+        for (int i = 0; i < finished.Count; i++)
+        {
+            var e = finished[i];
+            var position = activeCount + 1 + i;
+            e.FinalPosition = position;
+
+            if (e.Status == nameof(EntryStatus.PaidOut))
+                continue; // já pago: mantém status e prêmio
+
+            var isItm = position <= effectivePrizeCount;
+            e.Status = isItm ? nameof(EntryStatus.Awarded) : nameof(EntryStatus.Eliminated);
+
+            var prize = prizes.FirstOrDefault(p => p.Position == position);
+            if (isItm && prize != null)
+            {
+                e.PrizeAmount = prize.Amount;
+                prize.EntryId = e.Id;
+            }
+            else
+            {
+                e.PrizeAmount = null;
+            }
+        }
+
+        tournament.PlayersRemaining = activeCount;
     }
 
     private static void RecalculateBalance(TournamentEntry entry, Tournament tournament)
