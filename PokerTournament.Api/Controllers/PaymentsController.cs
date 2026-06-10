@@ -50,7 +50,8 @@ public class PaymentsController : ControllerBase
         var payments = await _db.Transactions
             .Where(t => t.TournamentId == tournamentId
                      && t.EntryId == entryId
-                     && t.Type == nameof(TransactionType.Payment)
+                     && (t.Type == nameof(TransactionType.Payment)
+                         || t.Type == nameof(TransactionType.Settlement))
                      && t.ReversedAt == null)
             .OrderByDescending(t => t.CreatedAt)
             .Select(t => new
@@ -77,7 +78,8 @@ public class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(t => t.Id == paymentId
                                    && t.TournamentId == tournamentId
                                    && t.EntryId == entryId
-                                   && t.Type == nameof(TransactionType.Payment), ct);
+                                   && (t.Type == nameof(TransactionType.Payment)
+                                       || t.Type == nameof(TransactionType.Settlement)), ct);
 
         if (tx == null)
             return NotFound(new { message = "Pagamento não encontrado." });
@@ -130,9 +132,12 @@ public class PaymentsController : ControllerBase
     public async Task<ActionResult> GetTotalsByMethod(
         Guid tournamentId, CancellationToken ct)
     {
+        // Inclui abatimentos (Settlement): não entram em PIX/Dinheiro, mas creditam
+        // um custo (PixDestinationId), então devem aparecer em "Pago para Custos".
         var transactions = await _db.Transactions
             .Where(t => t.TournamentId == tournamentId
-                     && t.Type == nameof(TransactionType.Payment)
+                     && (t.Type == nameof(TransactionType.Payment)
+                         || t.Type == nameof(TransactionType.Settlement))
                      && t.ReversedAt == null)
             .ToListAsync(ct);
 
