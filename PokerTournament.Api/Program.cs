@@ -173,7 +173,11 @@ builder.Services.AddScoped<PrizeService>();
 builder.Services.AddScoped<TimerService>();
 
 // Controllers
-builder.Services.AddControllers();
+// SEC-01: filtro global de isolamento multi-tenant (Security:EnforceTenantIsolation, default true)
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<PokerTournament.Api.Filters.TenantAccessFilter>();
+});
 
 var app = builder.Build();
 
