@@ -31,6 +31,27 @@ public class PrizesController : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet]
+    public async Task<ActionResult> GetPrizes(Guid tournamentId, CancellationToken ct)
+    {
+        var prizes = await _db.TournamentPrizes
+            .Where(p => p.TournamentId == tournamentId)
+            .OrderBy(p => p.Position)
+            .Select(p => new
+            {
+                p.Id,
+                p.Position,
+                p.Amount,
+                p.Percentage,
+                p.EntryId,
+                p.Paid,
+                p.PaidAt,
+                PlayerName = p.Entry != null ? p.Entry.Person.FullName : null,
+            })
+            .ToListAsync(ct);
+        return Ok(prizes);
+    }
+
     [HttpPost("confirm")]
     
     public async Task<ActionResult<List<PrizeAllocation>>> Confirm(

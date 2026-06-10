@@ -359,6 +359,15 @@ public class EntryService
 
             var position = activePlayers;
 
+            // ITM: a posição é premiada? Usa nº de prêmios confirmados; se ainda não confirmou,
+            // estima por SuggestPrizeCount para o ITM ser consistente durante o jogo.
+            var confirmedPrizeCount = await _db.TournamentPrizes
+                .CountAsync(p => p.TournamentId == tournamentId, ct);
+            var effectivePrizeCount = confirmedPrizeCount > 0
+                ? confirmedPrizeCount
+                : PrizeService.SuggestPrizeCount(tournament.TotalEntries);
+            var isItm = position <= effectivePrizeCount;
+
             // Registrar eliminação
             var elimination = new Elimination
             {
@@ -374,8 +383,8 @@ public class EntryService
             };
             _db.Eliminations.Add(elimination);
 
-            // Atualizar entry
-            entry.Status = nameof(EntryStatus.Eliminated);
+            // Atualizar entry — jogador ITM vira Awarded (premiado), não apenas Eliminated
+            entry.Status = isItm ? nameof(EntryStatus.Awarded) : nameof(EntryStatus.Eliminated);
             entry.FinalPosition = position;
             entry.EliminatedAt = DateTimeOffset.UtcNow;
             entry.EliminatedById = request.EliminatedByEntryId;
@@ -383,6 +392,18 @@ public class EntryService
             entry.EliminationSeatNumber = entry.SeatNumber;
             entry.TableId = null;
             entry.SeatNumber = null;
+
+            // Vincular o prêmio confirmado a este jogador ITM (se houver premiação confirmada)
+            if (isItm && confirmedPrizeCount > 0)
+            {
+                var wonPrize = await _db.TournamentPrizes
+                    .FirstOrDefaultAsync(p => p.TournamentId == tournamentId && p.Position == position, ct);
+                if (wonPrize != null)
+                {
+                    wonPrize.EntryId = entry.Id;
+                    entry.PrizeAmount = wonPrize.Amount;
+                }
+            }
 
             // Atualizar contadores
             tournament.PlayersRemaining = activePlayers - 1;
@@ -399,6 +420,18 @@ public class EntryService
                     champion.FinalPosition = 1;
                     champion.Status = nameof(EntryStatus.Awarded);
                     tournament.PlayersRemaining = 0;
+
+                    // Vincular o prêmio do 1º lugar ao campeão (se confirmado)
+                    if (confirmedPrizeCount > 0)
+                    {
+                        var firstPrize = await _db.TournamentPrizes
+                            .FirstOrDefaultAsync(p => p.TournamentId == tournamentId && p.Position == 1, ct);
+                        if (firstPrize != null)
+                        {
+                            firstPrize.EntryId = champion.Id;
+                            champion.PrizeAmount = firstPrize.Amount;
+                        }
+                    }
 
                     // Finalizar torneio automaticamente quando sobra 1 jogador
                     tournament.Status = nameof(TournamentStatus.Finished);
@@ -427,10 +460,6 @@ public class EntryService
 
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-
-            // Verificar ITM
-            var prizeCount = await _db.TournamentPrizes
-                .CountAsync(p => p.TournamentId == tournamentId, ct);
 
             // Gerar WhatsApp link
             string? whatsAppLink = null;
@@ -461,7 +490,7 @@ public class EntryService
                 PlayerName = entry.Person.FullName,
                 EliminatedBy = eliminatedByName,
                 PlayersRemaining = tournament.PlayersRemaining,
-                IsInTheMoney = position <= prizeCount,
+                IsInTheMoney = isItm,
                 WhatsAppLink = whatsAppLink
             };
         }

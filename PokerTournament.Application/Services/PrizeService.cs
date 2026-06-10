@@ -3,6 +3,7 @@ using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Domain.Entities;
+using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
 
 namespace PokerTournament.Application.Services;
@@ -94,8 +95,7 @@ public class PrizeService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        if (tournament.PrizeConfirmed)
-            throw new DomainException("Premiação já foi confirmada.");
+        // Premiação pode ser reconfirmada/editada (substitui a distribuição anterior).
 
         // Remover prêmios existentes
         var existing = await _db.TournamentPrizes
@@ -109,13 +109,27 @@ public class PrizeService
             .Where(c => c.TournamentId == tournamentId)
             .SumAsync(c => c.Amount, ct);
 
+        // Entradas já posicionadas (eliminados ITM + campeão) para vincular prêmio↔jogador
+        var positionedEntries = await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournamentId && e.FinalPosition != null)
+            .ToListAsync(ct);
+
         // Salvar novos prêmios
         var result = new List<PrizeAllocation>();
         foreach (var prize in request.Prizes)
         {
+            var winner = positionedEntries.FirstOrDefault(e => e.FinalPosition == prize.Position);
+            if (winner != null)
+            {
+                winner.PrizeAmount = prize.Amount;
+                if (winner.Status != nameof(EntryStatus.PaidOut))
+                    winner.Status = nameof(EntryStatus.Awarded);
+            }
+
             _db.TournamentPrizes.Add(new TournamentPrize
             {
                 TournamentId = tournamentId,
+                EntryId = winner?.Id,
                 Position = prize.Position,
                 Amount = prize.Amount,
                 Percentage = tournament.TotalPrizePool - totalCosts > 0
