@@ -35,6 +35,10 @@ public class AuthService
         if (!VerifyPassword(request.Password, user.PasswordHash))
             throw new DomainException("E-mail ou senha inválidos.");
 
+        // SEC-02: re-hash transparente de senhas legadas (SHA-256) para PBKDF2 no login
+        if (IsLegacyHash(user.PasswordHash))
+            user.PasswordHash = HashPassword(request.Password);
+
         user.LastLoginAt = DateTimeOffset.UtcNow;
 
         var token = GenerateJwtToken(user);
@@ -78,7 +82,7 @@ public class AuthService
             Email = request.Email,
             Whatsapp = request.Whatsapp,
             PasswordHash = HashPassword(request.Password),
-            Role = "Jogador",
+            Role = "Player",
             IsActive = true,
             LastLoginAt = DateTimeOffset.UtcNow
         };
@@ -134,6 +138,7 @@ public class AuthService
         return new AuthResponse
         {
             AccessToken = token,
+            RefreshToken = newRefreshToken,
             ExpiresIn = expiresInMinutes * 60,
             User = new UserResponse
             {
@@ -209,13 +214,34 @@ public class AuthService
 
     public static string HashPassword(string password)
     {
-        using var sha256 = SHA256.Create();
-        var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
-        return Convert.ToBase64String(bytes);
+        // PBKDF2 (SHA-256) com salt aleatório por usuário. Formato: pbkdf2$iter$salt$hash
+        const int iterations = 100_000;
+        byte[] salt = RandomNumberGenerator.GetBytes(16);
+        byte[] hash = Rfc2898DeriveBytes.Pbkdf2(
+            password, salt, iterations, HashAlgorithmName.SHA256, 32);
+        return $"pbkdf2${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
     }
+
+    private static bool IsLegacyHash(string hash) => !hash.StartsWith("pbkdf2$");
 
     private static bool VerifyPassword(string password, string hash)
     {
-        return HashPassword(password) == hash;
+        if (!IsLegacyHash(hash))
+        {
+            var parts = hash.Split('$');
+            if (parts.Length != 4) return false;
+            var iterations = int.Parse(parts[1]);
+            var salt = Convert.FromBase64String(parts[2]);
+            var expected = Convert.FromBase64String(parts[3]);
+            var actual = Rfc2898DeriveBytes.Pbkdf2(
+                password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
+            return CryptographicOperations.FixedTimeEquals(actual, expected);
+        }
+
+        // Legado: SHA-256 puro (Base64) — comparação em tempo constante.
+        using var sha256 = SHA256.Create();
+        var legacy = Convert.ToBase64String(sha256.ComputeHash(Encoding.UTF8.GetBytes(password)));
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(legacy), Encoding.UTF8.GetBytes(hash));
     }
 }

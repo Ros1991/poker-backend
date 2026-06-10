@@ -153,9 +153,23 @@ public class HomeGameRankingsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    
     public async Task<ActionResult> Delete(Guid homeGameId, Guid id, CancellationToken ct)
     {
+        // SEC-03: mesma checagem de permissão do Create/Update (antes não havia nenhuma)
+        var userId = GetUserId();
+        var homeGame = await _db.HomeGames.FirstOrDefaultAsync(h => h.Id == homeGameId, ct);
+        if (homeGame is null)
+            return NotFound(new { message = "Home game não encontrado." });
+
+        var userRole = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+        if (homeGame.OwnerId != userId && userRole != "Admin")
+        {
+            var isHgAdmin = await _db.HomeGameMembers
+                .AnyAsync(m => m.HomeGameId == homeGameId && m.UserId == userId && m.IsAdmin, ct);
+            if (!isHgAdmin)
+                return Forbid();
+        }
+
         var ranking = await _db.Rankings
             .FirstOrDefaultAsync(r => r.Id == id && r.HomeGameId == homeGameId, ct);
 
