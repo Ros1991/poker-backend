@@ -23,6 +23,25 @@ public class PersonsController : ControllerBase
         _mapper = mapper;
     }
 
+    [HttpGet("{id:guid}/history")]
+    public async Task<ActionResult> GetHistory(Guid id, CancellationToken ct)
+    {
+        var history = await _db.TournamentEntries
+            .Where(e => e.PersonId == id && e.FinalPosition != null)
+            .OrderByDescending(e => e.Tournament.Date)
+            .Select(e => new
+            {
+                tournamentId = e.TournamentId,
+                tournamentName = e.Tournament.Name,
+                date = e.Tournament.Date,
+                position = e.FinalPosition,
+                prize = e.PrizeAmount ?? 0m,
+                points = e.RankingPoints ?? 0m,
+            })
+            .ToListAsync(ct);
+        return Ok(history);
+    }
+
     [HttpGet]
     public async Task<ActionResult<List<PersonResponse>>> GetAll(
         [FromQuery] Guid? homeGameId,
