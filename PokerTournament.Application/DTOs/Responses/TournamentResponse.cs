@@ -44,6 +44,7 @@ public class TournamentResponse
     public int PlayersRemaining { get; set; }
 
     public string? Notes { get; set; }
+    public string? ResponsiblePixKey { get; set; }
     public bool IsActive { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }

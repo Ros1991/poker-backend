@@ -18,4 +18,5 @@ public class CreateTournamentRequest
     public int? LateRegistrationLevel { get; set; }
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;
+    public string? ResponsiblePixKey { get; set; }
 }

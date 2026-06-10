@@ -84,6 +84,7 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         builder.Property(t => t.PlayersRemaining).HasColumnName("players_remaining");
 
         builder.Property(t => t.Notes).HasColumnName("notes");
+        builder.Property(t => t.ResponsiblePixKey).HasColumnName("responsible_pix_key").HasMaxLength(200);
         builder.Property(t => t.IsActive).HasColumnName("is_active").HasDefaultValue(true);
         builder.Property(t => t.CreatedBy).HasColumnName("created_by");
 

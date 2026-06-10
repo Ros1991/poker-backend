@@ -57,6 +57,8 @@ public class Tournament : SoftDeletableEntity
     public int PlayersRemaining { get; set; }
 
     public string? Notes { get; set; }
+    // PIX do responsável pelo torneio no dia (opcional) — informado na criação
+    public string? ResponsiblePixKey { get; set; }
     public bool IsActive { get; set; } = true;
     public Guid? CreatedBy { get; set; }
 
