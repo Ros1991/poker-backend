@@ -54,6 +54,33 @@ public class TimerService
         if (levels is null || levels.Count == 0)
             throw new DomainException("Torneio não possui estrutura de blinds configurada.");
 
+        // B4: auto-avanço de nível — consome o tempo decorrido através dos níveis e
+        // persiste o avanço. O relógio é server-authoritative: qualquer leitura/poll
+        // (dashboard, telão, terminal) reflete o nível correto sem clique manual.
+        if (tournament.IsTimerRunning)
+        {
+            bool advanced = false;
+            while (true)
+            {
+                var lvl = levels.FirstOrDefault(l => l.LevelNumber == tournament.CurrentLevel);
+                int dur = (lvl?.DurationMinutes ?? 0) * 60;
+                if (dur <= 0) break;
+                int el = tournament.TimerElapsedSeconds
+                    + (tournament.TimerStartedAt.HasValue
+                        ? (int)(DateTimeOffset.UtcNow - tournament.TimerStartedAt.Value).TotalSeconds
+                        : 0);
+                if (el < dur) break;
+                if (!levels.Any(l => l.LevelNumber == (tournament.CurrentLevel ?? 0) + 1))
+                    break; // último nível: deixa saturar em 0, não avança além
+                tournament.CurrentLevel = (tournament.CurrentLevel ?? 0) + 1;
+                tournament.TimerElapsedSeconds = el - dur; // excedente conta para o próximo nível
+                tournament.TimerStartedAt = DateTimeOffset.UtcNow;
+                advanced = true;
+            }
+            if (advanced)
+                await _db.SaveChangesAsync(ct);
+        }
+
         var currentLevel = levels.FirstOrDefault(l => l.LevelNumber == tournament.CurrentLevel);
         var nextLevel = levels.FirstOrDefault(l => l.LevelNumber == (tournament.CurrentLevel ?? 0) + 1);
 
