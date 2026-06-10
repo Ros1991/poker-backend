@@ -37,6 +37,15 @@ public class EntriesController : ControllerBase
         return CreatedAtAction(nameof(GetAll), new { tournamentId }, result);
     }
 
+    [HttpPost("bulk")]
+    public async Task<ActionResult<List<EntryResponse>>> RegisterBulk(
+        Guid tournamentId, [FromBody] BulkCreateEntriesRequest request, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var result = await _entryService.RegisterEntriesBulkAsync(tournamentId, request, userId, ct);
+        return Ok(result);
+    }
+
     [HttpPost("{entryId:guid}/rebuy")]
     
     public async Task<ActionResult<EntryResponse>> Rebuy(

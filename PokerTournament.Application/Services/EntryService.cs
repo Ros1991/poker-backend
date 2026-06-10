@@ -161,6 +161,218 @@ public class EntryService
         return _mapper.Map<EntryResponse>(entry);
     }
 
+    /// <summary>
+    /// Inscreve vários jogadores de uma vez (multi-seleção). Atômico (transação).
+    /// Após criar as inscrições, se o torneio JÁ tiver mesas sorteadas, auto-aloca
+    /// os novos jogadores (preenche vagas; se encher tudo, cria mesa e rebalanceia).
+    /// </summary>
+    public async Task<List<EntryResponse>> RegisterEntriesBulkAsync(
+        Guid tournamentId, BulkCreateEntriesRequest request, Guid? registeredBy = null, CancellationToken ct = default)
+    {
+        var tournament = await _db.Tournaments
+            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        if (tournament.Status != nameof(TournamentStatus.Draft)
+            && tournament.Status != nameof(TournamentStatus.OpenForRegistration)
+            && tournament.Status != nameof(TournamentStatus.InProgress))
+            throw new DomainException("Torneio não está aberto para inscrições.");
+
+        if (tournament.Status == nameof(TournamentStatus.InProgress)
+            && tournament.LateRegistrationLevel.HasValue
+            && tournament.CurrentLevel > tournament.LateRegistrationLevel)
+            throw new DomainException("Período de late registration encerrado.");
+
+        var personIds = request.PersonIds.Distinct().ToList();
+        if (personIds.Count == 0)
+            throw new DomainException("Nenhum jogador selecionado.");
+
+        // Ignora quem já está inscrito (qualquer status) e ids inexistentes.
+        var enrolledSet = (await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournamentId && personIds.Contains(e.PersonId))
+            .Select(e => e.PersonId)
+            .ToListAsync(ct)).ToHashSet();
+
+        var personMap = (await _db.Persons
+            .Where(p => personIds.Contains(p.Id))
+            .ToListAsync(ct)).ToDictionary(p => p.Id);
+
+        var toCreate = personIds
+            .Where(id => !enrolledSet.Contains(id) && personMap.ContainsKey(id))
+            .ToList();
+
+        if (toCreate.Count == 0)
+            throw new DomainException("Todos os jogadores selecionados já estão inscritos.");
+
+        // Feature staff/ranking: jogador paga buy-in + staff + ranking(fixo).
+        var staffPart = tournament.StaffAmount ?? 0m;
+        var rankingFixedPart = tournament.RankingContribMode == "PerPlayer"
+            ? (tournament.RankingContribValue ?? 0m)
+            : 0m;
+        var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        var createdEntries = new List<TournamentEntry>();
+        foreach (var personId in toCreate)
+        {
+            var person = personMap[personId];
+            var entry = new TournamentEntry
+            {
+                Id = Guid.NewGuid(),
+                TournamentId = tournamentId,
+                PersonId = personId,
+                Status = nameof(EntryStatus.Active),
+                BuyInPaid = request.BuyInPaid,
+                BuyInAmount = tournament.BuyInAmount,
+                RebuyCount = 0,
+                RebuyTotal = 0,
+                AddonPurchased = false,
+                AddonAmount = 0,
+                TotalDue = entryCost,
+                TotalPaid = request.BuyInPaid ? entryCost : 0,
+                Balance = request.BuyInPaid ? 0 : entryCost,
+                PaymentStatus = request.BuyInPaid
+                    ? nameof(Domain.Enums.PaymentStatus.Paid)
+                    : nameof(Domain.Enums.PaymentStatus.Pending),
+                EntryNumber = 1,
+                IsReentry = false,
+                RegisteredAt = DateTimeOffset.UtcNow,
+                RegisteredBy = registeredBy
+            };
+            _db.TournamentEntries.Add(entry);
+
+            _db.Transactions.Add(new Transaction
+            {
+                TournamentId = tournamentId,
+                EntryId = entry.Id,
+                Type = nameof(TransactionType.BuyIn),
+                Amount = tournament.BuyInAmount,
+                Description = $"Buy-in - {person.FullName}",
+                CreatedBy = registeredBy
+            });
+
+            tournament.TotalEntries++;
+            tournament.PlayersRemaining++;
+            tournament.TotalPrizePool += entryCost;
+
+            entry.Person = person;
+            createdEntries.Add(entry);
+        }
+
+        // Acumula staff e ranking-fixo uma vez (custos automáticos crescem por entrada).
+        await BumpAutoCostAsync(tournamentId, "Staff", staffPart * toCreate.Count, ct);
+        await BumpAutoCostAsync(tournamentId, "RankingAccumulated", rankingFixedPart * toCreate.Count, ct);
+        await RecalcAutoCostsAndTotals(tournament, ct);
+
+        await _db.SaveChangesAsync(ct);
+
+        // Auto-alocação em mesas — somente se já existir pelo menos 1 mesa.
+        await AutoSeatNewEntriesAsync(tournament, createdEntries, ct);
+
+        await tx.CommitAsync(ct);
+
+        return createdEntries.Select(e => _mapper.Map<EntryResponse>(e)).ToList();
+    }
+
+    /// <summary>
+    /// Auto-aloca os novos jogadores nas mesas existentes. Regra: NÃO faz nada se
+    /// ainda não houver mesa criada (o sorteio acontece depois pelo fluxo normal).
+    /// Preenche a mesa com vaga e menor lotação; se todas estiverem cheias, cria a
+    /// próxima mesa e rebalanceia sorteando quem muda até diferença ≤ 1.
+    /// </summary>
+    private async Task AutoSeatNewEntriesAsync(
+        Tournament tournament, List<TournamentEntry> newEntries, CancellationToken ct)
+    {
+        var tables = await _db.TournamentTables
+            .Where(t => t.TournamentId == tournament.Id && t.IsActive)
+            .OrderBy(t => t.TableNumber)
+            .ToListAsync(ct);
+
+        if (tables.Count == 0)
+            return; // mesas ainda não sorteadas → deixa pro sorteio posterior
+
+        var newTableSeats = tournament.SeatsPerTable > 1 ? tournament.SeatsPerTable : 9;
+
+        // Ocupação atual: jogadores ATIVOS já assentados, por mesa.
+        var seatedActive = await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournament.Id
+                     && e.Status == nameof(EntryStatus.Active)
+                     && e.TableId != null)
+            .ToListAsync(ct);
+
+        var occupancy = tables.ToDictionary(
+            t => t.Id,
+            t => seatedActive.Where(e => e.TableId == t.Id).ToList());
+
+        var nextTableNumber = tables.Max(t => t.TableNumber) + 1;
+
+        foreach (var entry in newEntries)
+        {
+            // Mesa com assento livre (respeitando o MaxSeats da própria mesa) e menor lotação.
+            var target = tables
+                .Where(t => occupancy[t.Id].Count < t.MaxSeats)
+                .OrderBy(t => occupancy[t.Id].Count)
+                .FirstOrDefault();
+
+            if (target is null)
+            {
+                // Todas cheias → cria a próxima mesa e rebalanceia (sorteando quem muda).
+                target = new TournamentTable
+                {
+                    TournamentId = tournament.Id,
+                    TableNumber = nextTableNumber,
+                    TableName = $"Mesa {nextTableNumber}",
+                    MaxSeats = newTableSeats,
+                    IsActive = true
+                };
+                nextTableNumber++;
+                _db.TournamentTables.Add(target);
+                await _db.SaveChangesAsync(ct); // garante o Id real da nova mesa
+
+                tables.Add(target);
+                occupancy[target.Id] = [];
+
+                RebalanceRandom(tables, occupancy);
+                target = tables.OrderBy(t => occupancy[t.Id].Count).First();
+            }
+
+            // Assento = próximo livre na mesa (max+1); não mexe nos assentos de quem já está.
+            entry.TableId = target.Id;
+            entry.SeatNumber = NextSeat(occupancy[target.Id]);
+            occupancy[target.Id].Add(entry);
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static int NextSeat(List<TournamentEntry> seated) =>
+        seated.Count == 0 ? 1 : seated.Max(e => e.SeatNumber ?? 0) + 1;
+
+    /// <summary>
+    /// Move jogadores sorteados da mesa mais cheia para a mais vazia até a diferença ser ≤ 1.
+    /// Quem é movido recebe o próximo assento livre no destino (sem colidir com quem já está lá).
+    /// </summary>
+    private static void RebalanceRandom(
+        List<TournamentTable> tables, Dictionary<Guid, List<TournamentEntry>> occupancy)
+    {
+        while (true)
+        {
+            var max = tables.OrderByDescending(t => occupancy[t.Id].Count).First();
+            var min = tables.OrderBy(t => occupancy[t.Id].Count).First();
+            if (occupancy[max.Id].Count - occupancy[min.Id].Count <= 1)
+                break;
+
+            var fromList = occupancy[max.Id];
+            var idx = Random.Shared.Next(fromList.Count);
+            var mover = fromList[idx];
+            fromList.RemoveAt(idx);
+            mover.TableId = min.Id;
+            mover.SeatNumber = NextSeat(occupancy[min.Id]);
+            occupancy[min.Id].Add(mover);
+        }
+    }
+
     public async Task<EntryResponse> RegisterRebuyAsync(
         Guid tournamentId, Guid entryId, RebuyRequest request, Guid? registeredBy = null, CancellationToken ct = default)
     {
