@@ -71,6 +71,18 @@ public class BlindStructureConfiguration : IEntityTypeConfiguration<BlindStructu
         builder.Property(b => b.DefaultSeatsPerTable)
             .HasColumnName("default_seats_per_table");
 
+        builder.Property(b => b.DefaultStaffAmount)
+            .HasColumnName("default_staff_amount")
+            .HasColumnType("decimal(10,2)");
+
+        builder.Property(b => b.DefaultRankingContribMode)
+            .HasColumnName("default_ranking_contrib_mode")
+            .HasMaxLength(20);
+
+        builder.Property(b => b.DefaultRankingContribValue)
+            .HasColumnName("default_ranking_contrib_value")
+            .HasColumnType("decimal(10,2)");
+
         builder.HasOne(b => b.HomeGame)
             .WithMany()
             .HasForeignKey(b => b.HomeGameId)

@@ -332,6 +332,16 @@ public class TournamentService
             case TournamentStatus.Cancelled:
                 tournament.IsTimerRunning = false;
                 tournament.IsActive = false;
+                // Se estava finalizado e já tinha acumulado no ranking, reverte (cancelar desfaz o aporte).
+                if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is > 0)
+                {
+                    var ranking = await _db.Rankings.FirstOrDefaultAsync(
+                        r => r.Id == tournament.RankingId.Value, ct);
+                    if (ranking is not null)
+                        ranking.AccumulatedPrize = Math.Max(0m, ranking.AccumulatedPrize - tournament.RankingPrizeAccrued.Value);
+                    tournament.RankingPrizeAccrued = null;
+                    tournament.RankingAccruedAt = null;
+                }
                 break;
         }
 
@@ -359,7 +369,8 @@ public class TournamentService
             [nameof(TournamentStatus.OpenForRegistration)] = [nameof(TournamentStatus.InProgress), nameof(TournamentStatus.Cancelled)],
             [nameof(TournamentStatus.InProgress)] = [nameof(TournamentStatus.BreakSettlement), nameof(TournamentStatus.Finished), nameof(TournamentStatus.Cancelled)],
             [nameof(TournamentStatus.BreakSettlement)] = [nameof(TournamentStatus.InProgress), nameof(TournamentStatus.Finished)],
-            [nameof(TournamentStatus.Finished)] = [],
+            // Finalizado pode ser cancelado (reverte o aporte no ranking — ver case Cancelled).
+            [nameof(TournamentStatus.Finished)] = [nameof(TournamentStatus.Cancelled)],
             [nameof(TournamentStatus.Cancelled)] = []
         };
 

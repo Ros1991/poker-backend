@@ -56,6 +56,9 @@ public class BlindStructuresController : ControllerBase
             bs.DefaultLateRegistrationLevel,
             bs.DefaultRebuyUntilLevel,
             bs.DefaultSeatsPerTable,
+            bs.DefaultStaffAmount,
+            bs.DefaultRankingContribMode,
+            bs.DefaultRankingContribValue,
             LevelCount = bs.Levels.Count,
             Levels = bs.Levels.Select(l => new
             {
@@ -100,6 +103,9 @@ public class BlindStructuresController : ControllerBase
             structure.DefaultLateRegistrationLevel,
             structure.DefaultRebuyUntilLevel,
             structure.DefaultSeatsPerTable,
+            structure.DefaultStaffAmount,
+            structure.DefaultRankingContribMode,
+            structure.DefaultRankingContribValue,
             Levels = structure.Levels.Select(l => new
             {
                 l.Id,
@@ -144,6 +150,9 @@ public class BlindStructuresController : ControllerBase
             DefaultLateRegistrationLevel = request.DefaultLateRegistrationLevel,
             DefaultRebuyUntilLevel = request.DefaultRebuyUntilLevel,
             DefaultSeatsPerTable = request.DefaultSeatsPerTable,
+            DefaultStaffAmount = request.DefaultStaffAmount,
+            DefaultRankingContribMode = request.DefaultRankingContribMode,
+            DefaultRankingContribValue = request.DefaultRankingContribValue,
         };
 
         foreach (var levelRequest in request.Levels)
@@ -202,6 +211,9 @@ public class BlindStructuresController : ControllerBase
         structure.DefaultLateRegistrationLevel = request.DefaultLateRegistrationLevel;
         structure.DefaultRebuyUntilLevel = request.DefaultRebuyUntilLevel;
         structure.DefaultSeatsPerTable = request.DefaultSeatsPerTable;
+        structure.DefaultStaffAmount = request.DefaultStaffAmount;
+        structure.DefaultRankingContribMode = request.DefaultRankingContribMode;
+        structure.DefaultRankingContribValue = request.DefaultRankingContribValue;
 
         // Remover levels existentes e recriar
         foreach (var level in structure.Levels.ToList())

@@ -872,6 +872,6 @@ public class EntryService
         }
 
         tournament.TotalCosts = costs.Sum(c => c.Amount);
-        await RecalcAutoCostsAndTotals(tournament, ct);
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
     }
 }

@@ -21,6 +21,11 @@ public class BlindStructure : BaseEntity
     public int? DefaultRebuyUntilLevel { get; set; }
     public int? DefaultSeatsPerTable { get; set; }
 
+    // Staff e contribuição p/ ranking (pré-preenchem o torneio ao selecionar a estrutura)
+    public decimal? DefaultStaffAmount { get; set; }
+    public string? DefaultRankingContribMode { get; set; } // PerPlayer | Percent
+    public decimal? DefaultRankingContribValue { get; set; }
+
     // Navigation
     public HomeGame? HomeGame { get; set; }
     public ICollection<BlindLevel> Levels { get; set; } = [];

@@ -20,6 +20,9 @@ public class CreateBlindStructureRequest
     public int? DefaultLateRegistrationLevel { get; set; }
     public int? DefaultRebuyUntilLevel { get; set; }
     public int? DefaultSeatsPerTable { get; set; }
+    public decimal? DefaultStaffAmount { get; set; }
+    public string? DefaultRankingContribMode { get; set; }
+    public decimal? DefaultRankingContribValue { get; set; }
 
     public class BlindLevelItem
     {
