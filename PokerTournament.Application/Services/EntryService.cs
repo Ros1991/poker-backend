@@ -52,7 +52,8 @@ public class EntryService
         if (tournament != null)
         {
             tournament.TotalEntries = Math.Max(0, tournament.TotalEntries - 1);
-            tournament.PlayersRemaining = Math.Max(0, tournament.PlayersRemaining - 1);
+            if (entry.Status == nameof(EntryStatus.Active) || entry.Status == nameof(EntryStatus.Registered))
+                tournament.PlayersRemaining = Math.Max(0, tournament.PlayersRemaining - 1);
             tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - entry.TotalDue);
             tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
         }
@@ -96,6 +97,7 @@ public class EntryService
 
         var entry = new TournamentEntry
         {
+            Id = Guid.NewGuid(),
             TournamentId = tournamentId,
             PersonId = request.PersonId,
             Status = nameof(EntryStatus.Active),
@@ -134,6 +136,7 @@ public class EntryService
         tournament.TotalEntries++;
         tournament.PlayersRemaining++;
         tournament.TotalPrizePool += tournament.BuyInAmount;
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
 
         await _db.SaveChangesAsync(ct);
 
@@ -167,7 +170,7 @@ public class EntryService
         if (entry.Status != nameof(EntryStatus.Active))
             throw new DomainException("Jogador não está ativo no torneio.");
 
-        if (tournament.MaxRebuys.HasValue && entry.RebuyCount + request.Quantity > tournament.MaxRebuys)
+        if (tournament.MaxRebuys.HasValue && tournament.MaxRebuys > 0 && entry.RebuyCount + request.Quantity > tournament.MaxRebuys)
             throw new DomainException($"Limite de rebuys atingido ({tournament.MaxRebuys}).");
 
         entry.RebuyCount += request.Quantity;
@@ -190,6 +193,7 @@ public class EntryService
 
         tournament.TotalRebuys += request.Quantity;
         tournament.TotalPrizePool += (tournament.RebuyAmount ?? 0) * request.Quantity;
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -246,6 +250,7 @@ public class EntryService
 
         tournament.TotalAddons++;
         tournament.TotalPrizePool += addonValue;
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -283,6 +288,7 @@ public class EntryService
 
         tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - 1);
         tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - rebuyValue);
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -321,6 +327,7 @@ public class EntryService
 
         tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
         tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - addonValue);
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
@@ -545,6 +552,9 @@ public class EntryService
         {
             awardedChampion.Status = nameof(EntryStatus.Active);
             awardedChampion.FinalPosition = null;
+            // DATA-03: reverter a finalização automática do torneio ao desfazer a eliminação do campeão
+            if (tournament.Status == nameof(TournamentStatus.Finished))
+                tournament.Status = nameof(TournamentStatus.InProgress);
         }
 
         tournament.PlayersRemaining++;

@@ -46,6 +46,18 @@ public class TournamentService
         return _mapper.Map<TournamentResponse>(tournament);
     }
 
+    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        var tournament = await _db.Tournaments
+            .FirstOrDefaultAsync(t => t.Id == id, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        // Soft-delete mesmo se finalizado: o filtro global (DeletedAt == null) já
+        // remove o torneio de QUALQUER query, inclusive os leaderboards de ranking.
+        _db.Tournaments.Remove(tournament);
+        await _db.SaveChangesAsync(ct);
+    }
+
     public async Task<TournamentResponse> CreateAsync(
         Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null, CancellationToken ct = default)
     {

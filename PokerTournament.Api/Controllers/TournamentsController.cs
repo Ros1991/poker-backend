@@ -79,6 +79,13 @@ public class TournamentsController : ControllerBase
         return Ok(result);
     }
 
+    [HttpDelete("{id:guid}")]
+    public async Task<ActionResult> Delete(Guid homeGameId, Guid id, CancellationToken ct)
+    {
+        await _tournamentService.DeleteAsync(id, ct);
+        return NoContent();
+    }
+
     private Guid GetUserId()
     {
         var claim = User.FindFirst(ClaimTypes.NameIdentifier)
