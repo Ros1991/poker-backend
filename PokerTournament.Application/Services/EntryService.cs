@@ -573,6 +573,9 @@ public class EntryService
                 .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
                 ?? throw new DomainException("Torneio não encontrado.");
 
+            if (tournament.Status == nameof(TournamentStatus.Finished))
+                throw new DomainException("Torneio já está finalizado.");
+
             var entry = await _db.TournamentEntries
                 .Include(e => e.Person)
                 .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
@@ -640,9 +643,12 @@ public class EntryService
             // Se restou 1 jogador: ele é o campeão
             if (tournament.PlayersRemaining == 1)
             {
+                // O status Awarded/Eliminated do vice ainda não foi salvo — no banco ele
+                // segue Active, então a query PRECISA excluir o próprio eliminado.
                 var champion = await _db.TournamentEntries
                     .FirstOrDefaultAsync(e => e.TournamentId == tournamentId
-                                           && e.Status == nameof(EntryStatus.Active), ct);
+                                           && e.Status == nameof(EntryStatus.Active)
+                                           && e.Id != entryId, ct);
 
                 if (champion is not null)
                 {
@@ -763,6 +769,11 @@ public class EntryService
         if (entry.Status != nameof(EntryStatus.Eliminated)
             && entry.Status != nameof(EntryStatus.Awarded))
             throw new DomainException("Jogador não está eliminado nem premiado.");
+
+        // Campeão nunca foi eliminado (EliminatedAt nulo): não há eliminação para desfazer.
+        if (entry.EliminatedAt is null)
+            throw new DomainException(
+                "O campeão não foi eliminado por ninguém. Desfaça a eliminação do vice-campeão para reabrir o torneio.");
 
         // Encontrar a eliminação mais recente
         var elimination = await _db.Eliminations
