@@ -85,6 +85,9 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
 
         builder.Property(t => t.Notes).HasColumnName("notes");
         builder.Property(t => t.ResponsiblePixKey).HasColumnName("responsible_pix_key").HasMaxLength(200);
+        builder.Property(t => t.PunctualityBonusCount).HasColumnName("punctuality_bonus_count");
+        builder.Property(t => t.PunctualityBonusChips).HasColumnName("punctuality_bonus_chips");
+
         builder.Property(t => t.StaffAmount).HasColumnName("staff_amount").HasColumnType("decimal(10,2)");
         builder.Property(t => t.RankingContribMode).HasColumnName("ranking_contrib_mode").HasMaxLength(20);
         builder.Property(t => t.RankingContribValue).HasColumnName("ranking_contrib_value").HasColumnType("decimal(10,2)");

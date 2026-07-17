@@ -118,9 +118,14 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
-        // Custos automáticos (Staff/Ranking acumulado) são editáveis mas não removíveis.
-        if (costExtra.CostType is "Staff" or "RankingAccumulated")
-            return BadRequest(new { message = "Custo automático (staff/ranking) não pode ser removido. Edite o valor se necessário." });
+        // Staff automático é editável mas não removível. O acumulado do ranking PODE
+        // ser removido (o valor volta ao prêmio líquido — organizador decide não
+        // acumular neste torneio); os null-checks de recálculo/accrual não o recriam.
+        if (costExtra.CostType == "Staff")
+            return BadRequest(new { message = "Custo automático de staff não pode ser removido. Edite o valor se necessário." });
+
+        if (costExtra.CostType == "RankingAccumulated" && costExtra.PaidAmount > 0)
+            return BadRequest(new { message = "Este custo já tem pagamento/abatimento registrado. Estorne antes de excluir." });
 
         _db.CostExtras.Remove(costExtra);
         await _db.SaveChangesAsync(ct);

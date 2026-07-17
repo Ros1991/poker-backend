@@ -60,6 +60,10 @@ public class Tournament : SoftDeletableEntity
     // PIX do responsável pelo torneio no dia (opcional) — informado na criação
     public string? ResponsiblePixKey { get; set; }
 
+    // Bônus de pontualidade (fichas extras pra quem chegou no horário)
+    public int? PunctualityBonusCount { get; set; }  // nº de jogadores que receberam
+    public int? PunctualityBonusChips { get; set; }  // fichas de bônus por jogador
+
     // Staff (comissão da casa) e contribuição ao ranking
     public decimal? StaffAmount { get; set; }         // valor de staff por jogador (por entrada)
     public string? RankingContribMode { get; set; }   // PerPlayer | Percent | null

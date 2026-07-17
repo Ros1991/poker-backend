@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
 
@@ -27,6 +28,15 @@ public class TournamentDirectController : ControllerBase
         var result = await _tournamentService.GetByIdAsync(id, ct);
         if (result is null)
             return NotFound(new { message = "Torneio não encontrado." });
+        return Ok(result);
+    }
+
+    [HttpPut("{id:guid}/punctuality-bonus")]
+    public async Task<ActionResult<TournamentResponse>> UpdatePunctualityBonus(
+        Guid id, [FromBody] UpdatePunctualityBonusRequest request, CancellationToken ct)
+    {
+        var result = await _tournamentService.UpdatePunctualityBonusAsync(
+            id, request.Count, request.Chips, ct);
         return Ok(result);
     }
 }

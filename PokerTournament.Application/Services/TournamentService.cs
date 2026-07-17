@@ -50,6 +50,32 @@ public class TournamentService
         return _mapper.Map<TournamentResponse>(tournament);
     }
 
+    /// <summary>
+    /// Atualiza o bônus de pontualidade (nº de jogadores × fichas). Editável em
+    /// qualquer status exceto Cancelled — é um ajuste operacional, não config de Draft.
+    /// </summary>
+    public async Task<TournamentResponse> UpdatePunctualityBonusAsync(
+        Guid id, int count, int chips, CancellationToken ct = default)
+    {
+        var tournament = await _db.Tournaments
+            .Include(t => t.HomeGame)
+            .Include(t => t.Ranking)
+            .FirstOrDefaultAsync(t => t.Id == id, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        if (tournament.Status == nameof(TournamentStatus.Cancelled))
+            throw new DomainException("Torneio cancelado não pode ser alterado.");
+
+        if (count < 0 || chips < 0)
+            throw new DomainException("Valores do bônus não podem ser negativos.");
+
+        tournament.PunctualityBonusCount = count;
+        tournament.PunctualityBonusChips = chips;
+        await _db.SaveChangesAsync(ct);
+
+        return _mapper.Map<TournamentResponse>(tournament);
+    }
+
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments

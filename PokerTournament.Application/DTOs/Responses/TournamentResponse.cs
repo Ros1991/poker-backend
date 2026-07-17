@@ -45,6 +45,9 @@ public class TournamentResponse
     public int TotalAddons { get; set; }
     public int PlayersRemaining { get; set; }
 
+    public int? PunctualityBonusCount { get; set; }
+    public int? PunctualityBonusChips { get; set; }
+
     public string? Notes { get; set; }
     public string? ResponsiblePixKey { get; set; }
     public decimal? StaffAmount { get; set; }
