@@ -30,8 +30,10 @@ public class MappingProfile : Profile
             .ForMember(d => d.PersonNickname, o => o.MapFrom(s => s.Person != null ? s.Person.Nickname : null))
             .ForMember(d => d.PersonPhotoUrl, o => o.MapFrom(s => s.Person != null ? s.Person.PhotoUrl : null));
 
-        // Tournament
-        CreateMap<Tournament, TournamentResponse>();
+        // Tournament — navegações podem não estar carregadas (null-check obrigatório)
+        CreateMap<Tournament, TournamentResponse>()
+            .ForMember(d => d.HomeGameName, o => o.MapFrom(s => s.HomeGame != null ? s.HomeGame.Name : null))
+            .ForMember(d => d.RankingName, o => o.MapFrom(s => s.Ranking != null ? s.Ranking.Name : null));
         CreateMap<CreateTournamentRequest, Tournament>();
 
         // TournamentEntry

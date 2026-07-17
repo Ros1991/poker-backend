@@ -24,6 +24,8 @@ public class TournamentService
         Guid homeGameId, int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
         var query = _db.Tournaments
+            .Include(t => t.HomeGame)
+            .Include(t => t.Ranking)
             .Where(t => t.HomeGameId == homeGameId && t.Status != nameof(TournamentStatus.Cancelled))
             .OrderByDescending(t => t.Date);
 
@@ -40,6 +42,8 @@ public class TournamentService
     public async Task<TournamentResponse> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments
+            .Include(t => t.HomeGame)
+            .Include(t => t.Ranking)
             .FirstOrDefaultAsync(t => t.Id == id, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 

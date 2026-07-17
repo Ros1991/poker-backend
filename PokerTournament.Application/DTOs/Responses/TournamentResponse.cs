@@ -4,7 +4,9 @@ public class TournamentResponse
 {
     public Guid Id { get; set; }
     public Guid HomeGameId { get; set; }
+    public string? HomeGameName { get; set; }
     public Guid? RankingId { get; set; }
+    public string? RankingName { get; set; }
     public Guid? BlindStructureId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
