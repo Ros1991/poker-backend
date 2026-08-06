@@ -39,4 +39,12 @@ public class TournamentDirectController : ControllerBase
             id, request.Count, request.Chips, ct);
         return Ok(result);
     }
+
+    [HttpPut("{id:guid}/pix-key")]
+    public async Task<ActionResult<TournamentResponse>> UpdatePixKey(
+        Guid id, [FromBody] UpdatePixKeyRequest request, CancellationToken ct)
+    {
+        var result = await _tournamentService.UpdatePixKeyAsync(id, request.PixKey, ct);
+        return Ok(result);
+    }
 }

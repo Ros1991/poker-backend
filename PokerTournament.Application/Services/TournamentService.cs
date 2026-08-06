@@ -76,6 +76,28 @@ public class TournamentService
         return _mapper.Map<TournamentResponse>(tournament);
     }
 
+    /// <summary>
+    /// Atualiza a chave PIX do dia. Editável em qualquer status exceto Cancelled —
+    /// ajuste operacional (a chave pode mudar durante o torneio), não config de Draft.
+    /// </summary>
+    public async Task<TournamentResponse> UpdatePixKeyAsync(
+        Guid id, string? pixKey, CancellationToken ct = default)
+    {
+        var tournament = await _db.Tournaments
+            .Include(t => t.HomeGame)
+            .Include(t => t.Ranking)
+            .FirstOrDefaultAsync(t => t.Id == id, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        if (tournament.Status == nameof(TournamentStatus.Cancelled))
+            throw new DomainException("Torneio cancelado não pode ser alterado.");
+
+        tournament.ResponsiblePixKey = string.IsNullOrWhiteSpace(pixKey) ? null : pixKey.Trim();
+        await _db.SaveChangesAsync(ct);
+
+        return _mapper.Map<TournamentResponse>(tournament);
+    }
+
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments
