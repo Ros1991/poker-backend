@@ -171,6 +171,11 @@ builder.Services.AddScoped<EntryService>();
 builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<PrizeService>();
 builder.Services.AddScoped<TimerService>();
+builder.Services.AddScoped<RankingLeaderboardService>();
+builder.Services.AddScoped<RankingSlugService>();
+
+// Cache curto do ranking público (link compartilhado por WhatsApp)
+builder.Services.AddMemoryCache();
 
 // Controllers
 // SEC-01: filtro global de isolamento multi-tenant (Security:EnforceTenantIsolation, default true)
@@ -197,6 +202,24 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex)
     {
         Log.Error(ex, "Erro ao aplicar migrations");
+    }
+}
+
+// Endereço público dos rankings: gera o slug de quem ainda não tem (idempotente).
+// Bloco separado de propósito: em prod (DB_SCHEMA=poker) o Migrate() acima lança
+// PendingModelChangesWarning e não pode impedir este passo.
+using (var scope = app.Services.CreateScope())
+{
+    try
+    {
+        var slugs = scope.ServiceProvider.GetRequiredService<RankingSlugService>();
+        var assigned = await slugs.AssignMissingAsync();
+        if (assigned > 0)
+            Log.Information("Endereço público gerado para {Count} ranking(s)", assigned);
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Erro ao gerar endereço público dos rankings");
     }
 }
 

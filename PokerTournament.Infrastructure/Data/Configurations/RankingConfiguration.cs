@@ -26,6 +26,10 @@ public class RankingConfiguration : IEntityTypeConfiguration<Ranking>
             .IsRequired()
             .HasMaxLength(200);
 
+        builder.Property(r => r.Slug)
+            .HasColumnName("slug")
+            .HasMaxLength(120);
+
         builder.Property(r => r.Description).HasColumnName("description");
 
         builder.Property(r => r.Season)
@@ -83,6 +87,12 @@ public class RankingConfiguration : IEntityTypeConfiguration<Ranking>
 
         builder.HasIndex(r => r.HomeGameId)
             .HasDatabaseName("ix_rankings_home_game_id");
+
+        // Único entre TODOS os rankings, inclusive excluídos: um link antigo nunca
+        // passa a apontar para outro ranking. NULLs não conflitam no Postgres.
+        builder.HasIndex(r => r.Slug)
+            .IsUnique()
+            .HasDatabaseName("ix_rankings_slug");
 
         builder.HasIndex(r => r.DeletedAt)
             .HasFilter("deleted_at IS NULL")

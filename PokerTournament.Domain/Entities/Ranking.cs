@@ -4,6 +4,7 @@ public class Ranking : SoftDeletableEntity
 {
     public Guid HomeGameId { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string? Slug { get; set; } // Endereço público (/r/{slug}); gerado na criação, não muda ao renomear
     public string? Description { get; set; }
     public string? Season { get; set; }
     public Guid? ScoringRuleId { get; set; }

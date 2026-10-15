@@ -879,6 +879,11 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("character varying(50)")
                         .HasColumnName("season");
 
+                    b.Property<string>("Slug")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("slug");
+
                     b.Property<DateTimeOffset?>("StartDate")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("start_date");
@@ -903,6 +908,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDatabaseName("ix_rankings_home_game_id");
 
                     b.HasIndex("ScoringRuleId");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ix_rankings_slug");
 
                     b.ToTable("rankings", "public");
                 });

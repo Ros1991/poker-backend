@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
-using PokerTournament.Domain.Entities;
+using PokerTournament.Application.Services;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -16,10 +16,14 @@ namespace PokerTournament.Api.Controllers;
 public class RankingsController : ControllerBase
 {
     private readonly IAppDbContext _db;
+    private readonly RankingLeaderboardService _leaderboard;
+    private readonly RankingSlugService _slugs;
 
-    public RankingsController(IAppDbContext db)
+    public RankingsController(IAppDbContext db, RankingLeaderboardService leaderboard, RankingSlugService slugs)
     {
         _db = db;
+        _leaderboard = leaderboard;
+        _slugs = slugs;
     }
 
     [HttpGet("{id:guid}")]
@@ -31,11 +35,28 @@ public class RankingsController : ControllerBase
         if (ranking is null)
             return NotFound(new { message = "Ranking não encontrado." });
 
+        // Rede de segurança: se o backfill do boot falhou (ou o ranking veio de uma
+        // instância antiga durante o deploy), gera o endereço público ao abrir a tela.
+        if (ranking.Slug is null)
+        {
+            try
+            {
+                ranking.Slug = await _slugs.NextAvailableAsync(ranking.Name, ct);
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException)
+            {
+                // Outra requisição gerou ao mesmo tempo; na próxima abertura ele aparece
+                ranking.Slug = null;
+            }
+        }
+
         return Ok(new
         {
             ranking.Id,
             ranking.HomeGameId,
             ranking.Name,
+            ranking.Slug,
             ranking.Description,
             ranking.Season,
             ranking.IsActive,
@@ -57,125 +78,6 @@ public class RankingsController : ControllerBase
         if (ranking is null)
             return NotFound(new { message = "Ranking não encontrado." });
 
-        // Busca torneios finalizados do ranking
-        var tournamentIds = await _db.Tournaments
-            .Where(t => t.RankingId == id && t.Status == "Finished")
-            .Select(t => t.Id)
-            .ToListAsync(ct);
-
-        if (tournamentIds.Count == 0)
-            return Ok(new List<RankingLeaderboardResponse>());
-
-        // Busca entries com posição final
-        var entries = await _db.TournamentEntries
-            .Include(e => e.Person)
-            .Where(e => tournamentIds.Contains(e.TournamentId)
-                     && e.FinalPosition != null
-                     && (e.Status == "Eliminated" || e.Status == "Awarded"))
-            .ToListAsync(ct);
-
-        if (entries.Count == 0)
-            return Ok(new List<RankingLeaderboardResponse>());
-
-        var playerCounts = entries
-            .GroupBy(e => e.TournamentId)
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        // Parse tabela de pontuação
-        List<PositionPoints>? table = null;
-        if (ranking.ScoringMode == "Table" && !string.IsNullOrWhiteSpace(ranking.ScoringTable))
-        {
-            try
-            {
-                table = System.Text.Json.JsonSerializer.Deserialize<List<PositionPoints>>(
-                    ranking.ScoringTable,
-                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-            catch { table = null; }
-        }
-
-        var scores = entries.Select(e =>
-        {
-            var pos = e.FinalPosition ?? 0;
-            var total = playerCounts.GetValueOrDefault(e.TournamentId, 0);
-            decimal points = CalculatePoints(ranking, table, pos, total);
-            return new { e.PersonId, Person = e.Person, e.TournamentId, Position = pos, Points = points };
-        }).ToList();
-
-        var discard = Math.Max(0, ranking.DiscardCount);
-        var totalEtapas = tournamentIds.Count;
-        // Slots a manter = totalEtapas - descarte (faltas contam como 0)
-        var slotsToKeep = Math.Max(1, totalEtapas - discard);
-
-        var leaderboard = scores
-            .GroupBy(s => s.PersonId)
-            .Select(g =>
-            {
-                // Pontos reais em ordem decrescente
-                var realPoints = g.OrderByDescending(s => s.Points).Select(s => s.Points).ToList();
-                // Preencher faltas como 0 até totalEtapas
-                var absences = totalEtapas - realPoints.Count;
-                for (int i = 0; i < absences; i++) realPoints.Add(0m);
-                // Manter apenas os N melhores (descartando piores, incluindo faltas)
-                var kept = realPoints.Take(slotsToKeep).ToList();
-                var first = g.First();
-                return new RankingLeaderboardResponse
-                {
-                    Person = new PersonResponse
-                    {
-                        Id = first.Person.Id,
-                        FullName = first.Person.FullName,
-                        Nickname = first.Person.Nickname,
-                        PhotoUrl = first.Person.PhotoUrl,
-                        IsActive = first.Person.IsActive
-                    },
-                    TotalPoints = kept.Sum(),
-                    TournamentsPlayed = g.Count(),
-                    BestPosition = g.Min(s => s.Position),
-                    DiscardedPoints = realPoints.Sum() - kept.Sum(),
-                    AveragePoints = g.Count() > 0 ? Math.Round(g.Sum(s => s.Points) / g.Count(), 2) : 0
-                };
-            })
-            .OrderByDescending(l => l.TotalPoints)
-            .ThenByDescending(l => l.AveragePoints)
-            .ToList();
-
-        for (int i = 0; i < leaderboard.Count; i++)
-            leaderboard[i].Position = i + 1;
-
-        return Ok(leaderboard);
-    }
-
-    private static decimal CalculatePoints(Ranking ranking, List<PositionPoints>? table, int position, int playerCount)
-    {
-        if (ranking.ScoringMode == "Table" && table != null)
-        {
-            var row = table.FirstOrDefault(p => p.Position == position);
-            return row?.Points ?? 0m;
-        }
-
-        // Avaliar fórmula JavaScript customizada
-        if (!string.IsNullOrWhiteSpace(ranking.ScoringFormula))
-        {
-            try
-            {
-                var engine = new Jint.Engine();
-                engine.SetValue("posicao", position);
-                engine.SetValue("jogadores", playerCount);
-                var result = engine.Evaluate(ranking.ScoringFormula);
-                var val = Convert.ToDecimal(result.ToObject());
-                return Math.Max(0, Math.Round(val, 2));
-            }
-            catch { /* fallback */ }
-        }
-
-        // Fallback padrão
-        return Math.Max(0, playerCount - position + 1);
-    }
-
-    public class PositionPoints
-    {
-        public int Position { get; set; }
-        public decimal Points { get; set; }
+        return Ok(await _leaderboard.GetLeaderboardAsync(ranking, ct));
     }
 }
