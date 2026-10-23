@@ -32,6 +32,7 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<DisplaySession> DisplaySessions => Set<DisplaySession>();
     public DbSet<DealerAccess> DealerAccesses => Set<DealerAccess>();
+    public DbSet<DealerRequest> DealerRequests => Set<DealerRequest>();
     public DbSet<TournamentActivity> TournamentActivities => Set<TournamentActivity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

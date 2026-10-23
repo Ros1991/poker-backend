@@ -83,7 +83,8 @@ public class PasswordResetService
 
         var (_, link) = await IssueTokenAsync(user.Id, ip, userAgent, ct);
 
-        var message = PasswordResetEmail.Build(user.Email, user.FullName, link);
+        var message = PasswordResetEmail.Build(
+            user.Email, user.FullName, link, _publicApp.BuildUrl("brand/logo-completa.png"));
         // Fire-and-forget de propósito: a resposta 202 sai agora, com o mesmo tempo de quem
         // não tem conta. O envio usa escopo próprio (o desta requisição morre com ela).
         _ = Task.Run(() => SendInBackgroundAsync(message));

@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
 using PokerTournament.Api.Http;
 using PokerTournament.Application.Common;
@@ -98,8 +99,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 return Task.CompletedTask;
             },
             // Revalida a cada requisição (com cache curto):
-            // - token de dealer (QR, cache de 30s): QR revogado, novo QR gerado ou torneio
-            //   terminado derrubam o acesso;
+            // - token de dealer (sub = id do pedido aprovado, cache de 30s): pedido
+            //   desconectado, QR revogado, prazo vencido ou torneio terminado derrubam o
+            //   acesso (gerar um QR novo NÃO derruba quem já foi aprovado);
             // - token de usuário com "sid" (cache de 60s): logout no aparelho, sessão revogada
             //   (troca de senha/papel, desativação) ou usuário inativo derrubam o access token
             //   de 12h. Token sem "sid" (emitido antes das sessões por aparelho) passa.
@@ -116,7 +118,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 if (kind == TokenKinds.Dealer)
                 {
                     var access = context.HttpContext.RequestServices.GetRequiredService<DealerAccessService>();
-                    if (!Guid.TryParse(sub, out var accessId) || !await access.IsActiveAsync(accessId, ct))
+                    if (!Guid.TryParse(sub, out var requestId) || !await access.IsActiveAsync(requestId, ct))
                         context.Fail("Acesso de dealer revogado ou expirado.");
                     return;
                 }
@@ -148,7 +150,7 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Dealer", policy => policy
         .RequireRole("Admin", "TournamentDirector", "Dealer").AddRequirements(new TokenKindRequirement()));
 
-// Limite por IP nos endpoints anônimos que criam coisas (TV nova, troca do QR do dealer,
+// Limite por IP nos endpoints anônimos que criam coisas (TV nova, pedido de acesso do dealer,
 // esqueci/redefinir senha). O IP vem de ClientIp.Resolve (valor mais à direita do
 // X-Forwarded-For — o único que o cliente não controla; os da esquerda são forjáveis e
 // dariam uma partição nova a cada requisição).
@@ -184,8 +186,13 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
-// SignalR
-builder.Services.AddSignalR();
+// SignalR. Dealer por QR: o registro guarda as conexões abertas de cada pedido aprovado
+// (desconectar o dealer / desativar o QR derruba a conexão) e o filtro revalida o acesso
+// do dealer em toda chamada de método do hub
+builder.Services.AddSingleton<DealerConnectionRegistry>();
+builder.Services.AddSingleton<DealerHubFilter>();
+builder.Services.AddSignalR()
+    .AddHubOptions<TournamentHub>(options => options.AddFilter<DealerHubFilter>());
 
 // Swagger
 builder.Services.AddSwaggerGen(options =>

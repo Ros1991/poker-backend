@@ -30,6 +30,7 @@ public interface IAppDbContext
     DbSet<PasswordResetToken> PasswordResetTokens { get; }
     DbSet<DisplaySession> DisplaySessions { get; }
     DbSet<DealerAccess> DealerAccesses { get; }
+    DbSet<DealerRequest> DealerRequests { get; }
     DbSet<TournamentActivity> TournamentActivities { get; }
 
     DatabaseFacade Database { get; }

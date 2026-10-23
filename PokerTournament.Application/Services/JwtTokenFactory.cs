@@ -8,7 +8,7 @@ using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Application.Services;
 
-/// <summary>Emite os JWTs: de usuário (por sessão de aparelho) e de dealer por QR.</summary>
+/// <summary>Emite os JWTs: de usuário (por sessão de aparelho) e de dealer (pedido aprovado pelo organizador).</summary>
 public class JwtTokenFactory
 {
     private readonly IConfiguration _configuration;
@@ -39,19 +39,23 @@ public class JwtTokenFactory
         return Write(claims, DateTime.UtcNow.AddMinutes(AccessTokenMinutes));
     }
 
-    // Token do dealer: sub = id do acesso (nunca um usuário), papel Dealer (nunca
-    // Admin, que passa direto no filtro de tenant) e o torneio no claim "tid".
-    public string CreateDealerToken(DealerAccess access)
+    // Token do dealer: sub = id do PEDIDO aprovado (nunca um usuário nem o QR em si),
+    // claim "name" com o nome informado, papel Dealer (nunca Admin, que passa direto no
+    // filtro de tenant) e o torneio em "tournament_id". Vence junto com o pedido.
+    public string CreateDealerToken(DealerRequest request)
     {
+        var expiresAt = request.ExpiresAt
+            ?? throw new InvalidOperationException("Pedido de dealer sem prazo: só pedidos aprovados geram token.");
         var claims = new[]
         {
-            new Claim(JwtRegisteredClaimNames.Sub, access.Id.ToString()),
+            new Claim(JwtRegisteredClaimNames.Sub, request.Id.ToString()),
+            new Claim(JwtRegisteredClaimNames.Name, request.Name),
             new Claim(ClaimTypes.Role, "Dealer"),
             new Claim(TokenKinds.ClaimType, TokenKinds.Dealer),
-            new Claim(TokenKinds.TournamentClaim, access.TournamentId.ToString()),
+            new Claim(TokenKinds.TournamentClaim, request.TournamentId.ToString()),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
-        return Write(claims, access.ExpiresAt.UtcDateTime);
+        return Write(claims, expiresAt.UtcDateTime);
     }
 
     private string Write(IEnumerable<Claim> claims, DateTime expiresUtc)

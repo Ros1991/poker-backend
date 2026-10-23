@@ -78,7 +78,8 @@ public class TournamentHistoryService
                      && (entryId == null ? !a.PlayerOnly : a.EntryId == entryId))
             .ToListAsync(ct);
 
-        // 5/6) quem fez: acessos de dealer deste torneio e usuários citados
+        // 5/6) quem fez: pedidos de dealer deste torneio (com nome), acessos antigos de dealer
+        // (antes da autorização pelo organizador: só "Dealer") e usuários citados
         var actorIds = transactions.SelectMany(t => new[] { t.CreatedBy, t.ReversedBy })
             .Concat(eliminations.SelectMany(e => new[] { e.CreatedBy, e.CorrectedBy }))
             .Concat(activities.Select(a => a.CreatedBy))
@@ -86,6 +87,15 @@ public class TournamentHistoryService
             .Select(id => id!.Value)
             .Distinct()
             .ToList();
+
+        var dealerNames = actorIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : (await _db.DealerRequests
+                .AsNoTracking()
+                .Where(r => r.TournamentId == tournamentId && actorIds.Contains(r.Id))
+                .Select(r => new { r.Id, r.Name })
+                .ToListAsync(ct))
+                .ToDictionary(r => r.Id, r => r.Name);
 
         var dealerIds = actorIds.Count == 0
             ? new HashSet<Guid>()
@@ -107,6 +117,7 @@ public class TournamentHistoryService
         string? ResolveActor(Guid? id)
         {
             if (!id.HasValue) return null;
+            if (dealerNames.TryGetValue(id.Value, out var dealerName)) return $"Dealer · {dealerName}";
             if (dealerIds.Contains(id.Value)) return "Dealer";
             return userNames.TryGetValue(id.Value, out var name) ? name : null;
         }

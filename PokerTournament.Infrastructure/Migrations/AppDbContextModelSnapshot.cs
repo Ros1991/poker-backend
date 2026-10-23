@@ -462,23 +462,17 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
-                    b.Property<int>("ExchangeCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("exchange_count");
-
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
 
-                    b.Property<DateTimeOffset?>("LastExchangeAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_exchange_at");
-
                     b.Property<DateTimeOffset?>("RevokedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("revoked_at");
+
+                    b.Property<DateTimeOffset?>("SupersededAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at");
 
                     b.Property<Guid>("TournamentId")
                         .HasColumnType("uuid")
@@ -504,6 +498,96 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDatabaseName("ix_dealer_accesses_tournament_id");
 
                     b.ToTable("dealer_accesses", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.DealerRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DealerAccessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("dealer_access_id");
+
+                    b.Property<DateTimeOffset?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<Guid?>("DecidedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by");
+
+                    b.Property<string>("DeviceKeyHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("device_key_hash");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("name");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TournamentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tournament_id");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DealerAccessId");
+
+                    b.HasIndex("DeviceKeyHash")
+                        .HasDatabaseName("ix_dealer_requests_device_key_hash");
+
+                    b.HasIndex("TournamentId", "DeviceKeyHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_dealer_requests_pending_device")
+                        .HasFilter("status = 'Pending'");
+
+                    b.HasIndex("TournamentId", "Status")
+                        .HasDatabaseName("ix_dealer_requests_tournament_id_status");
+
+                    b.ToTable("dealer_requests", "public");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.DisplaySession", b =>
@@ -2275,6 +2359,21 @@ namespace PokerTournament.Infrastructure.Migrations
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.DealerAccess", b =>
                 {
+                    b.HasOne("PokerTournament.Domain.Entities.Tournament", null)
+                        .WithMany()
+                        .HasForeignKey("TournamentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.DealerRequest", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.DealerAccess", null)
+                        .WithMany()
+                        .HasForeignKey("DealerAccessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("PokerTournament.Domain.Entities.Tournament", null)
                         .WithMany()
                         .HasForeignKey("TournamentId")

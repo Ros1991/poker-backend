@@ -103,9 +103,8 @@ public class DealerAccessConfiguration : IEntityTypeConfiguration<DealerAccess>
         builder.Property(a => a.Code).HasColumnName("code").IsRequired().HasMaxLength(32);
         builder.Property(a => a.ExpiresAt).HasColumnName("expires_at");
         builder.Property(a => a.RevokedAt).HasColumnName("revoked_at");
+        builder.Property(a => a.SupersededAt).HasColumnName("superseded_at");
         builder.Property(a => a.CreatedBy).HasColumnName("created_by");
-        builder.Property(a => a.LastExchangeAt).HasColumnName("last_exchange_at");
-        builder.Property(a => a.ExchangeCount).HasColumnName("exchange_count").HasDefaultValue(0);
 
         builder.HasOne<Tournament>()
             .WithMany()
@@ -114,5 +113,55 @@ public class DealerAccessConfiguration : IEntityTypeConfiguration<DealerAccess>
 
         builder.HasIndex(a => a.Code).IsUnique().HasDatabaseName("ix_dealer_accesses_code");
         builder.HasIndex(a => a.TournamentId).HasDatabaseName("ix_dealer_accesses_tournament_id");
+    }
+}
+
+public class DealerRequestConfiguration : IEntityTypeConfiguration<DealerRequest>
+{
+    public void Configure(EntityTypeBuilder<DealerRequest> builder)
+    {
+        builder.ToTable("dealer_requests");
+
+        builder.HasKey(r => r.Id);
+        builder.Property(r => r.Id).HasColumnName("id");
+        builder.Property(r => r.CreatedAt).HasColumnName("created_at");
+        builder.Property(r => r.UpdatedAt).HasColumnName("updated_at");
+        builder.Property(r => r.xmin).IsRowVersion();
+
+        builder.Property(r => r.TournamentId).HasColumnName("tournament_id");
+        builder.Property(r => r.DealerAccessId).HasColumnName("dealer_access_id");
+        builder.Property(r => r.Name).HasColumnName("name").IsRequired().HasMaxLength(40);
+        builder.Property(r => r.DeviceKeyHash)
+            .HasColumnName("device_key_hash")
+            .IsRequired()
+            .HasMaxLength(64);
+        builder.Property(r => r.Status).HasColumnName("status").IsRequired().HasMaxLength(20);
+        builder.Property(r => r.RequestedAt).HasColumnName("requested_at");
+        builder.Property(r => r.DecidedAt).HasColumnName("decided_at");
+        builder.Property(r => r.DecidedBy).HasColumnName("decided_by");
+        builder.Property(r => r.ExpiresAt).HasColumnName("expires_at");
+        builder.Property(r => r.LastSeenAt).HasColumnName("last_seen_at");
+        builder.Property(r => r.UserAgent).HasColumnName("user_agent").HasMaxLength(300);
+
+        builder.HasOne<Tournament>()
+            .WithMany()
+            .HasForeignKey(r => r.TournamentId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<DealerAccess>()
+            .WithMany()
+            .HasForeignKey(r => r.DealerAccessId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Lista do organizador e limite de pendentes por torneio
+        builder.HasIndex(r => new { r.TournamentId, r.Status })
+            .HasDatabaseName("ix_dealer_requests_tournament_id_status");
+        // Reaproveitar o pedido aprovado do mesmo aparelho ao reabrir o terminal
+        builder.HasIndex(r => r.DeviceKeyHash).HasDatabaseName("ix_dealer_requests_device_key_hash");
+        // Um pedido pendente por aparelho e torneio: dois envios simultâneos do mesmo
+        // aparelho não viram dois pedidos (o serviço captura a violação e devolve o existente)
+        builder.HasIndex(r => new { r.TournamentId, r.DeviceKeyHash })
+            .IsUnique()
+            .HasFilter("status = 'Pending'")
+            .HasDatabaseName("ux_dealer_requests_pending_device");
     }
 }

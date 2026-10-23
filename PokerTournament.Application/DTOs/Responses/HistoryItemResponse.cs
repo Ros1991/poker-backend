@@ -15,7 +15,7 @@ public class HistoryItemResponse
     public string Description { get; set; } = string.Empty;
     public decimal? Amount { get; set; }
     public DateTimeOffset At { get; set; }
-    public string? By { get; set; }                  // "Dealer" ou o nome do usuário
+    public string? By { get; set; }                  // "Dealer · Nome", "Dealer" (acesso antigo) ou o nome do usuário
     public bool Undone { get; set; }
     public DateTimeOffset? UndoneAt { get; set; }
     public string? UndoneBy { get; set; }

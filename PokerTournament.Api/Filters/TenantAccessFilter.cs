@@ -98,14 +98,19 @@ public class TenantAccessFilter : IAsyncActionFilter
         }
 
         // Resolver o HomeGameId a partir do torneio, se necessário.
+        // IgnoreQueryFilters: torneio excluído (soft delete) também tem dono. Com o filtro
+        // normal ele "não existia" aqui, o pedido seguia sem checagem e qualquer usuário
+        // logado agia sobre ele (ex.: listar/recusar pedidos de dealer, revogar o QR).
+        // Agora quem não é dono/membro leva 403; o dono segue e o serviço responde 404.
         if (homeGameId is null && tournamentId is not null)
         {
             homeGameId = await db.Tournaments
+                .IgnoreQueryFilters()
                 .Where(t => t.Id == tournamentId.Value)
                 .Select(t => (Guid?)t.HomeGameId)
                 .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
 
-            // Torneio inexistente: deixa o controller responder 404.
+            // Torneio que nunca existiu: deixa o controller responder 404.
             if (homeGameId is null)
             {
                 await next();
@@ -113,8 +118,11 @@ public class TenantAccessFilter : IAsyncActionFilter
             }
         }
 
+        // Mesmo motivo: home game excluído continua com dono/membros para esta checagem
+        var resolvedHomeGameId = homeGameId!.Value;
         var homeGame = await db.HomeGames
-            .FirstOrDefaultAsync(h => h.Id == homeGameId!.Value, context.HttpContext.RequestAborted);
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(h => h.Id == resolvedHomeGameId, context.HttpContext.RequestAborted);
         if (homeGame is null)
         {
             await next();
@@ -123,7 +131,7 @@ public class TenantAccessFilter : IAsyncActionFilter
 
         var isOwner = homeGame.OwnerId == userId;
         var isMember = await db.HomeGameMembers
-            .AnyAsync(m => m.HomeGameId == homeGameId.Value && m.UserId == userId,
+            .AnyAsync(m => m.HomeGameId == resolvedHomeGameId && m.UserId == userId,
                 context.HttpContext.RequestAborted);
 
         if (isOwner || isMember)

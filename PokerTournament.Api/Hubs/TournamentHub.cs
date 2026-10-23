@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
@@ -14,13 +13,18 @@ public class TournamentHub : Hub
 {
     private readonly ILogger<TournamentHub> _logger;
     private readonly DealerAccessService _dealerAccess;
+    private readonly DealerConnectionRegistry _dealerConnections;
 
-    public TournamentHub(ILogger<TournamentHub> logger, DealerAccessService dealerAccess)
+    public TournamentHub(
+        ILogger<TournamentHub> logger, DealerAccessService dealerAccess, DealerConnectionRegistry dealerConnections)
     {
         _logger = logger;
         _dealerAccess = dealerAccess;
+        _dealerConnections = dealerConnections;
     }
 
+    // Acesso do dealer (pedido revogado, QR desativado, prazo vencido, torneio terminado) é
+    // revalidado em TODA chamada pelo DealerHubFilter, antes de chegar aqui
     public async Task JoinTournament(Guid tournamentId)
     {
         var kind = Context.User?.FindFirst(TokenKinds.ClaimType)?.Value;
@@ -28,17 +32,6 @@ public class TournamentHub : Hub
             && !string.Equals(Context.User?.FindFirst(TokenKinds.TournamentClaim)?.Value,
                 tournamentId.ToString(), StringComparison.OrdinalIgnoreCase))
             throw new HubException("Sem acesso a este torneio.");
-
-        // A conexão sobrevive à revogação (o token só é conferido ao conectar): quem
-        // reentra no grupo depois de um QR novo/revogado é barrado aqui
-        if (kind == TokenKinds.Dealer)
-        {
-            var sub = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                ?? Context.User?.FindFirst("sub")?.Value;
-            if (!Guid.TryParse(sub, out var accessId)
-                || !await _dealerAccess.IsActiveAsync(accessId, Context.ConnectionAborted))
-                throw new HubException("Acesso de dealer revogado ou expirado.");
-        }
 
         var groupName = $"tournament_{tournamentId}";
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
@@ -55,11 +48,28 @@ public class TournamentHub : Hub
     public override async Task OnConnectedAsync()
     {
         _logger.LogInformation("Cliente conectado: {ConnectionId}", Context.ConnectionId);
+
+        // Dealer por QR: registra a conexão (sub = id do pedido aprovado) para que desconectar
+        // o dealer ou desativar o QR a derrube. Registra ANTES de conferir: uma revogação
+        // concorrente ou acha a conexão no registro, ou já marcou o pedido inativo no cache
+        // e a conferência abaixo derruba (revogado entre o negotiate e a conexão).
+        if (DealerConnectionRegistry.TryGetDealer(Context.User, out var requestId, out var tournamentId))
+        {
+            _dealerConnections.Add(Context, requestId, tournamentId);
+            if (requestId == Guid.Empty || tournamentId == Guid.Empty
+                || !await _dealerAccess.IsActiveAsync(requestId, Context.ConnectionAborted))
+            {
+                await _dealerConnections.DisconnectAsync(Context, requestId, tournamentId);
+                return;
+            }
+        }
+
         await base.OnConnectedAsync();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        _dealerConnections.Remove(Context.ConnectionId);
         _logger.LogInformation("Cliente desconectado: {ConnectionId}", Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
     }
