@@ -102,6 +102,66 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.ToTable("audit_logs", "public");
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.AuthSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<string>("RefreshTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("refresh_token_hash");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RefreshTokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_auth_sessions_refresh_token_hash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_auth_sessions_user_id");
+
+                    b.ToTable("auth_sessions", "public");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.BlindLevel", b =>
                 {
                     b.Property<Guid>("Id")
@@ -379,6 +439,163 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasFilter("is_cash_box = true");
 
                     b.ToTable("cost_extras", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.DealerAccess", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<int>("ExchangeCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("exchange_count");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset?>("LastExchangeAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_exchange_at");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<Guid>("TournamentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tournament_id");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique()
+                        .HasDatabaseName("ix_dealer_accesses_code");
+
+                    b.HasIndex("TournamentId")
+                        .HasDatabaseName("ix_dealer_accesses_tournament_id");
+
+                    b.ToTable("dealer_accesses", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.DisplaySession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("CodeExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("code_expires_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DeviceTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("device_token_hash");
+
+                    b.Property<DateTimeOffset>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<DateTimeOffset?>("PairedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paired_at");
+
+                    b.Property<Guid?>("PairedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("paired_by_user_id");
+
+                    b.Property<string>("PairingCode")
+                        .HasMaxLength(6)
+                        .HasColumnType("character varying(6)")
+                        .HasColumnName("pairing_code");
+
+                    b.Property<DateTimeOffset?>("PreviousCodeExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("previous_code_expires_at");
+
+                    b.Property<string>("PreviousPairingCode")
+                        .HasMaxLength(6)
+                        .HasColumnType("character varying(6)")
+                        .HasColumnName("previous_pairing_code");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("TournamentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tournament_id");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceTokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_display_sessions_device_token_hash");
+
+                    b.HasIndex("PairingCode")
+                        .IsUnique()
+                        .HasDatabaseName("ix_display_sessions_pairing_code")
+                        .HasFilter("pairing_code IS NOT NULL");
+
+                    b.HasIndex("PreviousPairingCode")
+                        .HasDatabaseName("ix_display_sessions_previous_pairing_code")
+                        .HasFilter("previous_pairing_code IS NOT NULL");
+
+                    b.HasIndex("TournamentId");
+
+                    b.ToTable("display_sessions", "public");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.Elimination", b =>
@@ -1297,6 +1514,68 @@ namespace PokerTournament.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentActivity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<Guid?>("EntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entry_id");
+
+                    b.Property<bool>("PlayerOnly")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("player_only");
+
+                    b.Property<Guid>("TournamentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tournament_id");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("type");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EntryId")
+                        .HasDatabaseName("ix_tournament_activities_entry_id");
+
+                    b.HasIndex("TournamentId", "CreatedAt")
+                        .HasDatabaseName("ix_tournament_activities_tournament_created");
+
+                    b.ToTable("tournament_activities", "public");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentBlindLevel", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1886,6 +2165,17 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.ToTable("users", "public");
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.AuthSession", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.BlindLevel", b =>
                 {
                     b.HasOne("PokerTournament.Domain.Entities.BlindStructure", "BlindStructure")
@@ -1916,6 +2206,23 @@ namespace PokerTournament.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Tournament");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.DealerAccess", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.Tournament", null)
+                        .WithMany()
+                        .HasForeignKey("TournamentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.DisplaySession", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.Tournament", null)
+                        .WithMany()
+                        .HasForeignKey("TournamentId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.Elimination", b =>
@@ -2101,6 +2408,15 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Navigation("HomeGame");
 
                     b.Navigation("Ranking");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentActivity", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.Tournament", null)
+                        .WithMany()
+                        .HasForeignKey("TournamentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentBlindLevel", b =>

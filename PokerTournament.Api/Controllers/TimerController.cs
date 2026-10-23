@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using PokerTournament.Api.Authorization;
+using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -22,6 +24,7 @@ public class TimerController : ControllerBase
         _hubContext = hubContext;
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpGet]
     public async Task<ActionResult<TimerStateResponse>> GetState(
         Guid tournamentId, CancellationToken ct)
@@ -40,6 +43,7 @@ public class TimerController : ControllerBase
         return Ok(state);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("pause")]
     
     public async Task<ActionResult> Pause(Guid tournamentId, CancellationToken ct)
@@ -50,6 +54,7 @@ public class TimerController : ControllerBase
         return Ok(state);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("resume")]
     
     public async Task<ActionResult> Resume(Guid tournamentId, CancellationToken ct)
@@ -60,6 +65,7 @@ public class TimerController : ControllerBase
         return Ok(state);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("next")]
     
     public async Task<ActionResult<TimerStateResponse>> NextLevel(Guid tournamentId, CancellationToken ct)
@@ -72,6 +78,7 @@ public class TimerController : ControllerBase
         return Ok(state);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("previous")]
     
     public async Task<ActionResult<TimerStateResponse>> PreviousLevel(Guid tournamentId, CancellationToken ct)

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.Interfaces;
 
 namespace PokerTournament.Api.Filters;
@@ -37,6 +38,24 @@ public class TenantAccessFilter : IAsyncActionFilter
         // Endpoints anônimos / não autenticados: deixa o pipeline de auth decidir.
         if (user.Identity?.IsAuthenticated != true)
         {
+            await next();
+            return;
+        }
+
+        // Token de escopo restrito (dealer por QR): a política de autorização já conferiu
+        // endpoint e torneio. Aqui só garante que nenhum id de tenant da rota foge do token
+        // — e esse token nunca passa pela regra de dono/membro nem pela de Admin.
+        if (!string.IsNullOrEmpty(user.FindFirst(TokenKinds.ClaimType)?.Value))
+        {
+            var tokenTournament = user.FindFirst(TokenKinds.TournamentClaim)?.Value;
+            var scopedRoute = context.RouteData.Values;
+            var foreignTournament = scopedRoute.TryGetValue("tournamentId", out var routeTournament)
+                && !string.Equals(routeTournament?.ToString(), tokenTournament, StringComparison.OrdinalIgnoreCase);
+            if (scopedRoute.ContainsKey("homeGameId") || foreignTournament)
+            {
+                context.Result = Forbidden();
+                return;
+            }
             await next();
             return;
         }

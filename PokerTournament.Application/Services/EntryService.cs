@@ -41,6 +41,51 @@ public class EntryService
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
+        await RemoveEntryAndAdjustTotalsAsync(tournamentId, entry, ct);
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Apaga a inscrição e as transações dela e atualiza os contadores do torneio (inscrições,
+    /// jogadores, bolo, rebuys, add-ons) e os custos automáticos. Pagamentos/abatimentos ainda
+    /// valendo que creditaram um custo têm o crédito desfeito (mesma regra do estorno), senão o
+    /// custo ficaria pago sem transação que o sustente. Antes, solta as referências que travariam
+    /// o delete: apaga as eliminações CORRIGIDAS do jogador (FK Restrict) e anula quem apontava ele
+    /// como eliminador. Exige entry.Transactions carregado. Não salva — quem chama faz o SaveChanges.
+    /// </summary>
+    private async Task RemoveEntryAndAdjustTotalsAsync(
+        Guid tournamentId, TournamentEntry entry, CancellationToken ct)
+    {
+        var creditedTransactions = entry.Transactions
+            .Where(t => t.ReversedAt == null
+                     && t.PixDestinationId.HasValue
+                     && (t.Type == nameof(TransactionType.Payment) || t.Type == nameof(TransactionType.Settlement)))
+            .ToList();
+        foreach (var t in creditedTransactions)
+        {
+            var cost = await _db.CostExtras
+                .FirstOrDefaultAsync(c => c.Id == t.PixDestinationId && c.TournamentId == tournamentId, ct);
+            PaymentService.ReverseCostCredit(t, cost);
+        }
+
+        var correctedEliminations = await _db.Eliminations
+            .Where(e => e.EntryId == entry.Id && e.Corrected)
+            .ToListAsync(ct);
+        _db.Eliminations.RemoveRange(correctedEliminations);
+
+        var eliminatedByHim = await _db.Eliminations
+            .Where(e => e.EliminatedByEntryId == entry.Id && e.EntryId != entry.Id)
+            .ToListAsync(ct);
+        foreach (var e in eliminatedByHim)
+            e.EliminatedByEntryId = null;
+
+        var entriesEliminatedByHim = await _db.TournamentEntries
+            .Where(e => e.EliminatedById == entry.Id && e.Id != entry.Id)
+            .ToListAsync(ct);
+        foreach (var e in entriesEliminatedByHim)
+            e.EliminatedById = null;
+
         // Remover transações relacionadas
         if (entry.Transactions != null && entry.Transactions.Any())
             _db.Transactions.RemoveRange(entry.Transactions);
@@ -55,6 +100,9 @@ public class EntryService
             if (entry.Status == nameof(EntryStatus.Active) || entry.Status == nameof(EntryStatus.Registered))
                 tournament.PlayersRemaining = Math.Max(0, tournament.PlayersRemaining - 1);
             tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - entry.TotalDue);
+            tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - entry.RebuyCount);
+            if (entry.AddonPurchased)
+                tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
 
             // Feature staff/ranking: decrementa os custos automáticos por entrada
             await BumpAutoCostAsync(tournamentId, "Staff", -(tournament.StaffAmount ?? 0m), ct);
@@ -62,9 +110,325 @@ public class EntryService
                 tournament.RankingContribMode == "PerPlayer" ? -(tournament.RankingContribValue ?? 0m) : 0m, ct);
             await RecalcAutoCostsAndTotals(tournament, ct);
         }
+    }
+
+    /// <summary>Mensagem única quando a inscrição ainda tem algo valendo (histórico e desfazer).</summary>
+    public const string UndoRegistrationBlockedMessage =
+        "Desfaça antes os rebuys, add-ons, pagamentos e a eliminação deste jogador.";
+
+    public const string UndoFinishedTournamentMessage =
+        "O torneio já terminou. Não dá para desfazer pelo terminal.";
+
+    public const string UndoPrizePaidMessage =
+        "Já há prêmio pago neste torneio. Desfaça pelo painel.";
+
+    /// <summary>
+    /// Desfazer rebuy/add-on/inscrição pelo histórico mexe no bolo: com o torneio encerrado ou
+    /// prêmio já pago, o bolo cairia abaixo do que foi distribuído. Null = pode desfazer.
+    /// (Pagamento/abatimento não mexem no bolo e continuam desfazíveis.)
+    /// </summary>
+    public static string? MoneyUndoBlockedReason(string tournamentStatus, bool anyPrizePaid) =>
+        tournamentStatus == nameof(TournamentStatus.Finished) || tournamentStatus == nameof(TournamentStatus.Cancelled)
+            ? UndoFinishedTournamentMessage
+            : anyPrizePaid ? UndoPrizePaidMessage : null;
+
+    /// <summary>Lança DomainException quando o histórico não pode desfazer rebuy/add-on/inscrição (ver MoneyUndoBlockedReason).</summary>
+    public async Task EnsureMoneyUndoAllowedAsync(Guid tournamentId, CancellationToken ct = default)
+    {
+        var status = await _db.Tournaments
+            .Where(t => t.Id == tournamentId)
+            .Select(t => t.Status)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        var paidPrizeEntryIds = await PaidPrizeEntryIdsAsync(tournamentId, ct);
+        var anyPrizePaid = paidPrizeEntryIds.Count > 0
+            || await _db.TournamentPrizes.AnyAsync(p => p.TournamentId == tournamentId && p.Paid, ct)
+            || await _db.TournamentEntries.AnyAsync(e => e.TournamentId == tournamentId
+                                                      && (e.PrizePaid || e.Status == nameof(EntryStatus.PaidOut)), ct);
+
+        var reason = MoneyUndoBlockedReason(status, anyPrizePaid);
+        if (reason is not null)
+            throw new DomainException(reason);
+    }
+
+    /// <summary>Inscrições ligadas a um prêmio já pago (TournamentPrize.Paid).</summary>
+    public async Task<HashSet<Guid>> PaidPrizeEntryIdsAsync(Guid tournamentId, CancellationToken ct = default) =>
+        (await _db.TournamentPrizes
+            .Where(p => p.TournamentId == tournamentId && p.Paid && p.EntryId != null)
+            .Select(p => p.EntryId!.Value)
+            .ToListAsync(ct)).ToHashSet();
+
+    /// <summary>Prêmio do jogador já pago: por qualquer das marcas que o pagamento grava.</summary>
+    public static bool IsPrizePaid(TournamentEntry entry, ISet<Guid> paidPrizeEntryIds) =>
+        entry.PrizePaid
+        || entry.Status == nameof(EntryStatus.PaidOut)
+        || paidPrizeEntryIds.Contains(entry.Id);
+
+    public static string UndoEliminationPrizePaidMessage(TournamentEntry paidEntry) =>
+        $"O prêmio de {PlayerDisplayName(paidEntry.Person)} já foi pago. Desfaça o pagamento do prêmio no painel antes.";
+
+    /// <summary>
+    /// Desfazer a eliminação de <paramref name="target"/> muda a posição dele e de todos que
+    /// ficaram à frente (o campeão — EliminatedAt nulo — e quem saiu depois dele). Se algum
+    /// desses (ou ele mesmo) já recebeu o prêmio, devolve essa inscrição: o desfazer fica bloqueado.
+    /// Quem saiu antes dele mantém a posição. Exige Person carregado para a mensagem.
+    /// </summary>
+    public static TournamentEntry? FindPaidPrizeBlockingUndoElimination(
+        TournamentEntry target, IEnumerable<TournamentEntry> entries, ISet<Guid> paidPrizeEntryIds)
+    {
+        if (IsPrizePaid(target, paidPrizeEntryIds))
+            return target;
+
+        return entries
+            .Where(e => e.Id != target.Id
+                     && (e.Status == nameof(EntryStatus.Eliminated)
+                         || e.Status == nameof(EntryStatus.Awarded)
+                         || e.Status == nameof(EntryStatus.PaidOut))
+                     && (e.EliminatedAt == null
+                         || (target.EliminatedAt.HasValue && e.EliminatedAt > target.EliminatedAt)
+                         || (target.FinalPosition.HasValue && e.FinalPosition.HasValue
+                             && e.FinalPosition < target.FinalPosition)))
+            .OrderBy(e => e.FinalPosition ?? int.MaxValue)
+            .FirstOrDefault(e => IsPrizePaid(e, paidPrizeEntryIds));
+    }
+
+    /// <summary>
+    /// Serializa, por torneio, as operações que mexem em lugares (mover, quebrar, sortear,
+    /// criar mesa, adicionar com assento, inscrição em lote, desfazer eliminação): sem isso,
+    /// duas requisições leem o mesmo lugar livre e as duas sentam alguém nele (linhas diferentes,
+    /// o xmin não pega). pg_advisory_xact_lock com chave tirada do id do torneio; tem que rodar
+    /// DENTRO da transação explícita (solta no commit/rollback) e quem chama lê a ocupação DEPOIS.
+    /// </summary>
+    public static async Task LockSeatingAsync(IAppDbContext db, Guid tournamentId, CancellationToken ct)
+    {
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("A trava de lugares exige uma transação aberta.");
+
+        // Chave bigint determinística: os 8 primeiros bytes do Guid do torneio
+        var key = BitConverter.ToInt64(tournamentId.ToByteArray(), 0);
+        await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({key})", ct);
+    }
+
+    /// <summary>
+    /// Desfaz uma inscrição feita por engano (histórico do terminal). Só quando o jogador
+    /// está ativo e não tem rebuy, add-on, pagamento/abatimento ou eliminação valendo.
+    /// Remove a inscrição como o DeleteEntryAsync e registra a atividade PlayerRemoved.
+    /// </summary>
+    public async Task UndoRegistrationAsync(
+        Guid tournamentId, Guid entryId, Guid? undoneBy = null, CancellationToken ct = default)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        var entry = await _db.TournamentEntries
+            .Include(e => e.Transactions)
+            .Include(e => e.Person)
+            .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
+            ?? throw new DomainException("Inscrição não encontrada.");
+
+        var hasLiveMoney = entry.Transactions.Any(t => t.ReversedAt == null
+            && (t.Type == nameof(TransactionType.Rebuy)
+                || t.Type == nameof(TransactionType.Addon)
+                || t.Type == nameof(TransactionType.Payment)
+                || t.Type == nameof(TransactionType.Settlement)));
+        var hasLiveElimination = await _db.Eliminations
+            .AnyAsync(e => e.EntryId == entryId && !e.Corrected, ct);
+
+        if ((entry.Status != nameof(EntryStatus.Active) && entry.Status != nameof(EntryStatus.Registered))
+            || hasLiveMoney || hasLiveElimination
+            || entry.RebuyCount > 0 || entry.AddonPurchased)
+            throw new DomainException(UndoRegistrationBlockedMessage);
+
+        var playerName = PlayerDisplayName(entry.Person);
+
+        await RemoveEntryAndAdjustTotalsAsync(tournamentId, entry, ct);
+
+        _db.TournamentActivities.Add(new TournamentActivity
+        {
+            TournamentId = tournamentId,
+            EntryId = entryId, // sem FK: a inscrição some, o registro fica
+            Type = nameof(TournamentActivityType.PlayerRemoved),
+            Description = $"Inscrição desfeita: {playerName}",
+            CreatedBy = undoneBy
+        });
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
     }
+
+    /// <summary>Jogadores do home game do torneio que ainda não estão nele (só id, nome, apelido e foto).</summary>
+    public async Task<List<AvailablePlayerResponse>> GetAvailablePlayersAsync(
+        Guid tournamentId, CancellationToken ct = default)
+    {
+        var homeGameId = await _db.Tournaments
+            .Where(t => t.Id == tournamentId)
+            .Select(t => (Guid?)t.HomeGameId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        var players = await _db.Persons
+            .Where(p => p.HomeGameId == homeGameId
+                     && p.IsActive
+                     && p.Type == "Jogador"
+                     && !p.TournamentEntries.Any(e => e.TournamentId == tournamentId))
+            .Select(p => new AvailablePlayerResponse
+            {
+                Id = p.Id,
+                FullName = p.FullName,
+                Nickname = p.Nickname,
+                PhotoUrl = p.PhotoUrl
+            })
+            .ToListAsync(ct);
+
+        return players
+            .OrderBy(p => string.IsNullOrWhiteSpace(p.Nickname) ? p.FullName : p.Nickname,
+                StringComparer.InvariantCultureIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Adicionar jogador pelo terminal: jogador do home game (PersonId) ou cadastro rápido
+    /// (nome e apelido). Inscreve com as regras de sempre (RegisterEntryAsync) e, se já houver
+    /// mesas, senta sozinho na mesa com menos jogadores ativos (empate → menor número) num
+    /// lugar livre aleatório. Tudo numa transação.
+    /// </summary>
+    public async Task<QuickAddEntryResponse> QuickAddAsync(
+        Guid tournamentId, QuickAddEntryRequest request, Guid? registeredBy = null, CancellationToken ct = default)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        // Senta sozinho: serializa com move/quebra/sorteio antes de ler a ocupação
+        await LockSeatingAsync(_db, tournamentId, ct);
+
+        var tournament = await _db.Tournaments
+            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        Guid personId;
+        if (request.PersonId.HasValue)
+        {
+            personId = request.PersonId.Value;
+        }
+        else
+        {
+            var fullName = NormalizeSpaces(request.FullName);
+            if (fullName.Length < 2 || fullName.Length > 120)
+                throw new DomainException("Informe o nome do jogador (de 2 a 120 caracteres).");
+
+            var nickname = NormalizeSpaces(request.Nickname);
+            if (nickname.Length > 100)
+                throw new DomainException("O apelido pode ter no máximo 100 caracteres.");
+
+            // Mesmo nome (ignorando maiúsculas e espaços) já cadastrado no home game → usar a lista
+            var existingNames = await _db.Persons
+                .Where(p => p.HomeGameId == tournament.HomeGameId)
+                .Select(p => p.FullName)
+                .ToListAsync(ct);
+            var key = NameKey(fullName);
+            if (existingNames.Any(n => NameKey(n) == key))
+                throw new DomainException("Já existe um jogador com esse nome. Procure na lista.");
+
+            var person = new Person
+            {
+                HomeGameId = tournament.HomeGameId,
+                Type = "Jogador",
+                FullName = fullName,
+                Nickname = nickname.Length == 0 ? null : nickname
+            };
+            _db.Persons.Add(person);
+            await _db.SaveChangesAsync(ct); // garante o Id real da pessoa
+            personId = person.Id;
+        }
+
+        var created = await RegisterEntryAsync(
+            tournamentId, new CreateEntryRequest { PersonId = personId, BuyInPaid = request.BuyInPaid },
+            registeredBy, ct);
+
+        var entry = await _db.TournamentEntries
+            .Include(e => e.Person)
+            .FirstAsync(e => e.Id == created.Id, ct);
+
+        TournamentTable? seatedAt = null;
+        var tables = await _db.TournamentTables
+            .Where(t => t.TournamentId == tournamentId && t.IsActive)
+            .OrderBy(t => t.TableNumber)
+            .ToListAsync(ct);
+
+        if (tables.Count > 0)
+        {
+            var tableIds = tables.Select(t => t.Id).ToList();
+            var seated = await _db.TournamentEntries
+                .Where(e => e.TournamentId == tournamentId
+                         && e.Id != entry.Id
+                         && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered))
+                         && e.TableId != null
+                         && tableIds.Contains(e.TableId.Value))
+                .Select(e => new { TableId = e.TableId!.Value, e.SeatNumber })
+                .ToListAsync(ct);
+
+            var candidates = tables
+                .Select(t =>
+                {
+                    var taken = seated.Where(s => s.TableId == t.Id && s.SeatNumber != null)
+                        .Select(s => s.SeatNumber!.Value).ToHashSet();
+                    var free = Enumerable.Range(1, t.MaxSeats).Where(s => !taken.Contains(s)).ToList();
+                    return new { Table = t, Count = seated.Count(s => s.TableId == t.Id), Free = free };
+                })
+                // Lotação também conta: lugar "livre" numa mesa já com MaxSeats jogadores não serve
+                .Where(c => c.Free.Count > 0 && c.Count < c.Table.MaxSeats)
+                .OrderBy(c => c.Count)
+                .ThenBy(c => c.Table.TableNumber)
+                .FirstOrDefault();
+
+            if (candidates is not null)
+            {
+                seatedAt = candidates.Table;
+                entry.TableId = seatedAt.Id;
+                entry.SeatNumber = candidates.Free[Random.Shared.Next(candidates.Free.Count)];
+
+                _db.TournamentActivities.Add(new TournamentActivity
+                {
+                    TournamentId = tournamentId,
+                    EntryId = entry.Id,
+                    Type = nameof(TournamentActivityType.PlayerSeated),
+                    Description = $"{PlayerDisplayName(entry.Person)} sentou na {TableDisplayName(seatedAt)}, lugar {entry.SeatNumber}",
+                    CreatedBy = registeredBy
+                });
+
+                await _db.SaveChangesAsync(ct);
+            }
+        }
+
+        await tx.CommitAsync(ct);
+
+        var response = _mapper.Map<EntryResponse>(entry);
+        // O terminal (inclusive o dealer por QR) nunca recebe contato/documento
+        response.Person.Email = null;
+        response.Person.Whatsapp = null;
+        response.Person.Document = null;
+        response.Person.Notes = null;
+
+        return new QuickAddEntryResponse
+        {
+            Entry = response,
+            TableId = seatedAt?.Id,
+            TableName = seatedAt is null ? null : TableDisplayName(seatedAt),
+            SeatNumber = seatedAt is null ? null : entry.SeatNumber
+        };
+    }
+
+    private static string NormalizeSpaces(string? value) =>
+        string.Join(' ', (value ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    private static string NameKey(string value) => NormalizeSpaces(value).ToUpperInvariant();
+
+    /// <summary>Nome exibido no terminal/histórico: apelido, senão o nome completo.</summary>
+    public static string PlayerDisplayName(Person? person) =>
+        person is null
+            ? "Jogador"
+            : string.IsNullOrWhiteSpace(person.Nickname) ? person.FullName : person.Nickname;
+
+    public static string TableDisplayName(TournamentTable table) =>
+        string.IsNullOrWhiteSpace(table.TableName) ? $"Mesa {table.TableNumber}" : table.TableName;
 
     public async Task<EntryResponse> RegisterEntryAsync(
         Guid tournamentId, CreateEntryRequest request, Guid? registeredBy = null, CancellationToken ct = default)
@@ -87,6 +451,9 @@ public class EntryService
         var person = await _db.Persons
             .FirstOrDefaultAsync(p => p.Id == request.PersonId, ct)
             ?? throw new DomainException("Pessoa não encontrada.");
+
+        if (person.HomeGameId != tournament.HomeGameId)
+            throw new DomainException("Jogador não pertence a este home game.");
 
         // Verificar se já tem entry (inclusive eliminados - não permitir re-entry)
         var existing = await _db.TournamentEntries
@@ -169,6 +536,10 @@ public class EntryService
     public async Task<List<EntryResponse>> RegisterEntriesBulkAsync(
         Guid tournamentId, BulkCreateEntriesRequest request, Guid? registeredBy = null, CancellationToken ct = default)
     {
+        // Transação desde o início: o auto-assento lê a ocupação e precisa da trava de lugares
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await LockSeatingAsync(_db, tournamentId, ct);
+
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
@@ -197,6 +568,9 @@ public class EntryService
             .Where(p => personIds.Contains(p.Id))
             .ToListAsync(ct)).ToDictionary(p => p.Id);
 
+        if (personMap.Values.Any(p => p.HomeGameId != tournament.HomeGameId))
+            throw new DomainException("Jogador não pertence a este home game.");
+
         var toCreate = personIds
             .Where(id => !enrolledSet.Contains(id) && personMap.ContainsKey(id))
             .ToList();
@@ -210,8 +584,6 @@ public class EntryService
             ? (tournament.RankingContribValue ?? 0m)
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
-
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
         var createdEntries = new List<TournamentEntry>();
         foreach (var personId in toCreate)
@@ -294,10 +666,10 @@ public class EntryService
 
         var newTableSeats = tournament.SeatsPerTable > 1 ? tournament.SeatsPerTable : 9;
 
-        // Ocupação atual: jogadores ATIVOS já assentados, por mesa.
+        // Ocupação atual: jogadores ainda no torneio já assentados, por mesa.
         var seatedActive = await _db.TournamentEntries
             .Where(e => e.TournamentId == tournament.Id
-                     && e.Status == nameof(EntryStatus.Active)
+                     && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered))
                      && e.TableId != null)
             .ToListAsync(ct);
 
@@ -305,13 +677,17 @@ public class EntryService
             t => t.Id,
             t => seatedActive.Where(e => e.TableId == t.Id).ToList());
 
-        var nextTableNumber = tables.Max(t => t.TableNumber) + 1;
+        // Conta também as mesas quebradas (inativas): o número é único por torneio.
+        var nextTableNumber = await _db.TournamentTables
+            .Where(t => t.TournamentId == tournament.Id)
+            .MaxAsync(t => t.TableNumber, ct) + 1;
 
         foreach (var entry in newEntries)
         {
-            // Mesa com assento livre (respeitando o MaxSeats da própria mesa) e menor lotação.
+            // Mesa com assento livre (lotação abaixo do MaxSeats E um número de lugar livre em
+            // 1..MaxSeats) e menor lotação; empate → menor número.
             var target = tables
-                .Where(t => occupancy[t.Id].Count < t.MaxSeats)
+                .Where(t => occupancy[t.Id].Count < t.MaxSeats && NextSeat(t, occupancy[t.Id]).HasValue)
                 .OrderBy(t => occupancy[t.Id].Count)
                 .FirstOrDefault();
 
@@ -328,6 +704,11 @@ public class EntryService
                 };
                 nextTableNumber++;
                 _db.TournamentTables.Add(target);
+
+                // Passou a haver mais de uma mesa ativa: nenhuma é mais a mesa final
+                foreach (var t in tables)
+                    t.IsFinalTable = false;
+
                 await _db.SaveChangesAsync(ct); // garante o Id real da nova mesa
 
                 tables.Add(target);
@@ -337,21 +718,39 @@ public class EntryService
                 target = tables.OrderBy(t => occupancy[t.Id].Count).First();
             }
 
-            // Assento = próximo livre na mesa (max+1); não mexe nos assentos de quem já está.
+            // Assento = menor lugar livre da mesa; não mexe nos assentos de quem já está.
+            // Sem lugar livre (dados antigos fora do MaxSeats) → fica sem mesa e o dealer o senta.
+            var seat = NextSeat(target, occupancy[target.Id]);
+            if (seat is null)
+                continue;
+
             entry.TableId = target.Id;
-            entry.SeatNumber = NextSeat(occupancy[target.Id]);
+            entry.SeatNumber = seat;
             occupancy[target.Id].Add(entry);
         }
 
         await _db.SaveChangesAsync(ct);
     }
 
-    private static int NextSeat(List<TournamentEntry> seated) =>
-        seated.Count == 0 ? 1 : seated.Max(e => e.SeatNumber ?? 0) + 1;
+    /// <summary>
+    /// Menor lugar livre de 1..MaxSeats da mesa (<paramref name="seated"/> = quem ainda está
+    /// no torneio sentado nela). Null quando não há lugar livre — nunca devolve além do MaxSeats.
+    /// </summary>
+    private static int? NextSeat(TournamentTable table, List<TournamentEntry> seated)
+    {
+        var taken = seated
+            .Where(e => e.SeatNumber.HasValue)
+            .Select(e => e.SeatNumber!.Value)
+            .ToHashSet();
+        for (var seat = 1; seat <= table.MaxSeats; seat++)
+            if (!taken.Contains(seat))
+                return seat;
+        return null;
+    }
 
     /// <summary>
     /// Move jogadores sorteados da mesa mais cheia para a mais vazia até a diferença ser ≤ 1.
-    /// Quem é movido recebe o próximo assento livre no destino (sem colidir com quem já está lá).
+    /// Quem é movido recebe o menor lugar livre no destino (sem colidir com quem já está lá).
     /// </summary>
     private static void RebalanceRandom(
         List<TournamentTable> tables, Dictionary<Guid, List<TournamentEntry>> occupancy)
@@ -363,12 +762,16 @@ public class EntryService
             if (occupancy[max.Id].Count - occupancy[min.Id].Count <= 1)
                 break;
 
+            var seat = NextSeat(min, occupancy[min.Id]);
+            if (seat is null)
+                break; // mesa mais vazia sem lugar livre: não força ninguém além do MaxSeats
+
             var fromList = occupancy[max.Id];
             var idx = Random.Shared.Next(fromList.Count);
             var mover = fromList[idx];
             fromList.RemoveAt(idx);
             mover.TableId = min.Id;
-            mover.SeatNumber = NextSeat(occupancy[min.Id]);
+            mover.SeatNumber = seat;
             occupancy[min.Id].Add(mover);
         }
     }
@@ -485,8 +888,32 @@ public class EntryService
         return _mapper.Map<EntryResponse>(entry);
     }
 
+    /// <summary>
+    /// Desfaz o rebuy MAIS RECENTE ainda valendo (botão do painel). A transação é marcada
+    /// como desfeita (não é apagada) — mesmo fluxo do desfazer pelo histórico.
+    /// </summary>
     public async Task<EntryResponse> RemoveRebuyAsync(
-        Guid tournamentId, Guid entryId, CancellationToken ct = default)
+        Guid tournamentId, Guid entryId, Guid? removedBy = null, CancellationToken ct = default)
+    {
+        var lastRebuyTxId = await _db.Transactions
+            .Where(t => t.TournamentId == tournamentId
+                     && t.EntryId == entryId
+                     && t.Type == nameof(TransactionType.Rebuy)
+                     && t.ReversedAt == null)
+            .OrderByDescending(t => t.CreatedAt)
+            .Select(t => (Guid?)t.Id)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException("Jogador não tem rebuys para remover.");
+
+        return await UndoRebuyAsync(tournamentId, entryId, lastRebuyTxId, removedBy, ct);
+    }
+
+    /// <summary>
+    /// Desfaz UM rebuy específico: marca a transação (ReversedAt/ReversedBy/"Desfeito") e
+    /// aplica os mesmos ajustes de contadores, saldo, bolo e custos automáticos do registro, ao contrário.
+    /// </summary>
+    public async Task<EntryResponse> UndoRebuyAsync(
+        Guid tournamentId, Guid entryId, Guid transactionId, Guid? undoneBy = null, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
@@ -497,34 +924,58 @@ public class EntryService
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
+        var rebuyTx = await _db.Transactions
+            .FirstOrDefaultAsync(t => t.Id == transactionId
+                                   && t.TournamentId == tournamentId
+                                   && t.EntryId == entryId
+                                   && t.Type == nameof(TransactionType.Rebuy), ct)
+            ?? throw new DomainException("Rebuy não encontrado.");
+
+        if (rebuyTx.ReversedAt != null)
+            throw new DomainException("Este item já foi desfeito.");
+
         if (entry.RebuyCount <= 0)
             throw new DomainException("Jogador não tem rebuys para remover.");
 
-        var rebuyValue = tournament.RebuyAmount ?? 0;
-
-        // Remover a transação de rebuy mais recente
-        var lastRebuyTx = await _db.Transactions
-            .Where(t => t.EntryId == entryId && t.Type == nameof(TransactionType.Rebuy))
-            .OrderByDescending(t => t.CreatedAt)
-            .FirstOrDefaultAsync(ct);
-
-        if (lastRebuyTx != null)
-            _db.Transactions.Remove(lastRebuyTx);
+        rebuyTx.ReversedAt = DateTimeOffset.UtcNow;
+        rebuyTx.ReversedBy = undoneBy;
+        rebuyTx.ReversalReason = "Desfeito";
 
         entry.RebuyCount--;
-        entry.RebuyTotal = entry.RebuyCount * rebuyValue;
+        entry.RebuyTotal = entry.RebuyCount * (tournament.RebuyAmount ?? 0);
         RecalculateBalance(entry, tournament);
 
         tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - 1);
-        tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - rebuyValue);
+        tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - rebuyTx.Amount);
         await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
     }
 
+    /// <summary>Desfaz o add-on ainda valendo (botão do painel). Marca a transação como desfeita.</summary>
     public async Task<EntryResponse> RemoveAddonAsync(
-        Guid tournamentId, Guid entryId, CancellationToken ct = default)
+        Guid tournamentId, Guid entryId, Guid? removedBy = null, CancellationToken ct = default)
+    {
+        var addonTxId = await _db.Transactions
+            .Where(t => t.TournamentId == tournamentId
+                     && t.EntryId == entryId
+                     && t.Type == nameof(TransactionType.Addon)
+                     && t.ReversedAt == null)
+            .OrderByDescending(t => t.CreatedAt)
+            .Select(t => (Guid?)t.Id)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException("Jogador não possui addon.");
+
+        return await UndoAddonAsync(tournamentId, entryId, addonTxId, removedBy, ct);
+    }
+
+    /// <summary>
+    /// Desfaz um add-on específico: marca a transação e aplica os mesmos ajustes do
+    /// registro, ao contrário (contadores, saldo, bolo e custos automáticos).
+    /// </summary>
+    public async Task<EntryResponse> UndoAddonAsync(
+        Guid tournamentId, Guid entryId, Guid transactionId, Guid? undoneBy = null, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
@@ -535,19 +986,22 @@ public class EntryService
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
+        var addonTx = await _db.Transactions
+            .FirstOrDefaultAsync(t => t.Id == transactionId
+                                   && t.TournamentId == tournamentId
+                                   && t.EntryId == entryId
+                                   && t.Type == nameof(TransactionType.Addon), ct)
+            ?? throw new DomainException("Add-on não encontrado.");
+
+        if (addonTx.ReversedAt != null)
+            throw new DomainException("Este item já foi desfeito.");
+
         if (!entry.AddonPurchased)
             throw new DomainException("Jogador não possui addon.");
 
-        var addonValue = entry.AddonAmount;
-
-        // Remover a transação de addon
-        var addonTx = await _db.Transactions
-            .Where(t => t.EntryId == entryId && t.Type == nameof(TransactionType.Addon))
-            .OrderByDescending(t => t.CreatedAt)
-            .FirstOrDefaultAsync(ct);
-
-        if (addonTx != null)
-            _db.Transactions.Remove(addonTx);
+        addonTx.ReversedAt = DateTimeOffset.UtcNow;
+        addonTx.ReversedBy = undoneBy;
+        addonTx.ReversalReason = "Desfeito";
 
         entry.AddonPurchased = false;
         entry.AddonDouble = false;
@@ -555,7 +1009,7 @@ public class EntryService
         RecalculateBalance(entry, tournament);
 
         tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
-        tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - addonValue);
+        tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - addonTx.Amount);
         await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
@@ -583,6 +1037,13 @@ public class EntryService
 
             if (entry.Status != nameof(EntryStatus.Active))
                 throw new DomainException("Jogador não está ativo no torneio.");
+
+            // Quem eliminou tem que ser outro jogador deste torneio
+            if (request.EliminatedByEntryId.HasValue
+                && (request.EliminatedByEntryId == entryId
+                    || !await _db.TournamentEntries.AnyAsync(e => e.Id == request.EliminatedByEntryId
+                                                              && e.TournamentId == tournamentId, ct)))
+                throw new DomainException("Quem eliminou não é um jogador deste torneio.");
 
             // Calcular posição
             var activePlayers = await _db.TournamentEntries
@@ -757,6 +1218,10 @@ public class EntryService
     public async Task<EntryResponse> UndoEliminationAsync(
         Guid tournamentId, Guid entryId, Guid? correctedBy = null, CancellationToken ct = default)
     {
+        // Devolve o jogador a um lugar: serializa com move/quebra/sorteio antes de ler a ocupação
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await LockSeatingAsync(_db, tournamentId, ct);
+
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
@@ -765,6 +1230,17 @@ public class EntryService
             .Include(e => e.Person)
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
+
+        // Prêmio já pago dele ou de quem mudaria de posição (campeão e quem saiu depois dele):
+        // recalcular a classificação redistribuiria prêmios já entregues.
+        var allEntries = await _db.TournamentEntries
+            .Include(e => e.Person)
+            .Where(e => e.TournamentId == tournamentId)
+            .ToListAsync(ct);
+        var paidPrizeEntryIds = await PaidPrizeEntryIdsAsync(tournamentId, ct);
+        var paidBlocker = FindPaidPrizeBlockingUndoElimination(entry, allEntries, paidPrizeEntryIds);
+        if (paidBlocker is not null)
+            throw new DomainException(UndoEliminationPrizePaidMessage(paidBlocker));
 
         if (entry.Status != nameof(EntryStatus.Eliminated)
             && entry.Status != nameof(EntryStatus.Awarded))
@@ -793,8 +1269,13 @@ public class EntryService
         entry.EliminatedById = null;
         entry.PrizeAmount = null;
 
-        // Restaurar mesa/posicao se ainda estiver disponivel
-        if (entry.EliminationTableId.HasValue && entry.EliminationSeatNumber.HasValue)
+        // Restaurar mesa/posicao se ainda estiver disponivel — só se a mesa ainda existe e está
+        // ativa (mesa quebrada ou sorteio novo: o jogador volta sem mesa e o dealer o senta)
+        var eliminationTableActive = entry.EliminationTableId.HasValue
+            && await _db.TournamentTables.AnyAsync(t => t.Id == entry.EliminationTableId
+                                                     && t.TournamentId == tournamentId
+                                                     && t.IsActive, ct);
+        if (eliminationTableActive && entry.EliminationSeatNumber.HasValue)
         {
             var seatTaken = await _db.TournamentEntries
                 .AnyAsync(e => e.TableId == entry.EliminationTableId
@@ -862,19 +1343,23 @@ public class EntryService
 
         // Recalcular posição/ITM/prêmio de TODOS os que já saíram (a posição de todos muda)
         // e define PlayersRemaining a partir dos ativos.
-        await RecomputeStandingsAsync(tournament, ct);
+        await RecomputeStandingsAsync(tournament, paidPrizeEntryIds, ct);
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return _mapper.Map<EntryResponse>(entry);
     }
 
     /// <summary>
     /// Recalcula posição final, ITM (premiado/eliminado) e vínculo de prêmio de TODOS os
     /// jogadores que já saíram, a partir da ordem de eliminação (último a sair = melhor
-    /// posição entre os que saíram). Usado ao desfazer eliminação. Não rebaixa quem já foi
-    /// pago (PaidOut). Define tournament.PlayersRemaining = nº de ativos.
+    /// posição entre os que saíram). Usado ao desfazer eliminação. Nunca reposiciona quem já
+    /// recebeu o prêmio (PaidOut/PrizePaid/prêmio pago): posição, status e prêmio ficam como
+    /// estão — o desfazer já recusa quando a posição de um pago mudaria.
+    /// Define tournament.PlayersRemaining = nº de ativos.
     /// </summary>
-    private async Task RecomputeStandingsAsync(Tournament tournament, CancellationToken ct)
+    private async Task RecomputeStandingsAsync(
+        Tournament tournament, ISet<Guid> paidPrizeEntryIds, CancellationToken ct)
     {
         var entries = await _db.TournamentEntries
             .Where(e => e.TournamentId == tournament.Id)
@@ -896,29 +1381,31 @@ public class EntryService
             ? prizes.Count
             : PrizeService.SuggestPrizeCount(tournament.TotalEntries);
 
-        // Limpa vínculos de prêmio que não sejam de jogadores já pagos (religados abaixo).
+        // Limpa vínculos de prêmio que não sejam pagos nem de jogadores já pagos (religados abaixo).
         var paidIds = entries
-            .Where(e => e.Status == nameof(EntryStatus.PaidOut))
+            .Where(e => IsPrizePaid(e, paidPrizeEntryIds))
             .Select(e => e.Id)
             .ToHashSet();
         foreach (var p in prizes)
-            if (!p.EntryId.HasValue || !paidIds.Contains(p.EntryId.Value))
+            if (!p.Paid && (!p.EntryId.HasValue || !paidIds.Contains(p.EntryId.Value)))
                 p.EntryId = null;
 
         for (int i = 0; i < finished.Count; i++)
         {
             var e = finished[i];
             var position = activeCount + 1 + i;
-            e.FinalPosition = position;
 
-            if (e.Status == nameof(EntryStatus.PaidOut))
-                continue; // já pago: mantém status e prêmio
+            if (paidIds.Contains(e.Id))
+                continue; // já pago: mantém posição, status e prêmio
+
+            e.FinalPosition = position;
 
             var isItm = position <= effectivePrizeCount;
             e.Status = isItm ? nameof(EntryStatus.Awarded) : nameof(EntryStatus.Eliminated);
 
             var prize = prizes.FirstOrDefault(p => p.Position == position);
-            if (isItm && prize != null)
+            // Prêmio já pago a outra pessoa não troca de dono
+            if (isItm && prize != null && (!prize.Paid || prize.EntryId == e.Id))
             {
                 e.PrizeAmount = prize.Amount;
                 prize.EntryId = e.Id;

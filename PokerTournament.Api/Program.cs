@@ -1,5 +1,9 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using PokerTournament.Api.Authorization;
+using PokerTournament.Application.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -91,15 +95,81 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                     context.Token = accessToken;
                 }
                 return Task.CompletedTask;
+            },
+            // Revalida a cada requisição (com cache curto):
+            // - token de dealer (QR, cache de 30s): QR revogado, novo QR gerado ou torneio
+            //   terminado derrubam o acesso;
+            // - token de usuário com "sid" (cache de 60s): logout no aparelho, sessão revogada
+            //   (troca de senha/papel, desativação) ou usuário inativo derrubam o access token
+            //   de 12h. Token sem "sid" (emitido antes das sessões por aparelho) passa.
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+                if (principal is null)
+                    return;
+                var sub = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                    ?? principal.FindFirst("sub")?.Value;
+                var ct = context.HttpContext.RequestAborted;
+
+                var kind = principal.FindFirst(TokenKinds.ClaimType)?.Value;
+                if (kind == TokenKinds.Dealer)
+                {
+                    var access = context.HttpContext.RequestServices.GetRequiredService<DealerAccessService>();
+                    if (!Guid.TryParse(sub, out var accessId) || !await access.IsActiveAsync(accessId, ct))
+                        context.Fail("Acesso de dealer revogado ou expirado.");
+                    return;
+                }
+                if (!string.IsNullOrEmpty(kind))
+                    return;
+
+                var sid = AuthService.GetSessionId(principal);
+                if (sid is null)
+                    return;
+                var auth = context.HttpContext.RequestServices.GetRequiredService<AuthService>();
+                if (!Guid.TryParse(sub, out var userId) || !await auth.IsSessionActiveAsync(sid.Value, userId, ct))
+                    context.Fail("Sessão encerrada. Entre de novo.");
             }
         };
     });
 
 // Authorization
+// Todas as políticas carregam o TokenKindRequirement: token de usuário passa como
+// sempre; token de dealer só passa em endpoint com [AllowTokenKind] do torneio dele.
+builder.Services.AddSingleton<IAuthorizationHandler, TokenKindHandler>();
 builder.Services.AddAuthorizationBuilder()
-    .AddPolicy("Admin", policy => policy.RequireRole("Admin"))
-    .AddPolicy("TournamentDirector", policy => policy.RequireRole("Admin", "TournamentDirector"))
-    .AddPolicy("Dealer", policy => policy.RequireRole("Admin", "TournamentDirector", "Dealer"));
+    .SetDefaultPolicy(new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .AddRequirements(new TokenKindRequirement())
+        .Build())
+    .AddPolicy("Admin", policy => policy.RequireRole("Admin").AddRequirements(new TokenKindRequirement()))
+    .AddPolicy("TournamentDirector", policy => policy
+        .RequireRole("Admin", "TournamentDirector").AddRequirements(new TokenKindRequirement()))
+    .AddPolicy("Dealer", policy => policy
+        .RequireRole("Admin", "TournamentDirector", "Dealer").AddRequirements(new TokenKindRequirement()));
+
+// Limite por IP nos endpoints anônimos que criam coisas (TV nova, troca do QR do dealer).
+// Atrás do proxy do Railway o IP real vem no X-Forwarded-For, mas o cliente pode mandar
+// o próprio cabeçalho: o proxy só ACRESCENTA o IP de quem conectou no FIM da lista.
+// Por isso vale o valor mais à direita (o único que o cliente não controla); os da
+// esquerda são forjáveis e dariam uma partição nova a cada requisição.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("public-anon", httpContext =>
+    {
+        var lastHop = httpContext.Request.Headers["X-Forwarded-For"].ToString()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .LastOrDefault();
+        var ip = !string.IsNullOrWhiteSpace(lastHop)
+            ? lastHop
+            : httpContext.Connection.RemoteIpAddress?.ToString() ?? "desconhecido";
+        return RateLimitPartition.GetFixedWindowLimiter(ip, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
+            Window = TimeSpan.FromMinutes(1),
+        });
+    });
+});
 
 // SignalR
 builder.Services.AddSignalR();
@@ -165,12 +235,16 @@ builder.Services.AddAutoMapper(typeof(MappingProfile));
 builder.Services.AddScoped<IWhatsAppProvider, PokerTournament.Infrastructure.Services.WhatsAppService>();
 
 // Application Services
+builder.Services.AddSingleton<JwtTokenFactory>();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<DealerAccessService>();
+builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
 builder.Services.AddScoped<EntryService>();
 builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<PrizeService>();
 builder.Services.AddScoped<TimerService>();
+builder.Services.AddScoped<TournamentHistoryService>();
 builder.Services.AddScoped<RankingLeaderboardService>();
 builder.Services.AddScoped<RankingSlugService>();
 
@@ -182,6 +256,8 @@ builder.Services.AddMemoryCache();
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<PokerTournament.Api.Filters.TenantAccessFilter>();
+    // Dealer por QR: tira contato/documento de jogador de qualquer resposta
+    options.Filters.Add<PokerTournament.Api.Filters.ScopedTokenContactFilter>();
 });
 
 var app = builder.Build();
@@ -236,6 +312,7 @@ app.UseSwaggerUI(c =>
 app.UseSerilogRequestLogging();
 
 app.UseCors("AllowFrontend");
+app.UseRateLimiter();
 
 // Servir arquivos estáticos (uploads de fotos)
 var uploadsPath = Environment.GetEnvironmentVariable("UPLOADS_PATH")
@@ -253,6 +330,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHub<TournamentHub>("/hubs/tournament");
+// Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)
+app.MapHub<TournamentHub>("/hubs/tournament", o => o.CloseOnAuthenticationExpiration = true);
 
 app.Run();

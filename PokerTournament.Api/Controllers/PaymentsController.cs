@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using PokerTournament.Api.Authorization;
+using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -24,6 +26,7 @@ public class PaymentsController : ControllerBase
         _db = db;
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("entries/{entryId:guid}")]
     public async Task<ActionResult<EntryResponse>> RegisterPayment(
         Guid tournamentId, Guid entryId, [FromBody] CreatePaymentRequest request, CancellationToken ct)
@@ -33,6 +36,7 @@ public class PaymentsController : ControllerBase
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("entries/{entryId:guid}/settle-against-cost")]
     public async Task<ActionResult<EntryResponse>> SettleAgainstCost(
         Guid tournamentId, Guid entryId, [FromBody] SettleAgainstCostRequest request, CancellationToken ct)
@@ -43,6 +47,7 @@ public class PaymentsController : ControllerBase
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpGet("entries/{entryId:guid}")]
     public async Task<ActionResult> GetByEntry(
         Guid tournamentId, Guid entryId, CancellationToken ct)
@@ -69,62 +74,13 @@ public class PaymentsController : ControllerBase
         return Ok(payments);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("entries/{entryId:guid}/{paymentId:guid}/reverse")]
     public async Task<ActionResult> ReversePayment(
         Guid tournamentId, Guid entryId, Guid paymentId, CancellationToken ct)
     {
         var userId = GetUserId();
-        var tx = await _db.Transactions
-            .FirstOrDefaultAsync(t => t.Id == paymentId
-                                   && t.TournamentId == tournamentId
-                                   && t.EntryId == entryId
-                                   && (t.Type == nameof(TransactionType.Payment)
-                                       || t.Type == nameof(TransactionType.Settlement)), ct);
-
-        if (tx == null)
-            return NotFound(new { message = "Pagamento não encontrado." });
-
-        if (tx.ReversedAt != null)
-            return BadRequest(new { message = "Pagamento já foi estornado." });
-
-        // Marcar como estornado
-        tx.ReversedAt = DateTimeOffset.UtcNow;
-        tx.ReversedBy = userId;
-        tx.ReversalReason = "Estornado pelo organizador";
-
-        // Atualizar entry
-        var entry = await _db.TournamentEntries
-            .FirstOrDefaultAsync(e => e.Id == entryId, ct);
-        if (entry != null)
-        {
-            entry.TotalPaid = Math.Max(0, entry.TotalPaid - tx.Amount);
-            entry.Balance = entry.TotalDue - entry.TotalPaid;
-            entry.PaymentStatus = entry.Balance switch
-            {
-                0 => nameof(PaymentStatus.Paid),
-                > 0 when entry.TotalPaid > 0 => nameof(PaymentStatus.PartiallyPaid),
-                < 0 => nameof(PaymentStatus.Overpaid),
-                _ => nameof(PaymentStatus.Pending),
-            };
-        }
-
-        // Se pagou para um custo extra, reverter o status dele
-        if (tx.PixDestinationId.HasValue)
-        {
-            var cost = await _db.CostExtras
-                .FirstOrDefaultAsync(c => c.Id == tx.PixDestinationId, ct);
-            if (cost != null)
-            {
-                cost.PaidAmount = Math.Max(0, cost.PaidAmount - tx.Amount);
-                if (cost.PaidAmount < cost.Amount)
-                {
-                    cost.PaymentStatus = nameof(PaymentStatus.Pending);
-                    cost.PaidAt = null;
-                }
-            }
-        }
-
-        await _db.SaveChangesAsync(ct);
+        await _paymentService.ReversePaymentAsync(tournamentId, entryId, paymentId, userId, ct: ct);
         return Ok(new { message = "Pagamento estornado." });
     }
 
@@ -196,6 +152,7 @@ public class PaymentsController : ControllerBase
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpGet("pix-suggestions")]
     public async Task<ActionResult<List<PixSuggestionResponse>>> GetPixSuggestions(
         Guid tournamentId, [FromQuery] decimal amount, CancellationToken ct)

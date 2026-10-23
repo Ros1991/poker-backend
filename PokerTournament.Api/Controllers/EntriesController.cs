@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using PokerTournament.Api.Authorization;
+using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PokerTournament.Application.DTOs.Requests;
@@ -19,11 +21,35 @@ public class EntriesController : ControllerBase
         _entryService = entryService;
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpGet]
     public async Task<ActionResult<List<EntryResponse>>> GetAll(
         Guid tournamentId, CancellationToken ct)
     {
         var result = await _entryService.GetEntriesAsync(tournamentId, ct);
+        // Dealer por QR nunca vê contato/documento dos jogadores
+        if (IsScopedToken())
+            foreach (var e in result)
+                StripContact(e.Person);
+        return Ok(result);
+    }
+
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpGet("available-players")]
+    public async Task<ActionResult<List<AvailablePlayerResponse>>> GetAvailablePlayers(
+        Guid tournamentId, CancellationToken ct)
+    {
+        var result = await _entryService.GetAvailablePlayersAsync(tournamentId, ct);
+        return Ok(result);
+    }
+
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpPost("quick-add")]
+    public async Task<ActionResult<QuickAddEntryResponse>> QuickAdd(
+        Guid tournamentId, [FromBody] QuickAddEntryRequest request, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var result = await _entryService.QuickAddAsync(tournamentId, request, userId, ct);
         return Ok(result);
     }
 
@@ -46,6 +72,7 @@ public class EntriesController : ControllerBase
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("{entryId:guid}/rebuy")]
     
     public async Task<ActionResult<EntryResponse>> Rebuy(
@@ -56,6 +83,7 @@ public class EntriesController : ControllerBase
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("{entryId:guid}/addon")]
     
     public async Task<ActionResult<EntryResponse>> Addon(
@@ -67,6 +95,7 @@ public class EntriesController : ControllerBase
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("{entryId:guid}/eliminate")]
     
     public async Task<ActionResult<EliminationResultResponse>> Eliminate(
@@ -74,6 +103,9 @@ public class EntriesController : ControllerBase
     {
         var userId = GetUserId();
         var result = await _entryService.EliminatePlayerAsync(tournamentId, entryId, request, userId, ct);
+        // O link do WhatsApp carrega o telefone do jogador: não vai para o dealer por QR
+        if (IsScopedToken())
+            result.WhatsAppLink = null;
         return Ok(result);
     }
 
@@ -81,7 +113,7 @@ public class EntriesController : ControllerBase
     public async Task<ActionResult<EntryResponse>> RemoveRebuy(
         Guid tournamentId, Guid entryId, CancellationToken ct)
     {
-        var result = await _entryService.RemoveRebuyAsync(tournamentId, entryId, ct);
+        var result = await _entryService.RemoveRebuyAsync(tournamentId, entryId, GetUserId(), ct);
         return Ok(result);
     }
 
@@ -89,10 +121,11 @@ public class EntriesController : ControllerBase
     public async Task<ActionResult<EntryResponse>> RemoveAddon(
         Guid tournamentId, Guid entryId, CancellationToken ct)
     {
-        var result = await _entryService.RemoveAddonAsync(tournamentId, entryId, ct);
+        var result = await _entryService.RemoveAddonAsync(tournamentId, entryId, GetUserId(), ct);
         return Ok(result);
     }
 
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("{entryId:guid}/undo-elimination")]
     public async Task<ActionResult<EntryResponse>> UndoElimination(
         Guid tournamentId, Guid entryId, CancellationToken ct)
@@ -108,6 +141,19 @@ public class EntriesController : ControllerBase
     {
         await _entryService.DeleteEntryAsync(tournamentId, entryId, ct);
         return NoContent();
+    }
+
+    // Token de escopo restrito (dealer por QR) tem o claim "kind"; token de usuário não
+    private bool IsScopedToken() =>
+        !string.IsNullOrEmpty(User.FindFirst(TokenKinds.ClaimType)?.Value);
+
+    private static void StripContact(PersonResponse? person)
+    {
+        if (person is null) return;
+        person.Email = null;
+        person.Whatsapp = null;
+        person.Document = null;
+        person.Notes = null;
     }
 
     private Guid GetUserId()

@@ -16,11 +16,13 @@ public class UsersController : ControllerBase
 {
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
+    private readonly AuthService _auth;
 
-    public UsersController(IAppDbContext db, IMapper mapper)
+    public UsersController(IAppDbContext db, IMapper mapper, AuthService auth)
     {
         _db = db;
         _mapper = mapper;
+        _auth = auth;
     }
 
     [HttpGet]
@@ -103,13 +105,24 @@ public class UsersController : ControllerBase
         if (request.Nickname != null)
             user.Nickname = request.Nickname;
 
-        if (!string.IsNullOrWhiteSpace(request.Role))
+        // Papel novo ou senha nova: os aparelhos logados caem (o token antigo
+        // carrega o papel antigo e a senha antiga pode ter vazado)
+        var revokeSessions = false;
+        if (!string.IsNullOrWhiteSpace(request.Role) && request.Role != user.Role)
+        {
             user.Role = request.Role;
+            revokeSessions = true;
+        }
 
         if (!string.IsNullOrWhiteSpace(request.Password))
+        {
             user.PasswordHash = AuthService.HashPassword(request.Password);
+            revokeSessions = true;
+        }
 
         await _db.SaveChangesAsync(ct);
+        if (revokeSessions)
+            await _auth.RevokeAllSessionsAsync(user.Id, ct);
         return Ok(_mapper.Map<UserResponse>(user));
     }
 
@@ -125,6 +138,8 @@ public class UsersController : ControllerBase
 
         user.IsActive = false;
         await _db.SaveChangesAsync(ct);
+        // Desativado: nenhum aparelho continua logado
+        await _auth.RevokeAllSessionsAsync(user.Id, ct);
 
         return NoContent();
     }

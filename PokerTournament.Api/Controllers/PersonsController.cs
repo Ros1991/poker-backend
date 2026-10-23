@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -5,10 +6,16 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Api.Controllers;
 
+/// <summary>
+/// A rota não tem {homeGameId}/{tournamentId}, então o TenantAccessFilter não age aqui:
+/// cada ação resolve o home game da pessoa (ou o da query) e aplica a mesma regra
+/// (dono, membro ou Admin) via <see cref="HomeGameAccess"/>.
+/// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
 [Authorize]
@@ -26,6 +33,12 @@ public class PersonsController : ControllerBase
     [HttpGet("{id:guid}/history")]
     public async Task<ActionResult> GetHistory(Guid id, CancellationToken ct)
     {
+        var person = await _db.Persons.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (person is null)
+            return NotFound(new { message = "Pessoa não encontrada." });
+        if (!await CanAccessAsync(person.HomeGameId, ct))
+            return Forbidden();
+
         var history = await _db.TournamentEntries
             .Where(e => e.PersonId == id && e.FinalPosition != null)
             .OrderByDescending(e => e.Tournament.Date)
@@ -49,10 +62,13 @@ public class PersonsController : ControllerBase
         [FromQuery] string? search,
         CancellationToken ct = default)
     {
-        var query = _db.Persons.Where(p => p.IsActive);
+        // Sem home game a lista seria a de todos os grupos do sistema
+        if (homeGameId is null)
+            return BadRequest(new { message = "Informe o home game (homeGameId)." });
+        if (!await CanAccessAsync(homeGameId.Value, ct))
+            return Forbidden();
 
-        if (homeGameId.HasValue)
-            query = query.Where(p => p.HomeGameId == homeGameId.Value);
+        var query = _db.Persons.Where(p => p.IsActive && p.HomeGameId == homeGameId.Value);
 
         if (!string.IsNullOrWhiteSpace(type))
             query = query.Where(p => p.Type == type);
@@ -81,6 +97,8 @@ public class PersonsController : ControllerBase
 
         if (person is null)
             return NotFound(new { message = "Pessoa não encontrada." });
+        if (!await CanAccessAsync(person.HomeGameId, ct))
+            return Forbidden();
 
         return Ok(_mapper.Map<PersonResponse>(person));
     }
@@ -89,6 +107,9 @@ public class PersonsController : ControllerBase
     public async Task<ActionResult<PersonResponse>> Create(
         [FromBody] CreatePersonRequest request, CancellationToken ct)
     {
+        if (!await CanAccessAsync(request.HomeGameId, ct))
+            return Forbidden();
+
         var person = _mapper.Map<Person>(request);
         _db.Persons.Add(person);
         await _db.SaveChangesAsync(ct);
@@ -106,6 +127,8 @@ public class PersonsController : ControllerBase
 
         if (person is null)
             return NotFound(new { message = "Pessoa não encontrada." });
+        if (!await CanAccessAsync(person.HomeGameId, ct))
+            return Forbidden();
 
         _mapper.Map(request, person);
         await _db.SaveChangesAsync(ct);
@@ -121,6 +144,8 @@ public class PersonsController : ControllerBase
 
         if (person is null)
             return NotFound(new { message = "Pessoa não encontrada." });
+        if (!await CanAccessAsync(person.HomeGameId, ct))
+            return Forbidden();
 
         person.IsActive = false;
         person.DeletedAt = DateTimeOffset.UtcNow;
@@ -138,6 +163,8 @@ public class PersonsController : ControllerBase
 
         if (person is null)
             return NotFound(new { message = "Pessoa não encontrada." });
+        if (!await CanAccessAsync(person.HomeGameId, ct))
+            return Forbidden();
 
         // Salvar arquivo no disco
         var uploadsRoot = Environment.GetEnvironmentVariable("UPLOADS_PATH")
@@ -158,22 +185,50 @@ public class PersonsController : ControllerBase
         return Ok(_mapper.Map<PersonResponse>(person));
     }
 
+    /// <summary>Busca por nome/apelido. Sem homeGameId, só nos home games do usuário.</summary>
     [HttpGet("search")]
     public async Task<ActionResult<List<PersonResponse>>> Search(
-        [FromQuery] string q, CancellationToken ct)
+        [FromQuery] string q, [FromQuery] Guid? homeGameId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(q) || q.Length < 2)
             return Ok(new List<PersonResponse>());
 
+        var query = _db.Persons.Where(p => p.IsActive);
+        if (homeGameId is not null)
+        {
+            if (!await CanAccessAsync(homeGameId.Value, ct))
+                return Forbidden();
+            query = query.Where(p => p.HomeGameId == homeGameId.Value);
+        }
+        else if (!IsAdmin)
+        {
+            var homeGameIds = await HomeGameAccess.AccessibleHomeGameIdsAsync(_db, GetUserId(), ct);
+            query = query.Where(p => homeGameIds.Contains(p.HomeGameId));
+        }
+
         var term = q.ToLower();
-        var persons = await _db.Persons
-            .Where(p => p.IsActive &&
-                (p.FullName.ToLower().Contains(term) ||
-                 (p.Nickname != null && p.Nickname.ToLower().Contains(term))))
+        var persons = await query
+            .Where(p =>
+                p.FullName.ToLower().Contains(term) ||
+                (p.Nickname != null && p.Nickname.ToLower().Contains(term)))
             .OrderBy(p => p.FullName)
             .Take(20)
             .ToListAsync(ct);
 
         return Ok(_mapper.Map<List<PersonResponse>>(persons));
     }
+
+    private bool IsAdmin => User.FindFirst(ClaimTypes.Role)?.Value == "Admin";
+
+    private Guid GetUserId()
+    {
+        var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
+        return Guid.TryParse(claim?.Value, out var id) ? id : Guid.Empty;
+    }
+
+    private Task<bool> CanAccessAsync(Guid homeGameId, CancellationToken ct) =>
+        HomeGameAccess.CanAccessAsync(_db, homeGameId, GetUserId(), IsAdmin, ct);
+
+    private static ObjectResult Forbidden() =>
+        new(new { message = "Você não tem acesso a este home game." }) { StatusCode = 403 };
 }

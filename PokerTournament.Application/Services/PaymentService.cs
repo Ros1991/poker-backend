@@ -32,6 +32,16 @@ public class PaymentService
         if (request.Amount <= 0)
             throw new DomainException("Valor do pagamento deve ser positivo.");
 
+        // Destino do PIX tem que ser um custo deste torneio (o dealer só enxerga o torneio dele)
+        CostExtra? pixDestination = null;
+        if (request.PixDestinationCostExtraId.HasValue)
+        {
+            pixDestination = await _db.CostExtras
+                .FirstOrDefaultAsync(c => c.Id == request.PixDestinationCostExtraId
+                                       && c.TournamentId == tournamentId, ct)
+                ?? throw new DomainException("Destino do PIX não pertence a este torneio.");
+        }
+
         var transaction = new Transaction
         {
             TournamentId = tournamentId,
@@ -49,12 +59,9 @@ public class PaymentService
         _db.Transactions.Add(transaction);
 
         // Atualizar PIX destination se informado
-        if (request.PixDestinationCostExtraId.HasValue)
+        if (pixDestination is { } costExtra)
         {
-            var costExtra = await _db.CostExtras
-                .FirstOrDefaultAsync(c => c.Id == request.PixDestinationCostExtraId, ct);
-
-            if (costExtra is not null && !costExtra.IsCashBox)
+            if (!costExtra.IsCashBox)
             {
                 // Para Mixed usar pixAmount, para Pix puro usar amount
                 var amountForCost = request.PixAmount ?? request.Amount;
@@ -167,6 +174,86 @@ public class PaymentService
 
         await _db.SaveChangesAsync(ct);
         return MapEntry(entry);
+    }
+
+    /// <summary>
+    /// Estorno de pagamento/abatimento: MARCA a transação como estornada (não apaga),
+    /// devolve o valor ao saldo do jogador e desfaz o crédito no custo de destino
+    /// exatamente como o registro o fez (PIX → PixAmount ?? Amount, nunca no Caixa;
+    /// abatimento → Amount).
+    /// </summary>
+    public async Task ReversePaymentAsync(
+        Guid tournamentId, Guid entryId, Guid transactionId, Guid? reversedBy = null,
+        string reason = "Estornado pelo organizador", CancellationToken ct = default)
+    {
+        var tx = await _db.Transactions
+            .FirstOrDefaultAsync(t => t.Id == transactionId
+                                   && t.TournamentId == tournamentId
+                                   && t.EntryId == entryId
+                                   && (t.Type == nameof(TransactionType.Payment)
+                                       || t.Type == nameof(TransactionType.Settlement)), ct)
+            ?? throw new DomainException("Pagamento não encontrado.");
+
+        if (tx.ReversedAt != null)
+            throw new DomainException("Pagamento já foi estornado.");
+
+        // Marcar como estornado
+        tx.ReversedAt = DateTimeOffset.UtcNow;
+        tx.ReversedBy = reversedBy;
+        tx.ReversalReason = reason;
+
+        // Atualizar entry
+        var entry = await _db.TournamentEntries
+            .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct);
+        if (entry != null)
+        {
+            entry.TotalPaid = Math.Max(0, entry.TotalPaid - tx.Amount);
+            entry.Balance = entry.TotalDue - entry.TotalPaid;
+            entry.PaymentStatus = entry.Balance switch
+            {
+                0 => nameof(PaymentStatus.Paid),
+                > 0 when entry.TotalPaid > 0 => nameof(PaymentStatus.PartiallyPaid),
+                < 0 => nameof(PaymentStatus.Overpaid),
+                _ => nameof(PaymentStatus.Pending),
+            };
+        }
+
+        // Se creditou um custo extra, desfaz o crédito (mesmo valor que o registro somou)
+        if (tx.PixDestinationId.HasValue)
+        {
+            var cost = await _db.CostExtras
+                .FirstOrDefaultAsync(c => c.Id == tx.PixDestinationId && c.TournamentId == tournamentId, ct);
+            ReverseCostCredit(tx, cost);
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Desfaz no custo de destino o crédito que o pagamento/abatimento somou ao ser registrado:
+    /// abatimento → Amount; pagamento → PixAmount ?? Amount, nunca no Caixa. Regra única do
+    /// estorno e da exclusão da inscrição. Não salva.
+    /// </summary>
+    public static void ReverseCostCredit(Transaction tx, CostExtra? cost)
+    {
+        if (cost is null) return;
+
+        decimal credited = 0m;
+        if (tx.Type == nameof(TransactionType.Settlement))
+            credited = tx.Amount;
+        else if (!cost.IsCashBox)
+            credited = tx.PixAmount ?? tx.Amount;
+
+        if (credited <= 0) return;
+
+        cost.PaidAmount = Math.Max(0, cost.PaidAmount - credited);
+        if (cost.PaidAmount < cost.Amount)
+        {
+            cost.PaymentStatus = cost.PaidAmount > 0
+                ? nameof(PaymentStatus.PartiallyPaid)
+                : nameof(PaymentStatus.Pending);
+            cost.PaidAt = null;
+        }
     }
 
     private static string RecalcPaymentStatus(decimal balance, decimal totalPaid)

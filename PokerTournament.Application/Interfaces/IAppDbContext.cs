@@ -26,6 +26,10 @@ public interface IAppDbContext
     DbSet<AuditLog> AuditLogs { get; }
     DbSet<NotificationLog> NotificationLogs { get; }
     DbSet<TournamentDealer> TournamentDealers { get; }
+    DbSet<AuthSession> AuthSessions { get; }
+    DbSet<DisplaySession> DisplaySessions { get; }
+    DbSet<DealerAccess> DealerAccesses { get; }
+    DbSet<TournamentActivity> TournamentActivities { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

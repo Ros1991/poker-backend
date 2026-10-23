@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
+using PokerTournament.Api.Authorization;
+using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Mvc;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
@@ -9,6 +11,8 @@ namespace PokerTournament.Api.Controllers;
 /// <summary>
 /// Rotas diretas para torneios (sem necessidade de homeGameId na URL).
 /// Usado pelo frontend quando já se tem o tournamentId.
+/// O parâmetro de rota precisa se chamar {tournamentId}: é por ele que o
+/// TenantAccessFilter exige dono/membro (com {id} o filtro não agia).
 /// </summary>
 [ApiController]
 [Route("api/v1/tournaments")]
@@ -22,29 +26,30 @@ public class TournamentDirectController : ControllerBase
         _tournamentService = tournamentService;
     }
 
-    [HttpGet("{id:guid}")]
-    public async Task<ActionResult<TournamentResponse>> GetById(Guid id, CancellationToken ct)
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpGet("{tournamentId:guid}")]
+    public async Task<ActionResult<TournamentResponse>> GetById(Guid tournamentId, CancellationToken ct)
     {
-        var result = await _tournamentService.GetByIdAsync(id, ct);
+        var result = await _tournamentService.GetByIdAsync(tournamentId, ct);
         if (result is null)
             return NotFound(new { message = "Torneio não encontrado." });
         return Ok(result);
     }
 
-    [HttpPut("{id:guid}/punctuality-bonus")]
+    [HttpPut("{tournamentId:guid}/punctuality-bonus")]
     public async Task<ActionResult<TournamentResponse>> UpdatePunctualityBonus(
-        Guid id, [FromBody] UpdatePunctualityBonusRequest request, CancellationToken ct)
+        Guid tournamentId, [FromBody] UpdatePunctualityBonusRequest request, CancellationToken ct)
     {
         var result = await _tournamentService.UpdatePunctualityBonusAsync(
-            id, request.Count, request.Chips, ct);
+            tournamentId, request.Count, request.Chips, ct);
         return Ok(result);
     }
 
-    [HttpPut("{id:guid}/pix-key")]
+    [HttpPut("{tournamentId:guid}/pix-key")]
     public async Task<ActionResult<TournamentResponse>> UpdatePixKey(
-        Guid id, [FromBody] UpdatePixKeyRequest request, CancellationToken ct)
+        Guid tournamentId, [FromBody] UpdatePixKeyRequest request, CancellationToken ct)
     {
-        var result = await _tournamentService.UpdatePixKeyAsync(id, request.PixKey, ct);
+        var result = await _tournamentService.UpdatePixKeyAsync(tournamentId, request.PixKey, ct);
         return Ok(result);
     }
 }

@@ -23,7 +23,7 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<AuthResponse>> Login(
         [FromBody] LoginRequest request, CancellationToken ct)
     {
-        var result = await _authService.LoginAsync(request, ct);
+        var result = await _authService.LoginAsync(request, UserAgent, ct);
         return Ok(result);
     }
 
@@ -32,7 +32,7 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<AuthResponse>> Register(
         [FromBody] RegisterRequest request, CancellationToken ct)
     {
-        var result = await _authService.RegisterAsync(request, ct);
+        var result = await _authService.RegisterAsync(request, UserAgent, ct);
         return Ok(result);
     }
 
@@ -41,7 +41,7 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<AuthResponse>> Refresh(
         [FromBody] RefreshTokenRequest request, CancellationToken ct)
     {
-        var result = await _authService.RefreshTokenAsync(request.RefreshToken, ct);
+        var result = await _authService.RefreshTokenAsync(request.RefreshToken, UserAgent, ct);
         return Ok(result);
     }
 
@@ -50,7 +50,8 @@ public class AuthController : ControllerBase
     public async Task<ActionResult> Logout(CancellationToken ct)
     {
         var userId = GetUserId();
-        await _authService.LogoutAsync(userId, ct);
+        // Sai só deste aparelho (sessão do token); os outros continuam logados
+        await _authService.LogoutAsync(userId, AuthService.GetSessionId(User), ct);
         return NoContent();
     }
 
@@ -64,6 +65,8 @@ public class AuthController : ControllerBase
             return NotFound(new { message = "Usuário não encontrado." });
         return Ok(user);
     }
+
+    private string? UserAgent => Request.Headers.UserAgent.ToString() is { Length: > 0 } ua ? ua : null;
 
     private Guid GetUserId()
     {

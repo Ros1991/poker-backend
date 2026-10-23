@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using PokerTournament.Domain.Exceptions;
 
 namespace PokerTournament.Api.Middleware;
@@ -32,6 +33,8 @@ public class ErrorHandlingMiddleware
         var (statusCode, message) = exception switch
         {
             DomainException domainEx => (HttpStatusCode.BadRequest, domainEx.Message),
+            // xmin mudou entre a leitura e a gravação: não vaza a mensagem crua do EF
+            DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Outra pessoa alterou isso ao mesmo tempo. Tente de novo."),
             KeyNotFoundException => (HttpStatusCode.NotFound, "Recurso não encontrado."),
             UnauthorizedAccessException => (HttpStatusCode.Unauthorized, "Acesso não autorizado."),
             InvalidOperationException opEx => (HttpStatusCode.Conflict, opEx.Message),
