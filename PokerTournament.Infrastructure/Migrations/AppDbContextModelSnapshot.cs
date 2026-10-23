@@ -2345,6 +2345,39 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("character varying(500)")
                         .HasColumnName("photo_url");
 
+                    b.Property<string>("Plan")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Mesa")
+                        .HasColumnName("plan");
+
+                    b.Property<DateTimeOffset?>("PlanExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("plan_expires_at");
+
+                    b.Property<string>("PlanNote")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("plan_note");
+
+                    b.Property<string>("PlanSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Manual")
+                        .HasColumnName("plan_source");
+
+                    b.Property<DateTimeOffset?>("PlanUpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("plan_updated_at");
+
+                    b.Property<Guid?>("PlanUpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("plan_updated_by");
+
                     b.Property<string>("RefreshToken")
                         .HasColumnType("text")
                         .HasColumnName("refresh_token");
@@ -2379,6 +2412,9 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.HasIndex("Email")
                         .IsUnique()
                         .HasDatabaseName("ix_users_email");
+
+                    b.HasIndex("Plan")
+                        .HasDatabaseName("ix_users_plan");
 
                     b.ToTable("users", "public");
                 });

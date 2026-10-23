@@ -58,6 +58,31 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.RefreshToken).HasColumnName("refresh_token");
         builder.Property(u => u.RefreshTokenExpiresAt).HasColumnName("refresh_token_expires_at");
 
+        // Plano da conta (SPEC-20261023-1205): strings via nameof, default Mesa/Manual para conta nova
+        builder.Property(u => u.Plan)
+            .HasColumnName("plan")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue("Mesa");
+
+        builder.Property(u => u.PlanExpiresAt).HasColumnName("plan_expires_at");
+
+        builder.Property(u => u.PlanSource)
+            .HasColumnName("plan_source")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue("Manual");
+
+        builder.Property(u => u.PlanNote)
+            .HasColumnName("plan_note")
+            .HasMaxLength(200);
+
+        builder.Property(u => u.PlanUpdatedAt).HasColumnName("plan_updated_at");
+        builder.Property(u => u.PlanUpdatedBy).HasColumnName("plan_updated_by");
+
+        builder.HasIndex(u => u.Plan)
+            .HasDatabaseName("ix_users_plan");
+
         // Unique email
         builder.HasIndex(u => u.Email)
             .IsUnique()

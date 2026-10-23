@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.Common;
+using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Services;
@@ -24,12 +25,14 @@ public class UsersController : ControllerBase
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
     private readonly AuthService _auth;
+    private readonly PlanService _plans;
 
-    public UsersController(IAppDbContext db, IMapper mapper, AuthService auth)
+    public UsersController(IAppDbContext db, IMapper mapper, AuthService auth, PlanService plans)
     {
         _db = db;
         _mapper = mapper;
         _auth = auth;
+        _plans = plans;
     }
 
     /// <summary>Lista completa (nome e e-mail de todo mundo): só Admin do sistema.</summary>
@@ -187,6 +190,27 @@ public class UsersController : ControllerBase
         await _db.SaveChangesAsync(ct);
         if (revokeSessions)
             await _auth.RevokeAllSessionsAsync(user.Id, ct);
+        return Ok(_mapper.Map<UserResponse>(user));
+    }
+
+    /// <summary>
+    /// Suporte atribui o plano da conta (SPEC-20261023-1205; a tela vem na SPEC-20261023-1206):
+    /// plano, vencimento (null = sem vencimento), origem e nota. Grava AuditLog PlanChange com os
+    /// valores antigos e novos e vale na hora (o cache do plano do dono é invalidado).
+    /// Plano/origem fora do catálogo → 400; conta inexistente → 404.
+    /// </summary>
+    [HttpPut("{id:guid}/plan")]
+    [Authorize(Policy = "Admin")]
+    public async Task<ActionResult<UserResponse>> ChangePlan(
+        Guid id, [FromBody] ChangePlanRequest request, CancellationToken ct)
+    {
+        var by = GetUserId();
+        var user = await _plans.ChangePlanAsync(
+            id, request.Plan, request.ExpiresAt, request.Source, request.Note,
+            by == Guid.Empty ? null : by, ct);
+        if (user is null)
+            return NotFound(new { message = "Usuário não encontrado." });
+
         return Ok(_mapper.Map<UserResponse>(user));
     }
 

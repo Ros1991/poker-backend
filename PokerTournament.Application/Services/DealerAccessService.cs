@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -20,6 +21,12 @@ namespace PokerTournament.Application.Services;
 /// aparelho que fez o pedido (deviceKey) recebe o JWT restrito ao terminal daquele torneio
 /// (ver TokenKinds / AllowTokenKind na Api). O sub do token é o id do pedido: revogar um
 /// pedido derruba só aquele aparelho.
+///
+/// Plano (SPEC-20261023-1205, D5 — dealer por QR só no pago): gerar/ver/revogar o QR e as listas de
+/// pedidos passam pelo [RequirePlanFeature(DealerQr)] do controller; aqui, nos caminhos anônimos do
+/// aparelho, o pedido (RequestAsync) e a emissão do token (GetStatusAsync) recusam com 402
+/// feature_locked se o dono caiu para o Mesa. IsActiveAsync NÃO confere plano: o dealer já aprovado
+/// continua operando o torneio criado (só pagamentos/mesas caem no 402 pelo filtro).
 /// </summary>
 public class DealerAccessService
 {
@@ -46,13 +53,24 @@ public class DealerAccessService
     private readonly IAppDbContext _db;
     private readonly JwtTokenFactory _tokens;
     private readonly IMemoryCache _cache;
+    private readonly PlanService _plans;
 
-    public DealerAccessService(IAppDbContext db, JwtTokenFactory tokens, IMemoryCache cache)
+    public DealerAccessService(IAppDbContext db, JwtTokenFactory tokens, IMemoryCache cache, PlanService plans)
     {
         _db = db;
         _tokens = tokens;
         _cache = cache;
+        _plans = plans;
     }
+
+    /// <summary>Mensagem do 402 no celular do dealer (ele não é o organizador).</summary>
+    public static readonly string PlanLockedMessage =
+        "O terminal do dealer por QR não está liberado neste torneio: é um recurso a partir do plano " +
+        $"{PlanCatalog.MinimumPlanFor(PlanFeature.DealerQr)}. Avise o organizador.";
+
+    // D5 nos caminhos anônimos do aparelho (pedido e emissão do token): sem bypass de Admin
+    private Task EnsureDealerQrAsync(Guid tournamentId, CancellationToken ct) =>
+        _plans.EnsureFeatureForTournamentAsync(tournamentId, PlanFeature.DealerQr, bypass: false, message: PlanLockedMessage, ct: ct);
 
     // ------------------------------------------------------------ QR (organizador)
 
@@ -158,6 +176,9 @@ public class DealerAccessService
             ?? throw new DomainException(InvalidQrMessage);
         if (IsOver(tournament.Status))
             throw new DomainException("O torneio já terminou.");
+
+        // D5: QR gerado quando o dono ainda era Clube não abre pedido depois que ele caiu para o Mesa
+        await EnsureDealerQrAsync(tournament.Id, ct);
 
         var dealerName = NormalizeName(name);
         if (string.IsNullOrWhiteSpace(deviceKey) || deviceKey.Length > 128)
@@ -303,6 +324,8 @@ public class DealerAccessService
             && AuthService.HashToken(deviceKey) == request.DeviceKeyHash
             && await _db.DealerAccesses.AnyAsync(a => a.Id == request.DealerAccessId && a.RevokedAt == null, ct))
         {
+            // D5: aprovado antes de o dono cair para o Mesa, mas o token ainda não tinha saído → 402
+            await EnsureDealerQrAsync(request.TournamentId, ct);
             response.AccessToken = _tokens.CreateDealerToken(request);
         }
 

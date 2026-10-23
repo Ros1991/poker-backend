@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Api.Controllers;
@@ -12,6 +13,9 @@ namespace PokerTournament.Api.Controllers;
 /// <summary>
 /// A rota é só {id} (sem {homeGameId}), então o TenantAccessFilter não age aqui: as leituras
 /// por id conferem dono/membro/Admin via <see cref="HomeGameScopedControllerBase"/>.
+/// Plano (SPEC-20261023-1205): criar home game e adicionar membro conferem o limite do plano (402
+/// home_games_limit / members_limit; Admin do sistema ignora); as respostas levam ownerPlan e
+/// planFeatures (plano efetivo do dono). Editar, excluir e mexer em membro existente não conferem plano.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -19,10 +23,20 @@ namespace PokerTournament.Api.Controllers;
 public class HomeGamesController : HomeGameScopedControllerBase
 {
     private readonly IMapper _mapper;
+    private readonly PlanService _plans;
 
-    public HomeGamesController(IAppDbContext db, IMapper mapper) : base(db)
+    public HomeGamesController(IAppDbContext db, IMapper mapper, PlanService plans) : base(db)
     {
         _mapper = mapper;
+        _plans = plans;
+    }
+
+    // Map + plano efetivo do dono (ownerPlan/planFeatures)
+    private async Task<HomeGameResponse> ToResponseAsync(HomeGame homeGame, CancellationToken ct)
+    {
+        var response = _mapper.Map<HomeGameResponse>(homeGame);
+        await _plans.ApplyOwnerPlanAsync([response], ct);
+        return response;
     }
 
     [HttpGet]
@@ -40,7 +54,9 @@ public class HomeGamesController : HomeGameScopedControllerBase
             .OrderBy(h => h.Name)
             .ToListAsync(ct);
 
-        return Ok(_mapper.Map<List<HomeGameResponse>>(homeGames));
+        var responses = _mapper.Map<List<HomeGameResponse>>(homeGames);
+        await _plans.ApplyOwnerPlanAsync(responses, ct);
+        return Ok(responses);
     }
 
     [HttpGet("{id:guid}")]
@@ -58,7 +74,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
         if (!await CanAccessAsync(id, ct))
             return Forbidden();
 
-        return Ok(_mapper.Map<HomeGameResponse>(homeGame));
+        return Ok(await ToResponseAsync(homeGame, ct));
     }
 
     [HttpPost]
@@ -67,14 +83,19 @@ public class HomeGamesController : HomeGameScopedControllerBase
     {
         var userId = GetUserId();
 
+        // Limite de home games como dono (trava por dono na transação: dois cliques não passam juntos)
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await _plans.EnsureCanCreateHomeGameAsync(userId, bypass: IsAdmin, ct: ct);
+
         var homeGame = _mapper.Map<HomeGame>(request);
         homeGame.OwnerId = userId;
 
         _db.HomeGames.Add(homeGame);
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
 
         return CreatedAtAction(nameof(GetById), new { id = homeGame.Id },
-            _mapper.Map<HomeGameResponse>(homeGame));
+            await ToResponseAsync(homeGame, ct));
     }
 
     [HttpPut("{id:guid}")]
@@ -95,7 +116,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
         _mapper.Map(request, homeGame);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(_mapper.Map<HomeGameResponse>(homeGame));
+        return Ok(await ToResponseAsync(homeGame, ct));
     }
 
     [HttpDelete("{id:guid}")]
@@ -156,11 +177,16 @@ public class HomeGamesController : HomeGameScopedControllerBase
                 return Forbid();
         }
 
+        // Limite de membros do plano do dono (trava por home game na transação)
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
         var exists = await _db.HomeGameMembers
             .AnyAsync(m => m.HomeGameId == id && m.UserId == request.UserId, ct);
 
         if (exists)
             return Conflict(new { message = "Usuário já é membro deste home game." });
+
+        await _plans.EnsureCanAddMemberAsync(id, bypass: IsAdmin, ct: ct);
 
         // Vínculo só com jogador/dealer DESTE home game (pessoa apagada não conta: filtro de soft delete)
         if (request.PersonId is { } personId
@@ -179,6 +205,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         _db.HomeGameMembers.Add(member);
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
 
         member = await _db.HomeGameMembers
             .Include(m => m.User)

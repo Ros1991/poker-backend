@@ -43,7 +43,9 @@ public class TournamentsController : ControllerBase
         Guid homeGameId, [FromBody] CreateTournamentRequest request, CancellationToken ct)
     {
         var userId = GetUserId();
-        var result = await _tournamentService.CreateAsync(homeGameId, request, userId, ct);
+        // Limite de torneios do plano do dono (SPEC-20261023-1205); o Admin do sistema ignora
+        var result = await _tournamentService.CreateAsync(
+            homeGameId, request, userId, bypassPlanLimits: User.IsInRole("Admin"), ct: ct);
         return CreatedAtAction(nameof(GetById), new { homeGameId, id = result.Id }, result);
     }
 

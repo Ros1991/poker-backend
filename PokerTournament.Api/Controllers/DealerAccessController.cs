@@ -8,6 +8,8 @@ using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
+using PokerTournament.Api.Filters;
+using PokerTournament.Application.Plans;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -20,6 +22,10 @@ namespace PokerTournament.Api.Controllers;
 ///   na criação. O token só sai no GET do pedido aprovado, para o aparelho que o criou.
 /// - Desconectar um dealer / desativar o QR também derruba a conexão do hub já aberta
 ///   (DealerConnectionRegistry): sai do grupo do torneio, recebe "DealerRevoked" e cai.
+/// - Plano (SPEC-20261023-1205, D5): gerar/ver/revogar o QR e listar/autorizar/recusar/desconectar
+///   pedidos exigem DealerQr ([RequirePlanFeature]); o pedido anônimo e a emissão do token conferem
+///   no DealerAccessService. A sessão do terminal (dealer-access/session) NÃO confere plano: o dealer
+///   já aprovado continua operando o torneio (só pagamentos/mesas caem no 402).
 /// </summary>
 [ApiController]
 [Authorize]
@@ -36,12 +42,14 @@ public class DealerAccessController : ControllerBase
 
     // ---------------------------------------------------------------- QR (organizador)
 
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpPost("api/v1/tournaments/{tournamentId:guid}/dealer-access")]
     public async Task<ActionResult<DealerAccessResponse>> Create(Guid tournamentId, CancellationToken ct)
     {
         return Ok(await _service.CreateAsync(tournamentId, GetUserId(), ct));
     }
 
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpGet("api/v1/tournaments/{tournamentId:guid}/dealer-access")]
     public async Task<ActionResult<DealerAccessResponse>> GetActive(Guid tournamentId, CancellationToken ct)
     {
@@ -50,6 +58,7 @@ public class DealerAccessController : ControllerBase
     }
 
     /// <summary>Revoga o QR e derruba todos os dealers aprovados por ele.</summary>
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpDelete("api/v1/tournaments/{tournamentId:guid}/dealer-access")]
     public async Task<ActionResult> Revoke(Guid tournamentId, CancellationToken ct)
     {
@@ -91,18 +100,21 @@ public class DealerAccessController : ControllerBase
     // ---------------------------------------------------------------- organizador
 
     /// <summary>Pedidos pendentes e dealers conectados do torneio.</summary>
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpGet("api/v1/tournaments/{tournamentId:guid}/dealer-requests")]
     public async Task<ActionResult<List<DealerRequestResponse>>> ListRequests(Guid tournamentId, CancellationToken ct)
     {
         return Ok(await _service.ListAsync(tournamentId, ct));
     }
 
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpPost("api/v1/tournaments/{tournamentId:guid}/dealer-requests/{id:guid}/approve")]
     public async Task<ActionResult<DealerRequestResponse>> Approve(Guid tournamentId, Guid id, CancellationToken ct)
     {
         return Ok(await _service.ApproveAsync(tournamentId, id, GetUserId(), ct));
     }
 
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpPost("api/v1/tournaments/{tournamentId:guid}/dealer-requests/{id:guid}/reject")]
     public async Task<ActionResult<DealerRequestResponse>> Reject(Guid tournamentId, Guid id, CancellationToken ct)
     {
@@ -113,6 +125,7 @@ public class DealerAccessController : ControllerBase
     /// Desconecta um dealer aprovado: só aquele aparelho cai — as requisições na hora (cache
     /// marcado inativo) e a conexão do hub já aberta logo depois do aviso "DealerRevoked".
     /// </summary>
+    [RequirePlanFeature(PlanFeature.DealerQr)]
     [HttpPost("api/v1/tournaments/{tournamentId:guid}/dealer-requests/{id:guid}/revoke")]
     public async Task<ActionResult<DealerRequestResponse>> RevokeRequest(Guid tournamentId, Guid id, CancellationToken ct)
     {

@@ -74,7 +74,14 @@ public class TvTournamentInfo
     public int TotalEntries { get; set; }
     public int TotalRebuys { get; set; }
     public int TotalAddons { get; set; }
-    public string? ResponsiblePixKey { get; set; } // PIX do dia, já exibido em QR no telão
+    public string? ResponsiblePixKey { get; set; } // PIX do dia, já exibido em QR no telão (null no Mesa)
+
+    // SPEC-20261023-1205: plano efetivo do dono e o selo. Mesa = selo + QR da landing; Clube = selo
+    // discreto; Liga = sem selo, com a logo do clube (HomeGame.LogoUrl). No Mesa o snapshot já vem sem
+    // prêmios, mesas, PIX e saldos — o backend é a fonte, não o CSS.
+    public string Plan { get; set; } = "Mesa";
+    public bool ShowBadge { get; set; } = true;
+    public string? ClubLogoUrl { get; set; } // só Liga
 }
 
 public class TvBlindLevel

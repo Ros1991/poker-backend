@@ -295,6 +295,8 @@ else
 
 // Application Services
 builder.Services.AddSingleton<JwtTokenFactory>();
+// Planos Mesa/Clube/Liga (SPEC-20261023-1205): limites e recursos pelo plano efetivo do dono
+builder.Services.AddScoped<PlanService>();
 builder.Services.AddScoped<EmailConfirmationService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<PasswordResetService>();
@@ -317,11 +319,17 @@ builder.Services.AddMemoryCache();
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<PokerTournament.Api.Filters.TenantAccessFilter>();
+    // SPEC-20261023-1205: [RequirePlanFeature] — DEPOIS do isolamento (primeiro "é seu?", depois
+    // "seu plano permite?"). Chave de emergência: Plans:Enforce (Plans__Enforce=false desliga tudo)
+    options.Filters.Add<PokerTournament.Api.Filters.PlanFeatureFilter>();
     // Dealer por QR: tira contato/documento de jogador de qualquer resposta
     options.Filters.Add<PokerTournament.Api.Filters.ScopedTokenContactFilter>();
 });
 
 var app = builder.Build();
+
+if (bool.TryParse(app.Configuration[PlanService.EnforceKey], out var enforcePlans) && !enforcePlans)
+    Log.Warning("Plans:Enforce = false: nenhuma checagem de plano (limites e recursos pagos) está valendo");
 
 // Aplicar migrations automaticamente em produção
 using (var scope = app.Services.CreateScope())

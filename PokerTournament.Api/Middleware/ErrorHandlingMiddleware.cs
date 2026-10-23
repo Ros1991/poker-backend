@@ -34,6 +34,8 @@ public class ErrorHandlingMiddleware
         {
             // Senha certa, e-mail ainda não confirmado: 403 com code para o front oferecer "Reenviar"
             EmailNotConfirmedException notConfirmed => (HttpStatusCode.Forbidden, notConfirmed.Message),
+            // Recusa por plano (SPEC-20261023-1205): ANTES de DomainException (ela herda dela) → 402
+            PlanLimitException planLimit => (HttpStatusCode.PaymentRequired, planLimit.Message),
             DomainException domainEx => (HttpStatusCode.BadRequest, domainEx.Message),
             // xmin mudou entre a leitura e a gravação: não vaza a mensagem crua do EF
             DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Outra pessoa alterou isso ao mesmo tempo. Tente de novo."),
@@ -57,7 +59,23 @@ public class ErrorHandlingMiddleware
 
         // Erros com código de máquina (ex.: "email_not_confirmed") levam o campo code no corpo
         var code = exception is EmailNotConfirmedException enc ? enc.Code : null;
-        object response = code is null
+        object response = exception is PlanLimitException plan
+            // Contrato único do 402 (o UpgradeModal lê exatamente estes campos; nulos vão como null)
+            ? new
+            {
+                status = (int)statusCode,
+                error = statusCode.ToString(), // "PaymentRequired"
+                code = plan.Code,
+                feature = plan.Feature,
+                currentPlan = plan.CurrentPlan,
+                requiredPlan = plan.RequiredPlan,
+                usage = plan.Usage,
+                limit = plan.Limit,
+                nextAllowedAt = plan.NextAllowedAt,
+                message,
+                timestamp = DateTimeOffset.UtcNow
+            }
+            : code is null
             ? new
             {
                 status = (int)statusCode,

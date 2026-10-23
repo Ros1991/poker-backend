@@ -18,4 +18,10 @@ public class HomeGameResponse
     public int MemberCount { get; set; }
     public int TournamentCount { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    // Plano EFETIVO do dono (SPEC-20261023-1205) e os recursos que ele libera neste home game:
+    // é por eles que o frontend decide cadeado (e não pelo plano de quem está logado).
+    // Preenchidos pelo controller via PlanService depois do Map (não passam pelo MappingProfile).
+    public string OwnerPlan { get; set; } = "Mesa";
+    public List<string> PlanFeatures { get; set; } = [];
 }

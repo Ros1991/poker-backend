@@ -9,12 +9,16 @@ using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Enums;
+using PokerTournament.Api.Filters;
+using PokerTournament.Application.Plans;
 
 namespace PokerTournament.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/tournaments/{tournamentId:guid}/[controller]")]
 [Authorize]
+// SPEC-20261023-1205: recurso exclusivo do plano pago (402 feature_locked no Mesa, inclusive para o token de dealer)
+[RequirePlanFeature(PlanFeature.Payments)]
 public class PaymentsController : ControllerBase
 {
     private readonly PaymentService _paymentService;

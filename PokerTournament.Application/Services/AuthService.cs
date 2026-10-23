@@ -8,6 +8,7 @@ using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Exceptions;
 
@@ -276,7 +277,13 @@ public class AuthService
 
         if (user is null) return null;
 
-        return new UserResponse
+        return ToUserResponse(user);
+    }
+
+    /// <summary>UserResponse de login/refresh/auth/me, com o plano da conta (SPEC-20261023-1205).</summary>
+    private static UserResponse ToUserResponse(User user)
+    {
+        var response = new UserResponse
         {
             Id = user.Id,
             Email = user.Email,
@@ -284,6 +291,8 @@ public class AuthService
             Role = user.Role,
             PhotoUrl = user.PhotoUrl
         };
+        PlanCatalog.FillUserPlan(response, user);
+        return response;
     }
 
     /// <summary>Sai só deste aparelho. Token antigo (sem sessão) limpa a coluna legada.</summary>
@@ -372,14 +381,7 @@ public class AuthService
         AccessToken = _tokens.CreateUserToken(user, sessionId),
         RefreshToken = refreshToken,
         ExpiresIn = _tokens.AccessTokenMinutes * 60,
-        User = new UserResponse
-        {
-            Id = user.Id,
-            Email = user.Email,
-            Name = user.FullName,
-            Role = user.Role,
-            PhotoUrl = user.PhotoUrl
-        }
+        User = ToUserResponse(user)
     };
 
     private void MarkSessionInactive(Guid sessionId) =>

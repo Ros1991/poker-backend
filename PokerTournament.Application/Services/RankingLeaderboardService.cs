@@ -3,6 +3,7 @@ using Jint;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 
@@ -28,10 +29,12 @@ public class RankingLeaderboardService
         new() { PropertyNameCaseInsensitive = true };
 
     private readonly IAppDbContext _db;
+    private readonly PlanService _plans;
 
-    public RankingLeaderboardService(IAppDbContext db)
+    public RankingLeaderboardService(IAppDbContext db, PlanService plans)
     {
         _db = db;
+        _plans = plans;
     }
 
     public async Task<RankingStandings> ComputeAsync(Ranking ranking, CancellationToken ct = default)
@@ -175,6 +178,11 @@ public class RankingLeaderboardService
 
         var usesTable = ranking.ScoringMode == "Table" && !string.IsNullOrWhiteSpace(ranking.ScoringTable);
 
+        // SPEC-20261023-1205: selo/logo como no telão (plano efetivo do dono do home game).
+        // A página pública continua legível mesmo se o dono cair para o Mesa (queda não apaga nada).
+        var plan = await _plans.GetUserEffectivePlanAsync(ranking.HomeGame.OwnerId, ct);
+        var planDefinition = PlanCatalog.Get(plan);
+
         return new PublicRankingResponse
         {
             Slug = ranking.Slug!,
@@ -218,6 +226,9 @@ public class RankingLeaderboardService
                 }).ToList(),
             }).ToList(),
             GeneratedAt = DateTimeOffset.UtcNow,
+            Plan = plan,
+            ShowBadge = planDefinition.ShowBadge,
+            ClubLogoUrl = planDefinition.Has(PlanFeature.ClubLogoOnTv) ? ranking.HomeGame.LogoUrl : null,
         };
     }
 

@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Mvc;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
+using PokerTournament.Api.Filters;
+using PokerTournament.Application.Plans;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -45,6 +47,8 @@ public class TournamentDirectController : ControllerBase
         return Ok(result);
     }
 
+    // PIX do dia é financeiro (D3): 402 feature_locked no Mesa
+    [RequirePlanFeature(PlanFeature.Payments)]
     [HttpPut("{tournamentId:guid}/pix-key")]
     public async Task<ActionResult<TournamentResponse>> UpdatePixKey(
         Guid tournamentId, [FromBody] UpdatePixKeyRequest request, CancellationToken ct)

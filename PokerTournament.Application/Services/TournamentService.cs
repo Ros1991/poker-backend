@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -13,11 +14,24 @@ public class TournamentService
 {
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
+    private readonly PlanService _plans;
 
-    public TournamentService(IAppDbContext db, IMapper mapper)
+    public TournamentService(IAppDbContext db, IMapper mapper, PlanService plans)
     {
         _db = db;
         _mapper = mapper;
+        _plans = plans;
+    }
+
+    /// <summary>
+    /// Map + plano do dono (ownerPlan/planFeatures, SPEC-20261023-1205): é por ele que o frontend
+    /// decide os cadeados do torneio e do terminal do dealer.
+    /// </summary>
+    private async Task<TournamentResponse> ToResponseAsync(Tournament tournament, CancellationToken ct)
+    {
+        var response = _mapper.Map<TournamentResponse>(tournament);
+        await _plans.ApplyOwnerPlanAsync(response, ct);
+        return response;
     }
 
     public async Task<PaginatedResponse<TournamentResponse>> GetAllAsync(
@@ -36,6 +50,9 @@ public class TournamentService
             .ToListAsync(ct);
 
         var mapped = _mapper.Map<List<TournamentResponse>>(items);
+        // Todos do mesmo home game: uma leitura de plano (cacheada) por página
+        foreach (var item in mapped)
+            await _plans.ApplyOwnerPlanAsync(item, ct);
         return new PaginatedResponse<TournamentResponse>(mapped, page, pageSize, totalCount);
     }
 
@@ -60,7 +77,7 @@ public class TournamentService
             .FirstOrDefaultAsync(t => t.Id == id, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        return _mapper.Map<TournamentResponse>(tournament);
+        return await ToResponseAsync(tournament, ct);
     }
 
     /// <summary>
@@ -86,12 +103,13 @@ public class TournamentService
         tournament.PunctualityBonusChips = chips;
         await _db.SaveChangesAsync(ct);
 
-        return _mapper.Map<TournamentResponse>(tournament);
+        return await ToResponseAsync(tournament, ct);
     }
 
     /// <summary>
     /// Atualiza a chave PIX do dia. Editável em qualquer status exceto Cancelled —
     /// ajuste operacional (a chave pode mudar durante o torneio), não config de Draft.
+    /// PIX é financeiro: o PUT pix-key exige o recurso Payments (402 no Mesa, via [RequirePlanFeature]).
     /// </summary>
     public async Task<TournamentResponse> UpdatePixKeyAsync(
         Guid id, string? pixKey, CancellationToken ct = default)
@@ -108,7 +126,7 @@ public class TournamentService
         tournament.ResponsiblePixKey = string.IsNullOrWhiteSpace(pixKey) ? null : pixKey.Trim();
         await _db.SaveChangesAsync(ct);
 
-        return _mapper.Map<TournamentResponse>(tournament);
+        return await ToResponseAsync(tournament, ct);
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
@@ -123,18 +141,31 @@ public class TournamentService
         await _db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// Cria o torneio. Limite do plano do dono (SPEC-20261023-1205): no Mesa, 1 torneio criado a cada
+    /// 7 dias (402 tournaments_per_week com nextAllowedAt); o Admin do sistema passa
+    /// <paramref name="bypassPlanLimits"/> = true. Sem o recurso Payments (Mesa) o torneio nasce sem
+    /// custos automáticos de staff/ranking, sem ranking e sem PIX do dia (ver StripPaidFields).
+    /// Tudo numa transação com trava por dono: dois cliques simultâneos não criam dois torneios no Mesa.
+    /// </summary>
     public async Task<TournamentResponse> CreateAsync(
-        Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null, CancellationToken ct = default)
+        Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null,
+        bool bypassPlanLimits = false, CancellationToken ct = default)
     {
         var homeGame = await _db.HomeGames
             .FirstOrDefaultAsync(h => h.Id == homeGameId, ct)
             ?? throw new DomainException("Home game não encontrado.");
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await _plans.EnsureCanCreateTournamentAsync(homeGameId, bypassPlanLimits, ct);
 
         var tournament = _mapper.Map<Tournament>(request);
         tournament.HomeGameId = homeGameId;
         tournament.Status = nameof(TournamentStatus.Draft);
         tournament.CreatedBy = createdBy;
         tournament.CurrentLevel = 1;
+        if (!await _plans.HasFeatureForHomeGameAsync(homeGameId, PlanFeature.Payments, ct))
+            StripPaidFields(tournament);
 
         // Copy blind levels from template if specified
         if (request.BlindStructureId.HasValue)
@@ -192,8 +223,23 @@ public class TournamentService
 
         _db.Tournaments.Add(tournament);
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
 
-        return _mapper.Map<TournamentResponse>(tournament);
+        return await ToResponseAsync(tournament, ct);
+    }
+
+    /// <summary>
+    /// Mesa (sem o recurso Payments): o torneio não cria custos automáticos nem guarda PIX do dia —
+    /// senão NetPrizePool divergiria de TotalPrizePool sem o organizador conseguir ver o motivo.
+    /// Vale pelo plano do DONO (não de quem cria/edita); desligado com Plans:Enforce = false.
+    /// </summary>
+    private static void StripPaidFields(Tournament tournament)
+    {
+        tournament.StaffAmount = null;
+        tournament.RankingContribMode = null;
+        tournament.RankingContribValue = null;
+        tournament.RankingId = null;
+        tournament.ResponsiblePixKey = null;
     }
 
     public async Task<TournamentResponse> UpdateAsync(
@@ -209,6 +255,9 @@ public class TournamentService
 
         var previousStructureId = tournament.BlindStructureId;
         _mapper.Map(request, tournament);
+        var hasPayments = await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.Payments, ct);
+        if (!hasPayments)
+            StripPaidFields(tournament);
 
         // If the blind structure changed (or was set when previously null), copy levels
         if (request.BlindStructureId.HasValue && request.BlindStructureId != previousStructureId)
@@ -243,16 +292,25 @@ public class TournamentService
         }
 
         // Garante custos automáticos caso staff/ranking tenham sido definidos só na edição.
-        await EnsureAutoCostsAsync(tournament, ct);
+        await EnsureAutoCostsAsync(tournament, hasPayments, ct);
 
         await _db.SaveChangesAsync(ct);
 
-        return _mapper.Map<TournamentResponse>(tournament);
+        return await ToResponseAsync(tournament, ct);
     }
 
-    /// <summary>Cria (idempotente) os custos automáticos de staff/ranking se faltarem.</summary>
-    private async Task EnsureAutoCostsAsync(Tournament tournament, CancellationToken ct)
+    /// <summary>
+    /// Cria (idempotente) os custos automáticos de staff/ranking se faltarem. Sem o recurso Payments
+    /// (Mesa) não cria nada e zera os campos que os gerariam.
+    /// </summary>
+    private async Task EnsureAutoCostsAsync(Tournament tournament, bool hasPayments, CancellationToken ct)
     {
+        if (!hasPayments)
+        {
+            StripPaidFields(tournament);
+            return;
+        }
+
         var existing = await _db.CostExtras
             .Where(c => c.TournamentId == tournament.Id)
             .ToListAsync(ct);
@@ -431,7 +489,7 @@ public class TournamentService
         });
 
         await _db.SaveChangesAsync(ct);
-        return _mapper.Map<TournamentResponse>(tournament);
+        return await ToResponseAsync(tournament, ct);
     }
 
     private static void ValidateStatusTransition(string currentStatus, string newStatus)

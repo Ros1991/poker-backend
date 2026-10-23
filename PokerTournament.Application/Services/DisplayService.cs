@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -42,15 +43,18 @@ public class DisplayService
     private readonly TimerService _timer;
     private readonly PrizeService _prizes;
     private readonly TournamentService _tournaments;
+    private readonly PlanService _plans;
 
     public DisplayService(
-        IAppDbContext db, IMemoryCache cache, TimerService timer, PrizeService prizes, TournamentService tournaments)
+        IAppDbContext db, IMemoryCache cache, TimerService timer, PrizeService prizes, TournamentService tournaments,
+        PlanService plans)
     {
         _db = db;
         _cache = cache;
         _timer = timer;
         _prizes = prizes;
         _tournaments = tournaments;
+        _plans = plans;
     }
 
     // ---------------------------------------------------------------- TV (sem login)
@@ -277,6 +281,20 @@ public class DisplayService
         if (t is null)
             return null;
 
+        // SPEC-20261023-1205: o telão segue o plano efetivo do DONO do home game. No Mesa (D13/D3/D4)
+        // ele é só vitrine — relógio, jogadores e eliminados: sem prêmios, sem mesas, sem PIX e sem
+        // saldos (a coluna "Deve" some). O backend é a fonte; o frontend só não mostra o que não veio.
+        var homeGame = await _db.HomeGames.IgnoreQueryFilters().AsNoTracking()
+            .Where(h => h.Id == t.HomeGameId)
+            .Select(h => new { h.OwnerId, h.LogoUrl })
+            .FirstOrDefaultAsync(ct);
+        var plan = homeGame is null ? PlanCatalog.Mesa : await _plans.GetUserEffectivePlanAsync(homeGame.OwnerId, ct);
+        var planDefinition = PlanCatalog.Get(plan);
+        var showPrizes = _plans.Allows(plan, PlanFeature.Prizes);
+        var showTables = _plans.Allows(plan, PlanFeature.Tables);
+        var showMoney = _plans.Allows(plan, PlanFeature.Payments);
+        var showPix = _plans.Allows(plan, PlanFeature.PixCardOnTv);
+
         TimerStateResponse? timer = null;
         try { timer = await _timer.GetTimerStateAsync(tournamentId, ct); }
         catch (DomainException) { /* torneio sem estrutura de blinds */ }
@@ -306,8 +324,26 @@ public class DisplayService
             })
             .ToListAsync(ct);
 
+        // Prize pool sem premiação no plano: calculado antes de zerar os saldos (não vai ao telão)
+        var collected = entries.Sum(e => e.TotalDue);
+        foreach (var entry in entries)
+        {
+            if (!showMoney)
+            {
+                entry.Balance = 0;
+                entry.TotalDue = 0;
+            }
+            if (!showPrizes)
+                entry.PrizeAmount = null;
+            if (!showTables)
+            {
+                entry.TableId = null;
+                entry.SeatNumber = null;
+            }
+        }
+
         var activeStatus = nameof(EntryStatus.Active);
-        var tables = await _db.TournamentTables.AsNoTracking()
+        var tables = !showTables ? new List<TvTable>() : await _db.TournamentTables.AsNoTracking()
             .Where(x => x.TournamentId == tournamentId && x.IsActive)
             .OrderBy(x => x.TableNumber)
             .Select(x => new TvTable
@@ -332,7 +368,12 @@ public class DisplayService
 
         List<TvPrize> prizes;
         decimal prizePool;
-        if (t.PrizeConfirmed)
+        if (!showPrizes)
+        {
+            prizes = [];
+            prizePool = 0;
+        }
+        else if (t.PrizeConfirmed)
         {
             prizes = await _db.TournamentPrizes.AsNoTracking()
                 .Where(p => p.TournamentId == tournamentId)
@@ -354,7 +395,7 @@ public class DisplayService
                 prizes = []; // prêmio ainda não calculável (poucos jogadores / pool zerado)
             }
             var costs = await _db.CostExtras.Where(c => c.TournamentId == tournamentId).SumAsync(c => c.Amount, ct);
-            prizePool = entries.Sum(e => e.TotalDue) - costs;
+            prizePool = collected - costs;
         }
 
         return new TvSnapshotResponse
@@ -373,7 +414,11 @@ public class DisplayService
                 TotalEntries = t.TotalEntries,
                 TotalRebuys = t.TotalRebuys,
                 TotalAddons = t.TotalAddons,
-                ResponsiblePixKey = t.ResponsiblePixKey,
+                ResponsiblePixKey = showPix ? t.ResponsiblePixKey : null,
+                Plan = plan,
+                ShowBadge = planDefinition.ShowBadge,
+                // Decoração segue o plano de verdade (não a chave de emergência): logo só na Liga
+                ClubLogoUrl = planDefinition.Has(PlanFeature.ClubLogoOnTv) ? homeGame?.LogoUrl : null,
             },
             Timer = timer,
             BlindLevels = levels,

@@ -56,4 +56,9 @@ public class TournamentResponse
     public decimal? RankingPrizeAccrued { get; set; }
     public bool IsActive { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    // Plano EFETIVO do dono do home game (SPEC-20261023-1205) e os recursos liberados neste torneio
+    // (cadeados das abas, terminal do dealer). Preenchidos pelo TournamentService depois do Map.
+    public string OwnerPlan { get; set; } = "Mesa";
+    public List<string> PlanFeatures { get; set; } = [];
 }

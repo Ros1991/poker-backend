@@ -1,6 +1,7 @@
 using AutoMapper;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Application.Mappings;
@@ -16,9 +17,13 @@ public class MappingProfile : Profile
             .ForAllMembers(opt => opt.Condition((src, dest, srcMember) => srcMember != null));
 
         // HomeGame
+        // OwnerPlan/PlanFeatures: plano EFETIVO do dono, preenchido via PlanService depois do Map
+        // (o flattening do AutoMapper levaria Owner.Plan cru, sem o vencimento)
         CreateMap<HomeGame, HomeGameResponse>()
             .ForMember(d => d.MemberCount, o => o.MapFrom(s => s.Members.Count))
-            .ForMember(d => d.TournamentCount, o => o.MapFrom(s => s.Tournaments.Count));
+            .ForMember(d => d.TournamentCount, o => o.MapFrom(s => s.Tournaments.Count))
+            .ForMember(d => d.OwnerPlan, o => o.Ignore())
+            .ForMember(d => d.PlanFeatures, o => o.Ignore());
         CreateMap<CreateHomeGameRequest, HomeGame>();
 
         // HomeGameMember
@@ -33,7 +38,9 @@ public class MappingProfile : Profile
         // Tournament — navegações podem não estar carregadas (null-check obrigatório)
         CreateMap<Tournament, TournamentResponse>()
             .ForMember(d => d.HomeGameName, o => o.MapFrom(s => s.HomeGame != null ? s.HomeGame.Name : null))
-            .ForMember(d => d.RankingName, o => o.MapFrom(s => s.Ranking != null ? s.Ranking.Name : null));
+            .ForMember(d => d.RankingName, o => o.MapFrom(s => s.Ranking != null ? s.Ranking.Name : null))
+            .ForMember(d => d.OwnerPlan, o => o.Ignore())
+            .ForMember(d => d.PlanFeatures, o => o.Ignore());
         CreateMap<CreateTournamentRequest, Tournament>();
 
         // TournamentEntry
@@ -41,9 +48,12 @@ public class MappingProfile : Profile
             .ForMember(d => d.Person, o => o.MapFrom(s => s.Person));
 
         // User
+        // Plano da conta (SPEC-20261023-1205): gravado + efetivo (Mesa depois do vencimento)
         CreateMap<User, UserResponse>()
             .ForMember(d => d.Name, o => o.MapFrom(s => s.FullName))
-            .ForMember(d => d.PhotoUrl, o => o.MapFrom(s => s.PhotoUrl));
+            .ForMember(d => d.PhotoUrl, o => o.MapFrom(s => s.PhotoUrl))
+            .ForMember(d => d.EffectivePlan, o => o.Ignore())
+            .AfterMap((s, d) => PlanCatalog.FillUserPlan(d, s));
 
         // TournamentBlindLevel
         CreateMap<TournamentBlindLevel, TournamentBlindLevelResponse>();

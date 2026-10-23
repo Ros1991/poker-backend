@@ -18,6 +18,11 @@ public class PublicRankingResponse
     public List<PublicRankingStageResponse> Stages { get; set; } = [];
     public List<PublicRankingPlayerResponse> Leaderboard { get; set; } = [];
     public DateTimeOffset GeneratedAt { get; set; }
+
+    // SPEC-20261023-1205: mesma regra de selo/logo do telão (plano efetivo do dono do home game)
+    public string Plan { get; set; } = "Mesa";
+    public bool ShowBadge { get; set; } = true;
+    public string? ClubLogoUrl { get; set; } // só Liga
 }
 
 // Etapa identificada pela ordem cronológica (1..N), não pelo Id do torneio
