@@ -151,7 +151,7 @@ builder.Services.AddAuthorizationBuilder()
         .RequireRole("Admin", "TournamentDirector", "Dealer").AddRequirements(new TokenKindRequirement()));
 
 // Limite por IP nos endpoints anônimos que criam coisas (TV nova, pedido de acesso do dealer,
-// esqueci/redefinir senha). O IP vem de ClientIp.Resolve (valor mais à direita do
+// esqueci/redefinir senha, confirmar e-mail / reenviar confirmação). O IP vem de ClientIp.Resolve (valor mais à direita do
 // X-Forwarded-For — o único que o cliente não controla; os da esquerda são forjáveis e
 // dariam uma partição nova a cada requisição).
 builder.Services.AddRateLimiter(options =>
@@ -290,11 +290,12 @@ else
     builder.Services.AddScoped<IEmailSender, PokerTournament.Infrastructure.Services.LoggingEmailSender>();
     // Fora de Development isso é defeito de configuração: ninguém recebe o link de senha
     if (!builder.Environment.IsDevelopment() && !hasResendToken)
-        Log.Error("RESEND_APITOKEN ausente: nenhum e-mail é enviado (o link de redefinição de senha fica só no log do servidor)");
+        Log.Error("RESEND_APITOKEN ausente: nenhum e-mail é enviado (os links de redefinição de senha e de confirmação de e-mail ficam só no log do servidor)");
 }
 
 // Application Services
 builder.Services.AddSingleton<JwtTokenFactory>();
+builder.Services.AddScoped<EmailConfirmationService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<PasswordResetService>();
 builder.Services.AddScoped<DealerAccessService>();

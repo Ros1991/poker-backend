@@ -18,6 +18,9 @@ namespace PokerTournament.Api.Controllers;
 [Authorize]
 public class UsersController : ControllerBase
 {
+    public const string LookupNotFoundMessage =
+        "Nenhuma conta confirmada com este e-mail. A pessoa precisa criar a conta e confirmar o e-mail.";
+
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
     private readonly AuthService _auth;
@@ -48,6 +51,7 @@ public class UsersController : ControllerBase
     /// (dono, membro administrador ou Admin do sistema) usa, com no máximo 10 buscas por
     /// minuto por usuário (política "user-lookup"). Nunca lista, nunca aceita prefixo/contains
     /// e nunca devolve o papel. Registrada antes de {id:guid} de propósito ("lookup" não é guid).
+    /// Conta com o e-mail ainda não confirmado não é encontrada (SPEC-20261023-1209, D16.6).
     /// </summary>
     [HttpGet("lookup")]
     [EnableRateLimiting("user-lookup")]
@@ -60,8 +64,9 @@ public class UsersController : ControllerBase
         if (string.IsNullOrWhiteSpace(email))
             return BadRequest(new { message = "Informe o e-mail." });
 
-        // Contas antigas que diferem só por maiúsculas: a igual ao digitado, senão a mais antiga
-        var user = await UserEmail.MatchingEmail(_db.Users.Where(u => u.IsActive), email)
+        // Contas antigas que diferem só por maiúsculas: a igual ao digitado, senão a mais antiga.
+        // Só contas com o e-mail confirmado (D16.6): conta recém-criada e não confirmada não aparece.
+        var user = await UserEmail.MatchingEmail(_db.Users.Where(u => u.IsActive && u.EmailConfirmedAt != null), email)
             .Select(u => new UserLookupResponse
             {
                 Id = u.Id,
@@ -72,7 +77,7 @@ public class UsersController : ControllerBase
             .FirstOrDefaultAsync(ct);
 
         if (user is null)
-            return NotFound(new { message = "Nenhuma conta com este e-mail." });
+            return NotFound(new { message = LookupNotFoundMessage });
 
         return Ok(user);
     }
@@ -119,7 +124,9 @@ public class UsersController : ControllerBase
             Whatsapp = request.Whatsapp,
             PasswordHash = AuthService.HashPassword(request.Password),
             Role = role,
-            IsActive = true
+            IsActive = true,
+            // D16.7: criada pelo Admin, que responde por ela — nasce confirmada
+            EmailConfirmedAt = DateTimeOffset.UtcNow
         };
 
         _db.Users.Add(user);

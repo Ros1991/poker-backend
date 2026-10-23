@@ -32,6 +32,8 @@ public class ErrorHandlingMiddleware
     {
         var (statusCode, message) = exception switch
         {
+            // Senha certa, e-mail ainda não confirmado: 403 com code para o front oferecer "Reenviar"
+            EmailNotConfirmedException notConfirmed => (HttpStatusCode.Forbidden, notConfirmed.Message),
             DomainException domainEx => (HttpStatusCode.BadRequest, domainEx.Message),
             // xmin mudou entre a leitura e a gravação: não vaza a mensagem crua do EF
             DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Outra pessoa alterou isso ao mesmo tempo. Tente de novo."),
@@ -53,13 +55,24 @@ public class ErrorHandlingMiddleware
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)statusCode;
 
-        var response = new
-        {
-            status = (int)statusCode,
-            error = statusCode.ToString(),
-            message,
-            timestamp = DateTimeOffset.UtcNow
-        };
+        // Erros com código de máquina (ex.: "email_not_confirmed") levam o campo code no corpo
+        var code = exception is EmailNotConfirmedException enc ? enc.Code : null;
+        object response = code is null
+            ? new
+            {
+                status = (int)statusCode,
+                error = statusCode.ToString(),
+                message,
+                timestamp = DateTimeOffset.UtcNow
+            }
+            : new
+            {
+                status = (int)statusCode,
+                error = statusCode.ToString(),
+                code,
+                message,
+                timestamp = DateTimeOffset.UtcNow
+            };
 
         var json = JsonSerializer.Serialize(response, new JsonSerializerOptions
         {

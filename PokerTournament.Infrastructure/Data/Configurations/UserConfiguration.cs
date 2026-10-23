@@ -54,6 +54,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .HasDefaultValue(true);
 
         builder.Property(u => u.LastLoginAt).HasColumnName("last_login_at");
+        builder.Property(u => u.EmailConfirmedAt).HasColumnName("email_confirmed_at");
         builder.Property(u => u.RefreshToken).HasColumnName("refresh_token");
         builder.Property(u => u.RefreshTokenExpiresAt).HasColumnName("refresh_token_expires_at");
 

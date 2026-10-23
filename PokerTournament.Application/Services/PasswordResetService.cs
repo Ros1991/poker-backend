@@ -14,7 +14,8 @@ namespace PokerTournament.Application.Services;
 /// "Esqueci minha senha": pedido → e-mail com link de uso único (1h) → senha nova →
 /// todas as sessões do usuário caem. A resposta do pedido é sempre neutra (e sempre rápida:
 /// o envio acontece em segundo plano, para o tempo de resposta não denunciar se o e-mail
-/// existe); no banco só fica o hash do token.
+/// existe); no banco só fica o hash do token. Redefinir pelo link também confirma o e-mail
+/// de conta ainda não confirmada (SPEC-20261023-1209, D16.5).
 /// </summary>
 public class PasswordResetService
 {
@@ -33,19 +34,22 @@ public class PasswordResetService
     private readonly IServiceScopeFactory _scopes;
     private readonly PublicAppOptions _publicApp;
     private readonly ILogger<PasswordResetService> _logger;
+    private readonly EmailConfirmationService _emailConfirmation;
 
     public PasswordResetService(
         IAppDbContext db,
         AuthService auth,
         IServiceScopeFactory scopes,
         IOptions<PublicAppOptions> publicApp,
-        ILogger<PasswordResetService> logger)
+        ILogger<PasswordResetService> logger,
+        EmailConfirmationService emailConfirmation)
     {
         _db = db;
         _auth = auth;
         _scopes = scopes;
         _publicApp = publicApp.Value;
         _logger = logger;
+        _emailConfirmation = emailConfirmation;
     }
 
     /// <summary>
@@ -183,6 +187,12 @@ public class PasswordResetService
         user.RefreshTokenExpiresAt = null;
         reset.UsedAt = now;
 
+        // D16.5: o link chegou na caixa de entrada, então a pessoa controla o e-mail —
+        // conta ainda não confirmada fica confirmada (e os links de confirmação perdem o sentido)
+        var confirmsEmail = user.EmailConfirmedAt is null;
+        if (confirmsEmail)
+            user.EmailConfirmedAt = now;
+
         _db.AuditLogs.Add(new AuditLog
         {
             EntityType = "User",
@@ -194,8 +204,25 @@ public class PasswordResetService
             UserAgent = Truncate(userAgent, 500),
             CreatedAt = now
         });
+        if (confirmsEmail)
+        {
+            _db.AuditLogs.Add(new AuditLog
+            {
+                EntityType = "User",
+                EntityId = user.Id,
+                Action = EmailConfirmationService.AuditAction,
+                NewValues = """{"via":"password_reset"}""",
+                UserId = user.Id,
+                UserName = user.FullName,
+                IpAddress = Truncate(ip, 50),
+                UserAgent = Truncate(userAgent, 500),
+                CreatedAt = now
+            });
+        }
 
         await _db.SaveChangesAsync(ct);
+        if (confirmsEmail)
+            await _emailConfirmation.RevokePendingAsync(user.Id, ct);
         await _auth.RevokeAllSessionsAsync(user.Id, ct);
 
         _logger.LogInformation("Senha redefinida pelo link para o usuário {UserId}", user.Id);

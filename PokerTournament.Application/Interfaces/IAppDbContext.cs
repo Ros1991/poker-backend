@@ -28,6 +28,7 @@ public interface IAppDbContext
     DbSet<TournamentDealer> TournamentDealers { get; }
     DbSet<AuthSession> AuthSessions { get; }
     DbSet<PasswordResetToken> PasswordResetTokens { get; }
+    DbSet<EmailConfirmationToken> EmailConfirmationTokens { get; }
     DbSet<DisplaySession> DisplaySessions { get; }
     DbSet<DealerAccess> DealerAccesses { get; }
     DbSet<DealerRequest> DealerRequests { get; }

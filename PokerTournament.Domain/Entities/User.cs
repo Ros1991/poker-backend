@@ -11,6 +11,8 @@ public class User : BaseEntity
     public string Role { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     public DateTimeOffset? LastLoginAt { get; set; }
+    /// <summary>Quando a pessoa clicou no link "Confirme seu e-mail" (null = login bloqueado). Contas anteriores à confirmação: created_at.</summary>
+    public DateTimeOffset? EmailConfirmedAt { get; set; }
     public string? RefreshToken { get; set; }
     public DateTimeOffset? RefreshTokenExpiresAt { get; set; }
 

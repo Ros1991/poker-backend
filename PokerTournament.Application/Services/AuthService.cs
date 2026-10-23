@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -26,15 +27,22 @@ public class AuthService
     // o volume e logout/revogação gravam "inativa" nele na hora.
     private static readonly TimeSpan SessionCacheTtl = TimeSpan.FromSeconds(60);
 
+    public const string EmailInUseMessage = "E-mail já está em uso.";
+    public const string RegisteredMessage =
+        "Enviamos um link para confirmar seu e-mail. Ele vale por 48 horas; confira também a caixa de spam.";
+
     private readonly IAppDbContext _db;
     private readonly JwtTokenFactory _tokens;
     private readonly IMemoryCache _cache;
+    private readonly EmailConfirmationService _emailConfirmation;
 
-    public AuthService(IAppDbContext db, JwtTokenFactory tokens, IMemoryCache cache)
+    public AuthService(
+        IAppDbContext db, JwtTokenFactory tokens, IMemoryCache cache, EmailConfirmationService emailConfirmation)
     {
         _db = db;
         _tokens = tokens;
         _cache = cache;
+        _emailConfirmation = emailConfirmation;
     }
 
     /// <summary>
@@ -100,6 +108,11 @@ public class AuthService
         if (!VerifyPassword(request.Password, user.PasswordHash))
             throw new DomainException("E-mail ou senha inválidos.");
 
+        // Só DEPOIS da senha certa: e-mail/senha errados continuam 400 neutro e não revelam
+        // que a conta existe. Sem confirmação não há sessão (403 email_not_confirmed).
+        if (user.EmailConfirmedAt is null)
+            throw new EmailNotConfirmedException(EmailConfirmationService.NotConfirmedMessage(user.Email));
+
         // SEC-02: re-hash transparente de senhas legadas (SHA-256) para PBKDF2 no login
         if (IsLegacyHash(user.PasswordHash))
             user.PasswordHash = HashPassword(request.Password);
@@ -114,39 +127,110 @@ public class AuthService
         return BuildResponse(user, session.Id, refreshToken);
     }
 
-    public async Task<AuthResponse> RegisterAsync(
-        RegisterRequest request, string? userAgent = null, CancellationToken ct = default)
+    /// <summary>
+    /// Cadastro público (SPEC-20261023-1209): cria a conta com o e-mail NÃO confirmado, sem sessão
+    /// e sem LastLoginAt, e manda o link "Confirme seu e-mail" (48 h). Cadastro repetido com o
+    /// e-mail de uma conta ainda não confirmada sobrescreve nome/apelido/WhatsApp/senha e reenvia
+    /// o link (D16.4 — quem controla a caixa é quem confirma); conta confirmada (ou desativada) →
+    /// "E-mail já está em uso.". Os dois casos de sucesso devolvem exatamente a mesma resposta.
+    /// Dois cadastros simultâneos com o mesmo e-mail entram em fila pela trava consultiva por
+    /// e-mail: o segundo encontra a conta do primeiro e a sobrescreve (último a chegar vence).
+    /// O reenvio do cadastro repetido respeita o cooldown de 2 min do "Reenviar" (o link anterior
+    /// continua valendo e confirma a conta com os dados novos).
+    /// </summary>
+    public async Task<RegisterResponse> RegisterAsync(
+        RegisterRequest request, string? ip = null, string? userAgent = null, CancellationToken ct = default)
     {
         var email = UserEmail.Normalize(request.Email);
+        var fullName = (request.FullName ?? string.Empty).Trim();
+        var nickname = NullIfBlank(request.Nickname);
+        var whatsapp = NullIfBlank(request.Whatsapp);
+        // Tudo validado ANTES de olhar o banco: nenhuma mensagem de validação denuncia conta existente
+        ValidateRegistration(email, fullName, nickname, whatsapp, request.Password);
+
+        User user;
+        string? link = null;
+        try
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            await EmailConfirmationService.LockEmailAsync(_db, email, ct);
+
+            // Sem distinguir maiúsculas: "Fulano@x.com" não cadastra se "fulano@x.com" já existe.
+            // Contas antigas que diferem só por maiúsculas são todas confirmadas (migration).
+            var matches = await UserEmail.MatchingEmail(_db.Users, email).ToListAsync(ct);
+            if (matches.Any(u => u.EmailConfirmedAt is not null || !u.IsActive))
+                throw new DomainException(EmailInUseMessage);
+
+            var existing = matches.FirstOrDefault();
+            if (existing is null)
+            {
+                user = new User
+                {
+                    FullName = fullName,
+                    Nickname = nickname,
+                    Email = email, // sempre em minúsculas no banco
+                    Whatsapp = whatsapp,
+                    PasswordHash = HashPassword(request.Password),
+                    Role = "Player",
+                    IsActive = true,
+                    EmailConfirmedAt = null // login bloqueado até clicar no link
+                };
+                _db.Users.Add(user);
+            }
+            else
+            {
+                // D16.4: conta ainda não confirmada — os dados novos substituem os antigos
+                user = existing;
+                user.FullName = fullName;
+                user.Nickname = nickname;
+                user.Whatsapp = whatsapp;
+                user.PasswordHash = HashPassword(request.Password);
+            }
+
+            await _db.SaveChangesAsync(ct);
+
+            if (existing is null || !await _emailConfirmation.IsInCooldownAsync(user.Id, ct))
+                link = await _emailConfirmation.IssueTokenAsync(user.Id, ip, userAgent, ct);
+
+            await tx.CommitAsync(ct);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is DbException { SqlState: "23505" })
+        {
+            // Corrida com um caminho que não passa pela trava (ex.: POST /Users do Admin):
+            // o índice único de e-mail barrou a segunda conta
+            throw new DomainException(EmailInUseMessage);
+        }
+
+        // Depois do commit: o link do e-mail só existe se o token já estiver gravado
+        if (link is not null)
+            _emailConfirmation.QueueEmail(user, link);
+
+        return new RegisterResponse { Email = user.Email, Message = RegisteredMessage };
+    }
+
+    private static void ValidateRegistration(
+        string email, string fullName, string? nickname, string? whatsapp, string? password)
+    {
         if (email.Length == 0)
             throw new DomainException("Informe o e-mail.");
-
-        // Sem distinguir maiúsculas: "Fulano@x.com" não cadastra se "fulano@x.com" já existe
-        if (await UserEmail.IsTakenAsync(_db.Users, email, null, ct))
-            throw new DomainException("E-mail já está em uso.");
-
-        var user = new User
-        {
-            Id = Guid.NewGuid(), // a sessão precisa do id antes do SaveChanges
-            FullName = request.FullName,
-            Nickname = request.Nickname,
-            Email = email, // sempre em minúsculas no banco
-            Whatsapp = request.Whatsapp,
-            PasswordHash = HashPassword(request.Password),
-            Role = "Player",
-            IsActive = true,
-            LastLoginAt = DateTimeOffset.UtcNow
-        };
-
-        _db.Users.Add(user);
-
-        var (session, refreshToken) = NewSession(user.Id, userAgent);
-        _db.AuthSessions.Add(session);
-
-        await _db.SaveChangesAsync(ct);
-
-        return BuildResponse(user, session.Id, refreshToken);
+        var at = email.IndexOf('@');
+        if (email.Length > 200 || at <= 0 || at != email.LastIndexOf('@') || at == email.Length - 1
+            || email.Any(char.IsWhiteSpace))
+            throw new DomainException("Informe um e-mail válido.");
+        if (fullName.Length == 0)
+            throw new DomainException("Informe o nome.");
+        if (fullName.Length > 200)
+            throw new DomainException("O nome deve ter no máximo 200 caracteres.");
+        if (nickname is { Length: > 100 })
+            throw new DomainException("O apelido deve ter no máximo 100 caracteres.");
+        if (whatsapp is { Length: > 20 })
+            throw new DomainException("O WhatsApp deve ter no máximo 20 caracteres.");
+        if (string.IsNullOrEmpty(password) || password.Length < 6)
+            throw new DomainException("A senha deve ter pelo menos 6 caracteres.");
     }
+
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /// <summary>
     /// Renova o access token. Devolve o MESMO refresh token (sem rotação). Token
