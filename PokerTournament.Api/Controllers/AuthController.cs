@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using PokerTournament.Api.Http;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
@@ -11,11 +13,16 @@ namespace PokerTournament.Api.Controllers;
 [Route("api/v1/[controller]")]
 public class AuthController : ControllerBase
 {
-    private readonly AuthService _authService;
+    private const string ForgotPasswordMessage =
+        "Se o e-mail estiver cadastrado, enviamos um link para redefinir a senha. Confira também a caixa de spam.";
 
-    public AuthController(AuthService authService)
+    private readonly AuthService _authService;
+    private readonly PasswordResetService _passwordReset;
+
+    public AuthController(AuthService authService, PasswordResetService passwordReset)
     {
         _authService = authService;
+        _passwordReset = passwordReset;
     }
 
     [HttpPost("login")]
@@ -43,6 +50,32 @@ public class AuthController : ControllerBase
     {
         var result = await _authService.RefreshTokenAsync(request.RefreshToken, UserAgent, ct);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// "Esqueci minha senha": sempre 202 com a mesma mensagem — e-mail cadastrado, não
+    /// cadastrado ou usuário inativo não se distinguem pela resposta.
+    /// </summary>
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
+    public async Task<ActionResult> ForgotPassword(
+        [FromBody] ForgotPasswordRequest request, CancellationToken ct)
+    {
+        await _passwordReset.RequestAsync(request.Email, ClientIp.Resolve(HttpContext), UserAgent, ct);
+        return Accepted(new { message = ForgotPasswordMessage });
+    }
+
+    /// <summary>Senha nova a partir do link do e-mail. Link ruim → 400.</summary>
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
+    public async Task<ActionResult> ResetPassword(
+        [FromBody] ResetPasswordRequest request, CancellationToken ct)
+    {
+        await _passwordReset.ResetAsync(
+            request.Token, request.NewPassword, ClientIp.Resolve(HttpContext), UserAgent, ct);
+        return NoContent();
     }
 
     [HttpPost("logout")]

@@ -919,6 +919,71 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.ToTable("notification_logs", "public");
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.PasswordResetToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("RequestedIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)")
+                        .HasColumnName("requested_ip");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<DateTimeOffset?>("UsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("used_at");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_password_reset_tokens_token_hash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_password_reset_tokens_user_id");
+
+                    b.ToTable("password_reset_tokens", "public");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.Person", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2310,6 +2375,17 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Navigation("Person");
 
                     b.Navigation("Tournament");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.PasswordResetToken", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.Person", b =>

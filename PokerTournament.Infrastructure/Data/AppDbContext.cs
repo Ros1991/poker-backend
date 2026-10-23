@@ -29,6 +29,7 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
     public DbSet<TournamentDealer> TournamentDealers => Set<TournamentDealer>();
     public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<DisplaySession> DisplaySessions => Set<DisplaySession>();
     public DbSet<DealerAccess> DealerAccesses => Set<DealerAccess>();
     public DbSet<TournamentActivity> TournamentActivities => Set<TournamentActivity>();

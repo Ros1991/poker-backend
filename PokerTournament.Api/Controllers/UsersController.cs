@@ -1,11 +1,15 @@
+using System.Security.Claims;
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
+using PokerTournament.Domain.Enums;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -25,7 +29,9 @@ public class UsersController : ControllerBase
         _auth = auth;
     }
 
+    /// <summary>Lista completa (nome e e-mail de todo mundo): só Admin do sistema.</summary>
     [HttpGet]
+    [Authorize(Policy = "Admin")]
     public async Task<ActionResult<List<UserResponse>>> GetAll(CancellationToken ct)
     {
         var users = await _db.Users
@@ -36,9 +42,48 @@ public class UsersController : ControllerBase
         return Ok(_mapper.Map<List<UserResponse>>(users));
     }
 
+    /// <summary>
+    /// Busca de conta por e-mail EXATO (sem distinguir maiúsculas), só entre ativas, para o
+    /// modal "Adicionar Membro". Não é oráculo de contas: só quem administra algum home game
+    /// (dono, membro administrador ou Admin do sistema) usa, com no máximo 10 buscas por
+    /// minuto por usuário (política "user-lookup"). Nunca lista, nunca aceita prefixo/contains
+    /// e nunca devolve o papel. Registrada antes de {id:guid} de propósito ("lookup" não é guid).
+    /// </summary>
+    [HttpGet("lookup")]
+    [EnableRateLimiting("user-lookup")]
+    public async Task<ActionResult<UserLookupResponse>> Lookup(
+        [FromQuery] string? email, CancellationToken ct)
+    {
+        if (!await HomeGameAccess.ManagesAnyAsync(_db, GetUserId(), IsAdmin, ct))
+            return new ObjectResult(new { message = "Só quem administra um home game pode buscar contas." }) { StatusCode = 403 };
+
+        if (string.IsNullOrWhiteSpace(email))
+            return BadRequest(new { message = "Informe o e-mail." });
+
+        // Contas antigas que diferem só por maiúsculas: a igual ao digitado, senão a mais antiga
+        var user = await UserEmail.MatchingEmail(_db.Users.Where(u => u.IsActive), email)
+            .Select(u => new UserLookupResponse
+            {
+                Id = u.Id,
+                Name = u.FullName,
+                Email = u.Email,
+                PhotoUrl = u.PhotoUrl
+            })
+            .FirstOrDefaultAsync(ct);
+
+        if (user is null)
+            return NotFound(new { message = "Nenhuma conta com este e-mail." });
+
+        return Ok(user);
+    }
+
+    /// <summary>Ficha do usuário: Admin do sistema ou o próprio usuário.</summary>
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<UserResponse>> GetById(Guid id, CancellationToken ct)
     {
+        if (!IsAdmin && id != GetUserId())
+            return new ObjectResult(new { message = "Você não tem acesso a este usuário." }) { StatusCode = 403 };
+
         var user = await _db.Users
             .FirstOrDefaultAsync(u => u.Id == id, ct);
 
@@ -53,20 +98,27 @@ public class UsersController : ControllerBase
     public async Task<ActionResult<UserResponse>> Create(
         [FromBody] CreateUserRequest request, CancellationToken ct)
     {
-        var existingEmail = await _db.Users
-            .AnyAsync(u => u.Email == request.Email, ct);
+        // Sem papel no corpo → Player; papel fora do enum → 400
+        var role = string.IsNullOrWhiteSpace(request.Role) ? nameof(UserRole.Player) : request.Role;
+        if (!CreateUserRequest.IsValidRole(role))
+            return BadRequest(new { message = "Papel inválido." });
 
-        if (existingEmail)
+        var email = UserEmail.Normalize(request.Email);
+        if (email.Length == 0)
+            return BadRequest(new { message = "Informe o e-mail." });
+
+        // Sem distinguir maiúsculas (o índice ix_users_email_lower garante o mesmo no banco)
+        if (await UserEmail.IsTakenAsync(_db.Users, email, null, ct))
             return Conflict(new { message = "E-mail já está em uso." });
 
         var user = new User
         {
             FullName = request.FullName,
             Nickname = request.Nickname,
-            Email = request.Email,
+            Email = email, // sempre em minúsculas no banco
             Whatsapp = request.Whatsapp,
             PasswordHash = AuthService.HashPassword(request.Password),
-            Role = request.Role,
+            Role = role,
             IsActive = true
         };
 
@@ -82,21 +134,26 @@ public class UsersController : ControllerBase
     public async Task<ActionResult<UserResponse>> Update(
         Guid id, [FromBody] UpdateUserRequest request, CancellationToken ct)
     {
+        if (!string.IsNullOrWhiteSpace(request.Role) && !CreateUserRequest.IsValidRole(request.Role))
+            return BadRequest(new { message = "Papel inválido." });
+
         var user = await _db.Users
             .FirstOrDefaultAsync(u => u.Id == id, ct);
 
         if (user is null)
             return NotFound(new { message = "Usuário não encontrado." });
 
-        if (!string.IsNullOrWhiteSpace(request.Email) && request.Email != user.Email)
+        if (!string.IsNullOrWhiteSpace(request.Email))
         {
-            var emailInUse = await _db.Users
-                .AnyAsync(u => u.Email == request.Email && u.Id != id, ct);
+            var email = UserEmail.Normalize(request.Email);
+            if (email != user.Email)
+            {
+                // Sem distinguir maiúsculas e ignorando a própria conta
+                if (await UserEmail.IsTakenAsync(_db.Users, email, id, ct))
+                    return Conflict(new { message = "E-mail já está em uso." });
 
-            if (emailInUse)
-                return Conflict(new { message = "E-mail já está em uso." });
-
-            user.Email = request.Email;
+                user.Email = email; // sempre em minúsculas no banco
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(request.FullName))
@@ -143,6 +200,14 @@ public class UsersController : ControllerBase
 
         return NoContent();
     }
+
+    private bool IsAdmin => User.FindFirst(ClaimTypes.Role)?.Value == "Admin";
+
+    private Guid GetUserId()
+    {
+        var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
+        return Guid.TryParse(claim?.Value, out var id) ? id : Guid.Empty;
+    }
 }
 
 public class CreateUserRequest
@@ -152,7 +217,11 @@ public class CreateUserRequest
     public string Email { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
     public string? Whatsapp { get; set; }
-    public string Role { get; set; } = "Jogador";
+    public string Role { get; set; } = nameof(UserRole.Player);
+
+    /// <summary>Papel válido = um dos nomes de <see cref="UserRole"/> (Admin, TournamentDirector, Dealer, Player).</summary>
+    public static bool IsValidRole(string? role) =>
+        role is not null && Enum.GetNames<UserRole>().Contains(role);
 }
 
 public class UpdateUserRequest

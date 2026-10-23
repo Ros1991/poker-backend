@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -10,17 +9,19 @@ using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Api.Controllers;
 
+/// <summary>
+/// A rota é só {id} (sem {homeGameId}), então o TenantAccessFilter não age aqui: as leituras
+/// por id conferem dono/membro/Admin via <see cref="HomeGameScopedControllerBase"/>.
+/// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
 [Authorize]
-public class HomeGamesController : ControllerBase
+public class HomeGamesController : HomeGameScopedControllerBase
 {
-    private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
 
-    public HomeGamesController(IAppDbContext db, IMapper mapper)
+    public HomeGamesController(IAppDbContext db, IMapper mapper) : base(db)
     {
-        _db = db;
         _mapper = mapper;
     }
 
@@ -52,6 +53,10 @@ public class HomeGamesController : ControllerBase
 
         if (homeGame is null)
             return NotFound(new { message = "Home game não encontrado." });
+
+        // 403 (e não 404) como o filtro: o id não é segredo, o conteúdo (PIX, defaults) é
+        if (!await CanAccessAsync(id, ct))
+            return Forbidden();
 
         return Ok(_mapper.Map<HomeGameResponse>(homeGame));
     }
@@ -117,6 +122,12 @@ public class HomeGamesController : ControllerBase
     [HttpGet("{id:guid}/members")]
     public async Task<ActionResult<List<HomeGameMemberResponse>>> GetMembers(Guid id, CancellationToken ct)
     {
+        if (!await _db.HomeGames.AnyAsync(h => h.Id == id, ct))
+            return NotFound(new { message = "Home game não encontrado." });
+
+        if (!await CanAccessAsync(id, ct))
+            return Forbidden();
+
         var members = await _db.HomeGameMembers
             .Include(m => m.User)
             .Include(m => m.Person)
@@ -150,6 +161,11 @@ public class HomeGamesController : ControllerBase
 
         if (exists)
             return Conflict(new { message = "Usuário já é membro deste home game." });
+
+        // Vínculo só com jogador/dealer DESTE home game (pessoa apagada não conta: filtro de soft delete)
+        if (request.PersonId is { } personId
+            && !await _db.Persons.AnyAsync(p => p.Id == personId && p.HomeGameId == id, ct))
+            return BadRequest(new { message = "Jogador não pertence a este home game." });
 
         var member = new HomeGameMember
         {
@@ -200,9 +216,15 @@ public class HomeGamesController : ControllerBase
 
         if (request.IsAdmin.HasValue)
             member.IsAdmin = request.IsAdmin.Value;
-        
-        if (request.PersonId.HasValue)
-            member.PersonId = request.PersonId.Value;
+
+        if (request.PersonId is { } personId)
+        {
+            // Vínculo só com jogador/dealer DESTE home game (pessoa apagada não conta: filtro de soft delete)
+            if (!await _db.Persons.AnyAsync(p => p.Id == personId && p.HomeGameId == id, ct))
+                return BadRequest(new { message = "Jogador não pertence a este home game." });
+
+            member.PersonId = personId;
+        }
 
         await _db.SaveChangesAsync(ct);
 
@@ -237,13 +259,6 @@ public class HomeGamesController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         return NoContent();
-    }
-
-    private Guid GetUserId()
-    {
-        var claim = User.FindFirst(ClaimTypes.NameIdentifier)
-            ?? User.FindFirst("sub");
-        return Guid.Parse(claim!.Value);
     }
 }
 

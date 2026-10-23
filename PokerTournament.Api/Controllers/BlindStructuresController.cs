@@ -1,25 +1,29 @@
-using System.Security.Claims;
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Api.Controllers;
 
+/// <summary>
+/// A rota é só {id} (sem {homeGameId}), então o TenantAccessFilter não age aqui.
+/// Estrutura com home game: lê quem acessa o home game (dono/membro/Admin), escreve quem o
+/// gerencia (dono/membro admin/Admin). Estrutura global (HomeGameId nulo) é template do sistema:
+/// lê qualquer autenticado, escreve só Admin do sistema.
+/// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
 [Authorize]
-public class BlindStructuresController : ControllerBase
+public class BlindStructuresController : HomeGameScopedControllerBase
 {
-    private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
 
-    public BlindStructuresController(IAppDbContext db, IMapper mapper)
+    public BlindStructuresController(IAppDbContext db, IMapper mapper) : base(db)
     {
-        _db = db;
         _mapper = mapper;
     }
 
@@ -32,7 +36,19 @@ public class BlindStructuresController : ControllerBase
             .Where(bs => bs.IsActive);
 
         if (homeGameId.HasValue)
+        {
+            if (!await CanAccessAsync(homeGameId.Value, ct))
+                return Forbidden();
             query = query.Where(bs => bs.HomeGameId == homeGameId || bs.HomeGameId == null);
+        }
+        else if (!IsAdmin)
+        {
+            // Sem home game na query: só as globais e as dos home games do usuário
+            var accessibleIds = (await HomeGameAccess.AccessibleHomeGameIdsAsync(_db, GetUserId(), ct))
+                .Select(id => (Guid?)id)
+                .ToList();
+            query = query.Where(bs => bs.HomeGameId == null || accessibleIds.Contains(bs.HomeGameId));
+        }
 
         var structures = await query
             .OrderBy(bs => bs.Name)
@@ -85,6 +101,10 @@ public class BlindStructuresController : ControllerBase
         if (structure is null)
             return NotFound(new { message = "Estrutura não encontrada." });
 
+        // Global (template do sistema): qualquer autenticado lê
+        if (structure.HomeGameId.HasValue && !await CanAccessAsync(structure.HomeGameId.Value, ct))
+            return Forbidden();
+
         return Ok(new
         {
             structure.Id,
@@ -125,12 +145,8 @@ public class BlindStructuresController : ControllerBase
     public async Task<ActionResult> Create(
         [FromBody] CreateBlindStructureRequest request, CancellationToken ct)
     {
-        // Verificar permissão se vinculada a um home game
-        if (request.HomeGameId.HasValue)
-        {
-            var allowed = await CanManageHomeGame(request.HomeGameId.Value, ct);
-            if (!allowed) return Forbid();
-        }
+        if (!await CanWriteAsync(request.HomeGameId, ct))
+            return Forbidden();
 
         var structure = new BlindStructure
         {
@@ -188,17 +204,19 @@ public class BlindStructuresController : ControllerBase
         if (structure is null)
             return NotFound(new { message = "Estrutura não encontrada." });
 
-        // Verificar permissão pelo home game da estrutura
-        var homeGameId = structure.HomeGameId ?? request.HomeGameId;
-        if (homeGameId.HasValue)
-        {
-            var allowed = await CanManageHomeGame(homeGameId.Value, ct);
-            if (!allowed) return Forbid();
-        }
+        // HomeGameId nulo/ausente no request = manter o vínculo atual (template global continua
+        // global; estrutura de home game continua no seu). Só muda com valor explícito.
+        var targetHomeGameId = request.HomeGameId ?? structure.HomeGameId;
+
+        // Precisa gerenciar a estrutura ATUAL e, se estiver mudando de home game, o destino também
+        if (!await CanWriteAsync(structure.HomeGameId, ct))
+            return Forbidden();
+        if (targetHomeGameId != structure.HomeGameId && !await CanWriteAsync(targetHomeGameId, ct))
+            return Forbidden();
 
         structure.Name = request.Name;
         structure.Description = request.Description;
-        structure.HomeGameId = request.HomeGameId;
+        structure.HomeGameId = targetHomeGameId;
         structure.DefaultBuyIn = request.DefaultBuyIn;
         structure.DefaultRebuy = request.DefaultRebuy;
         structure.DefaultAddon = request.DefaultAddon;
@@ -248,7 +266,9 @@ public class BlindStructuresController : ControllerBase
         if (structure is null)
             return NotFound(new { message = "Estrutura não encontrada." });
 
-        // Qualquer autenticado pode deletar/editar qualquer estrutura
+        // Mesma regra do Update: gerencia o home game da estrutura; global só Admin
+        if (!await CanWriteAsync(structure.HomeGameId, ct))
+            return Forbidden();
 
         // Hard delete
         _db.BlindStructures.Remove(structure);
@@ -258,28 +278,9 @@ public class BlindStructuresController : ControllerBase
     }
 
     /// <summary>
-    /// Verifica se o usuário logado pode gerenciar o home game:
-    /// owner do HG, admin member do HG, ou admin do sistema
+    /// Escrita em estrutura: com home game, quem o gerencia (dono, membro admin ou Admin);
+    /// global (sem home game), só Admin do sistema.
     /// </summary>
-    private async Task<bool> CanManageHomeGame(Guid homeGameId, CancellationToken ct)
-    {
-        var userId = GetUserId();
-        var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
-
-        if (userRole == "Admin") return true;
-
-        var homeGame = await _db.HomeGames.FirstOrDefaultAsync(h => h.Id == homeGameId, ct);
-        if (homeGame == null) return false;
-        if (homeGame.OwnerId == userId) return true;
-
-        return await _db.HomeGameMembers
-            .AnyAsync(m => m.HomeGameId == homeGameId && m.UserId == userId && m.IsAdmin, ct);
-    }
-
-    private Guid GetUserId()
-    {
-        var claim = User.FindFirst(ClaimTypes.NameIdentifier)
-            ?? User.FindFirst("sub");
-        return Guid.Parse(claim!.Value);
-    }
+    private Task<bool> CanWriteAsync(Guid? homeGameId, CancellationToken ct) =>
+        homeGameId.HasValue ? CanManageAsync(homeGameId.Value, ct) : Task.FromResult(IsAdmin);
 }

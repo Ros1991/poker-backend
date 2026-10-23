@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,19 +13,17 @@ namespace PokerTournament.Api.Controllers;
 /// <summary>
 /// A rota não tem {homeGameId}/{tournamentId}, então o TenantAccessFilter não age aqui:
 /// cada ação resolve o home game da pessoa (ou o da query) e aplica a mesma regra
-/// (dono, membro ou Admin) via <see cref="HomeGameAccess"/>.
+/// (dono, membro ou Admin) via <see cref="HomeGameScopedControllerBase"/>.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
 [Authorize]
-public class PersonsController : ControllerBase
+public class PersonsController : HomeGameScopedControllerBase
 {
-    private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
 
-    public PersonsController(IAppDbContext db, IMapper mapper)
+    public PersonsController(IAppDbContext db, IMapper mapper) : base(db)
     {
-        _db = db;
         _mapper = mapper;
     }
 
@@ -217,18 +214,4 @@ public class PersonsController : ControllerBase
 
         return Ok(_mapper.Map<List<PersonResponse>>(persons));
     }
-
-    private bool IsAdmin => User.FindFirst(ClaimTypes.Role)?.Value == "Admin";
-
-    private Guid GetUserId()
-    {
-        var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
-        return Guid.TryParse(claim?.Value, out var id) ? id : Guid.Empty;
-    }
-
-    private Task<bool> CanAccessAsync(Guid homeGameId, CancellationToken ct) =>
-        HomeGameAccess.CanAccessAsync(_db, homeGameId, GetUserId(), IsAdmin, ct);
-
-    private static ObjectResult Forbidden() =>
-        new(new { message = "Você não tem acesso a este home game." }) { StatusCode = 403 };
 }

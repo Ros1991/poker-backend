@@ -89,8 +89,10 @@ public class AuthService
     public async Task<AuthResponse> LoginAsync(
         LoginRequest request, string? userAgent = null, CancellationToken ct = default)
     {
-        var user = await _db.Users
-            .FirstOrDefaultAsync(u => u.Email == request.Email && u.IsActive, ct);
+        // Sem distinguir maiúsculas. Contas antigas que diferem só por maiúsculas podem
+        // coexistir: vale a igual ao digitado, senão a mais antiga (UserEmail.MatchingEmail).
+        var user = await UserEmail.MatchingEmail(_db.Users.Where(u => u.IsActive), request.Email)
+            .FirstOrDefaultAsync(ct);
 
         if (user is null)
             throw new DomainException("E-mail ou senha inválidos.");
@@ -115,10 +117,12 @@ public class AuthService
     public async Task<AuthResponse> RegisterAsync(
         RegisterRequest request, string? userAgent = null, CancellationToken ct = default)
     {
-        var existingUser = await _db.Users
-            .AnyAsync(u => u.Email == request.Email, ct);
+        var email = UserEmail.Normalize(request.Email);
+        if (email.Length == 0)
+            throw new DomainException("Informe o e-mail.");
 
-        if (existingUser)
+        // Sem distinguir maiúsculas: "Fulano@x.com" não cadastra se "fulano@x.com" já existe
+        if (await UserEmail.IsTakenAsync(_db.Users, email, null, ct))
             throw new DomainException("E-mail já está em uso.");
 
         var user = new User
@@ -126,7 +130,7 @@ public class AuthService
             Id = Guid.NewGuid(), // a sessão precisa do id antes do SaveChanges
             FullName = request.FullName,
             Nickname = request.Nickname,
-            Email = request.Email,
+            Email = email, // sempre em minúsculas no banco
             Whatsapp = request.Whatsapp,
             PasswordHash = HashPassword(request.Password),
             Role = "Player",

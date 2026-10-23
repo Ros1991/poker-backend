@@ -131,6 +131,10 @@ public class TournamentService
                 .FirstOrDefaultAsync(bs => bs.Id == request.BlindStructureId.Value, ct);
             if (structure != null)
             {
+                // Isolamento: só template global (HomeGameId nulo) ou estrutura do próprio home game
+                if (structure.HomeGameId.HasValue && structure.HomeGameId != homeGameId)
+                    throw new DomainException("Estrutura de blinds não pertence a este home game.");
+
                 foreach (var level in structure.Levels.OrderBy(l => l.LevelNumber))
                 {
                     tournament.BlindLevels.Add(new TournamentBlindLevel
@@ -204,6 +208,10 @@ public class TournamentService
                 .FirstOrDefaultAsync(bs => bs.Id == request.BlindStructureId.Value, ct);
             if (structure != null)
             {
+                // Isolamento: só template global (HomeGameId nulo) ou estrutura do próprio home game
+                if (structure.HomeGameId.HasValue && structure.HomeGameId != tournament.HomeGameId)
+                    throw new DomainException("Estrutura de blinds não pertence a este home game.");
+
                 foreach (var level in structure.Levels.OrderBy(l => l.LevelNumber))
                 {
                     tournament.BlindLevels.Add(new TournamentBlindLevel

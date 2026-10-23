@@ -3,6 +3,7 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using PokerTournament.Api.Authorization;
+using PokerTournament.Api.Http;
 using PokerTournament.Application.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -147,25 +148,37 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Dealer", policy => policy
         .RequireRole("Admin", "TournamentDirector", "Dealer").AddRequirements(new TokenKindRequirement()));
 
-// Limite por IP nos endpoints anônimos que criam coisas (TV nova, troca do QR do dealer).
-// Atrás do proxy do Railway o IP real vem no X-Forwarded-For, mas o cliente pode mandar
-// o próprio cabeçalho: o proxy só ACRESCENTA o IP de quem conectou no FIM da lista.
-// Por isso vale o valor mais à direita (o único que o cliente não controla); os da
-// esquerda são forjáveis e dariam uma partição nova a cada requisição.
+// Limite por IP nos endpoints anônimos que criam coisas (TV nova, troca do QR do dealer,
+// esqueci/redefinir senha). O IP vem de ClientIp.Resolve (valor mais à direita do
+// X-Forwarded-For — o único que o cliente não controla; os da esquerda são forjáveis e
+// dariam uma partição nova a cada requisição).
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("public-anon", httpContext =>
     {
-        var lastHop = httpContext.Request.Headers["X-Forwarded-For"].ToString()
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .LastOrDefault();
-        var ip = !string.IsNullOrWhiteSpace(lastHop)
-            ? lastHop
-            : httpContext.Connection.RemoteIpAddress?.ToString() ?? "desconhecido";
+        var ip = ClientIp.Resolve(httpContext);
         return RateLimitPartition.GetFixedWindowLimiter(ip, _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 20,
+            Window = TimeSpan.FromMinutes(1),
+        });
+    });
+
+    // Busca de conta por e-mail (GET /Users/lookup): 10/min por usuário logado (claim sub /
+    // NameIdentifier), caindo para o IP se o token não trouxer o claim. Freia quem tentaria
+    // descobrir quais e-mails têm conta. Mesmo 429 (sem corpo) da política public-anon.
+    // Depende de app.UseRateLimiter() vir DEPOIS de UseAuthentication (senão o User está vazio).
+    options.AddPolicy("user-lookup", httpContext =>
+    {
+        var sub = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? httpContext.User.FindFirst("sub")?.Value;
+        var partition = !string.IsNullOrWhiteSpace(sub)
+            ? "user:" + sub
+            : "ip:" + ClientIp.Resolve(httpContext);
+        return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
             Window = TimeSpan.FromMinutes(1),
         });
     });
@@ -179,9 +192,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Poker Tournament API",
+        Title = "Poker da Galera API",
         Version = "v1",
-        Description = "API para gerenciamento de torneios de poker"
+        Description = "API do Poker da Galera — gestão de home games de poker"
     });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -234,9 +247,49 @@ builder.Services.AddAutoMapper(typeof(MappingProfile));
 // Infrastructure Services
 builder.Services.AddScoped<IWhatsAppProvider, PokerTournament.Infrastructure.Services.WhatsAppService>();
 
+// Endereço público do frontend (links do e-mail): PUBLIC_APP_URL, senão PublicApp:Url, senão localhost
+var publicAppUrl = Environment.GetEnvironmentVariable("PUBLIC_APP_URL")
+    ?? builder.Configuration["PublicApp:Url"];
+if (string.IsNullOrWhiteSpace(publicAppUrl))
+{
+    publicAppUrl = PublicAppOptions.DefaultUrl;
+    if (!builder.Environment.IsDevelopment())
+        Log.Warning("PUBLIC_APP_URL ausente: links do e-mail apontarão para {Url}", publicAppUrl);
+}
+builder.Services.Configure<PublicAppOptions>(o => o.Url = publicAppUrl.TrimEnd('/'));
+
+// E-mail: Resend quando há RESEND_APITOKEN fora de Development (ou Email:ForceResend=true);
+// senão só registra no log (LoggingEmailSender escreve o link — serve para testar sem Resend).
+var resendToken = Environment.GetEnvironmentVariable("RESEND_APITOKEN")
+    ?? builder.Configuration["Email:ResendApiToken"];
+var forceResend = builder.Configuration.GetValue<bool>("Email:ForceResend");
+var hasResendToken = !string.IsNullOrWhiteSpace(resendToken);
+var useResend = hasResendToken && (!builder.Environment.IsDevelopment() || forceResend);
+builder.Services.Configure<EmailOptions>(o =>
+{
+    o.ResendApiToken = resendToken;
+    o.From = builder.Configuration["Email:From"] is { Length: > 0 } from ? from : EmailOptions.DefaultFrom;
+    o.ForceResend = forceResend;
+});
+if (useResend)
+{
+    builder.Services.AddHttpClient<PokerTournament.Infrastructure.Services.ResendEmailSender>(
+        c => c.Timeout = TimeSpan.FromSeconds(10));
+    builder.Services.AddScoped<IEmailSender>(sp =>
+        sp.GetRequiredService<PokerTournament.Infrastructure.Services.ResendEmailSender>());
+}
+else
+{
+    builder.Services.AddScoped<IEmailSender, PokerTournament.Infrastructure.Services.LoggingEmailSender>();
+    // Fora de Development isso é defeito de configuração: ninguém recebe o link de senha
+    if (!builder.Environment.IsDevelopment() && !hasResendToken)
+        Log.Error("RESEND_APITOKEN ausente: nenhum e-mail é enviado (o link de redefinição de senha fica só no log do servidor)");
+}
+
 // Application Services
 builder.Services.AddSingleton<JwtTokenFactory>();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<PasswordResetService>();
 builder.Services.AddScoped<DealerAccessService>();
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
@@ -306,13 +359,12 @@ app.UseMiddleware<ErrorHandlingMiddleware>();
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Poker Tournament API v1");
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Poker da Galera API v1");
 });
 
 app.UseSerilogRequestLogging();
 
 app.UseCors("AllowFrontend");
-app.UseRateLimiter();
 
 // Servir arquivos estáticos (uploads de fotos)
 var uploadsPath = Environment.GetEnvironmentVariable("UPLOADS_PATH")
@@ -328,6 +380,9 @@ app.UseStaticFiles(new StaticFileOptions
 
 app.UseAuthentication();
 app.UseAuthorization();
+// Depois da autenticação/autorização: a política "user-lookup" particiona pelo usuário do
+// token (HttpContext.User só existe a partir daqui) e 401/403 não gastam o balde.
+app.UseRateLimiter();
 
 app.MapControllers();
 // Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)

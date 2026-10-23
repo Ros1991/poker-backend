@@ -27,6 +27,7 @@ public interface IAppDbContext
     DbSet<NotificationLog> NotificationLogs { get; }
     DbSet<TournamentDealer> TournamentDealers { get; }
     DbSet<AuthSession> AuthSessions { get; }
+    DbSet<PasswordResetToken> PasswordResetTokens { get; }
     DbSet<DisplaySession> DisplaySessions { get; }
     DbSet<DealerAccess> DealerAccesses { get; }
     DbSet<TournamentActivity> TournamentActivities { get; }
