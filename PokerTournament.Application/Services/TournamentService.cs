@@ -39,6 +39,19 @@ public class TournamentService
         return new PaginatedResponse<TournamentResponse>(mapped, page, pageSize, totalCount);
     }
 
+    /// <summary>
+    /// Rotas aninhadas /home-games/{homeGameId}/tournaments/{id}: o TenantAccessFilter só confere
+    /// o {homeGameId} da rota, então o torneio precisa ser DESSE home game. Torneio de outro home
+    /// game responde igual ao inexistente (mesma mensagem), sem revelar que ele existe.
+    /// </summary>
+    public async Task EnsureInHomeGameAsync(Guid homeGameId, Guid id, CancellationToken ct = default)
+    {
+        var belongs = await _db.Tournaments
+            .AnyAsync(t => t.Id == id && t.HomeGameId == homeGameId, ct);
+        if (!belongs)
+            throw new DomainException("Torneio não encontrado.");
+    }
+
     public async Task<TournamentResponse> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments

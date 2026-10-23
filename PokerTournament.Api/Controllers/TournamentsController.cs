@@ -33,6 +33,7 @@ public class TournamentsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<TournamentResponse>> GetById(Guid homeGameId, Guid id, CancellationToken ct)
     {
+        await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
         var result = await _tournamentService.GetByIdAsync(id, ct);
         return Ok(result);
     }
@@ -50,6 +51,7 @@ public class TournamentsController : ControllerBase
     public async Task<ActionResult<TournamentResponse>> Update(
         Guid homeGameId, Guid id, [FromBody] CreateTournamentRequest request, CancellationToken ct)
     {
+        await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
         var result = await _tournamentService.UpdateAsync(id, request, ct);
         return Ok(result);
     }
@@ -58,6 +60,7 @@ public class TournamentsController : ControllerBase
     public async Task<ActionResult<List<TournamentBlindLevelResponse>>> GetBlindLevels(
         Guid homeGameId, Guid id, CancellationToken ct)
     {
+        await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
         var result = await _tournamentService.GetBlindLevelsAsync(id, ct);
         return Ok(result);
     }
@@ -74,6 +77,7 @@ public class TournamentsController : ControllerBase
     public async Task<ActionResult<TournamentResponse>> UpdateStatus(
         Guid homeGameId, Guid id, [FromBody] UpdateStatusRequest request, CancellationToken ct)
     {
+        await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
         var userId = GetUserId();
         var result = await _tournamentService.UpdateStatusAsync(id, request.Status, userId, ct);
         return Ok(result);
@@ -82,6 +86,7 @@ public class TournamentsController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<ActionResult> Delete(Guid homeGameId, Guid id, CancellationToken ct)
     {
+        await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
         await _tournamentService.DeleteAsync(id, ct);
         return NoContent();
     }
