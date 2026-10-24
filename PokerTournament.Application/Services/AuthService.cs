@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
@@ -20,7 +22,7 @@ namespace PokerTournament.Application.Services;
 /// a rotação fazia duas abas/aparelhos se derrubarem — e sua validade desliza
 /// (90 dias) a cada uso. No banco só fica o hash.
 /// </summary>
-public class AuthService
+public partial class AuthService
 {
     // Renovar a validade no máximo 1x/h por sessão evita uma escrita a cada refresh
     private static readonly TimeSpan SlideInterval = TimeSpan.FromHours(1);
@@ -28,6 +30,7 @@ public class AuthService
     // o volume e logout/revogação gravam "inativa" nele na hora.
     private static readonly TimeSpan SessionCacheTtl = TimeSpan.FromSeconds(60);
 
+    public const string InvalidCredentialsMessage = "E-mail ou senha inválidos.";
     public const string EmailInUseMessage = "E-mail já está em uso.";
     public const string RegisteredMessage =
         "Enviamos um link para confirmar seu e-mail. Ele vale por 48 horas; confira também a caixa de spam.";
@@ -36,14 +39,37 @@ public class AuthService
     private readonly JwtTokenFactory _tokens;
     private readonly IMemoryCache _cache;
     private readonly EmailConfirmationService _emailConfirmation;
+    // Login social (SPEC-20261023-1210) — AuthService.External.cs
+    private readonly ExternalLoginStore _externalStore;
+    private readonly OidcTokenValidator _oidc;
+    private readonly ExternalLoginOptions _external;
+    private readonly ExternalLoginEmailService _externalEmail;
+    // Limite de senhas erradas no login (revisão da onda 5)
+    private readonly LoginAttemptLimiter _loginLimiter;
+    private readonly ILogger<AuthService> _logger;
 
     public AuthService(
-        IAppDbContext db, JwtTokenFactory tokens, IMemoryCache cache, EmailConfirmationService emailConfirmation)
+        IAppDbContext db,
+        JwtTokenFactory tokens,
+        IMemoryCache cache,
+        EmailConfirmationService emailConfirmation,
+        ExternalLoginStore externalStore,
+        OidcTokenValidator oidc,
+        IOptions<ExternalLoginOptions> external,
+        ExternalLoginEmailService externalEmail,
+        LoginAttemptLimiter loginLimiter,
+        ILogger<AuthService> logger)
     {
         _db = db;
         _tokens = tokens;
         _cache = cache;
         _emailConfirmation = emailConfirmation;
+        _externalStore = externalStore;
+        _oidc = oidc;
+        _external = external.Value;
+        _externalEmail = externalEmail;
+        _loginLimiter = loginLimiter;
+        _logger = logger;
     }
 
     /// <summary>
@@ -95,37 +121,71 @@ public class AuthService
             MarkSessionInactive(id);
     }
 
+    /// <summary>
+    /// Entrar com e-mail e senha. Conta só-social (sem senha) responde o mesmo 400 neutro de senha errada —
+    /// nunca 500, nunca "esta conta usa o Google". Com <see cref="LoginRequest.LinkTicket"/> (409 do login social),
+    /// a senha certa também conecta o login do provedor à conta (SPEC-20261023-1210). Senha errada demais (por IP +
+    /// e-mail, por e-mail ou por IP — <see cref="LoginAttemptLimiter"/>) → 429 ANTES de conferir a senha.
+    /// </summary>
     public async Task<AuthResponse> LoginAsync(
-        LoginRequest request, string? userAgent = null, CancellationToken ct = default)
+        LoginRequest request, string? userAgent = null, string? ip = null, CancellationToken ct = default)
     {
-        // Sem distinguir maiúsculas. Contas antigas que diferem só por maiúsculas podem
-        // coexistir: vale a igual ao digitado, senão a mais antiga (UserEmail.MatchingEmail).
-        var user = await UserEmail.MatchingEmail(_db.Users.Where(u => u.IsActive), request.Email)
-            .FirstOrDefaultAsync(ct);
+        // Reserva a tentativa (429 se alguma janela estourou); só senha errada fica contada
+        var attempt = _loginLimiter.Reserve(ip, request.Email);
+        var wrongPassword = false;
+        try
+        {
+            // Sem distinguir maiúsculas. Contas antigas que diferem só por maiúsculas podem
+            // coexistir: vale a igual ao digitado, senão a mais antiga (UserEmail.MatchingEmail).
+            var user = await UserEmail.MatchingEmail(_db.Users.Where(u => u.IsActive), request.Email)
+                .FirstOrDefaultAsync(ct);
 
-        if (user is null)
-            throw new DomainException("E-mail ou senha inválidos.");
+            // Sem senha gravada (conta criada pelo Google) cai no MESMO 400 de senha errada
+            if (user?.PasswordHash is null || !VerifyPassword(request.Password, user.PasswordHash))
+            {
+                wrongPassword = true;
+                _externalStore.RegisterFailedAttempt(request.LinkTicket);
+                throw new DomainException(InvalidCredentialsMessage);
+            }
 
-        if (!VerifyPassword(request.Password, user.PasswordHash))
-            throw new DomainException("E-mail ou senha inválidos.");
+            // Só DEPOIS da senha certa: e-mail/senha errados continuam 400 neutro e não revelam
+            // que a conta existe. Sem confirmação não há sessão (403 email_not_confirmed).
+            if (user.EmailConfirmedAt is null)
+                throw new EmailNotConfirmedException(EmailConfirmationService.NotConfirmedMessage(user.Email));
 
-        // Só DEPOIS da senha certa: e-mail/senha errados continuam 400 neutro e não revelam
-        // que a conta existe. Sem confirmação não há sessão (403 email_not_confirmed).
-        if (user.EmailConfirmedAt is null)
-            throw new EmailNotConfirmedException(EmailConfirmationService.NotConfirmedMessage(user.Email));
+            // SEC-02: re-hash transparente de senhas legadas (SHA-256) para PBKDF2 no login
+            if (IsLegacyHash(user.PasswordHash))
+                user.PasswordHash = HashPassword(request.Password);
 
-        // SEC-02: re-hash transparente de senhas legadas (SHA-256) para PBKDF2 no login
-        if (IsLegacyHash(user.PasswordHash))
-            user.PasswordHash = HashPassword(request.Password);
+            user.LastLoginAt = DateTimeOffset.UtcNow;
 
-        user.LastLoginAt = DateTimeOffset.UtcNow;
+            // 409 do login social + senha certa: conecta o provedor (falha → 400, sem sessão)
+            if (!string.IsNullOrWhiteSpace(request.LinkTicket))
+                await LinkFromTicketAsync(user, request.LinkTicket, ip, userAgent, ct);
 
-        var (session, refreshToken) = NewSession(user.Id, userAgent);
-        _db.AuthSessions.Add(session);
+            var (session, refreshToken) = NewSession(user.Id, userAgent);
+            _db.AuthSessions.Add(session);
 
-        await _db.SaveChangesAsync(ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex) when (request.LinkTicket is not null && ex.InnerException is DbException { SqlState: "23505" })
+            {
+                // O mesmo login do provedor foi conectado a outra conta no meio do caminho
+                throw new DomainException(LinkTicketInvalidMessage);
+            }
 
-        return BuildResponse(user, session.Id, refreshToken);
+            // Entrou: as senhas erradas desta conta neste IP deixam de pesar
+            attempt.Succeeded(clearIpAndEmail: true);
+            return BuildResponse(user, session.Id, refreshToken);
+        }
+        finally
+        {
+            // Senha certa (mesmo com 403/400 do ticket) ou erro inesperado: a tentativa não conta
+            if (!wrongPassword)
+                attempt.Succeeded();
+        }
     }
 
     /// <summary>
@@ -413,17 +473,31 @@ public class AuthService
         return $"pbkdf2${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
     }
 
-    private static bool IsLegacyHash(string hash) => !hash.StartsWith("pbkdf2$");
+    private static bool IsLegacyHash(string? hash) => hash is not null && !hash.StartsWith("pbkdf2$");
 
-    private static bool VerifyPassword(string password, string hash)
+    private static bool VerifyPassword(string? password, string hash)
     {
+        // Senha ausente no corpo ("password": null) ou hash corrompido: senha errada, nunca 500
+        if (string.IsNullOrEmpty(password))
+            return false;
+
         if (!IsLegacyHash(hash))
         {
             var parts = hash.Split('$');
-            if (parts.Length != 4) return false;
-            var iterations = int.Parse(parts[1]);
-            var salt = Convert.FromBase64String(parts[2]);
-            var expected = Convert.FromBase64String(parts[3]);
+            if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations) || iterations <= 0)
+                return false;
+            byte[] salt, expected;
+            try
+            {
+                salt = Convert.FromBase64String(parts[2]);
+                expected = Convert.FromBase64String(parts[3]);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+            if (salt.Length == 0 || expected.Length == 0)
+                return false;
             var actual = Rfc2898DeriveBytes.Pbkdf2(
                 password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
             return CryptographicOperations.FixedTimeEquals(actual, expected);

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
+using PokerTournament.Api.Development;
 using PokerTournament.Api.Http;
 using PokerTournament.Application.Common;
 using Microsoft.EntityFrameworkCore;
@@ -293,6 +294,34 @@ else
         Log.Error("RESEND_APITOKEN ausente: nenhum e-mail é enviado (os links de redefinição de senha e de confirmação de e-mail ficam só no log do servidor)");
 }
 
+// Login social (SPEC-20261023-1210): Client ID público do Google em Auth:Google:ClientId (default no
+// appsettings.json, sobrescrevível por Auth__Google__ClientId); Auth:Apple:ClientId vazio = Apple desligada (D17).
+var externalLogin = new ExternalLoginOptions
+{
+    GoogleClientId = builder.Configuration[ExternalLoginOptions.GoogleClientIdKey],
+    AppleClientId = builder.Configuration[ExternalLoginOptions.AppleClientIdKey],
+};
+builder.Services.Configure<ExternalLoginOptions>(o =>
+{
+    o.GoogleClientId = externalLogin.GoogleClientId;
+    o.AppleClientId = externalLogin.AppleClientId;
+});
+// Nonce assinado (sem estado por emissão) + nonces gastos e tickets de vínculo em memória: pressupõe UMA instância
+// da API (verdade hoje no Railway)
+builder.Services.AddSingleton<ExternalLoginStore>();
+// Senhas erradas em POST auth/login: 10 por IP + e-mail, 50 por e-mail e 50 por IP a cada 15 min (só as erradas contam)
+builder.Services.AddSingleton<LoginAttemptLimiter>();
+builder.Services.AddHttpClient(OidcTokenValidator.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(10));
+// Emissor de tokens de teste (chave local): existe SÓ em Development — fora dele nem entra no DI, e o
+// validador só confia nele quando o recebe daqui
+if (builder.Environment.IsDevelopment())
+    builder.Services.AddSingleton<DevelopmentTestTokenIssuer>();
+builder.Services.AddSingleton(sp => new OidcTokenValidator(
+    sp.GetRequiredService<IHttpClientFactory>(),
+    sp.GetService<DevelopmentTestTokenIssuer>(),
+    sp.GetRequiredService<ILogger<OidcTokenValidator>>()));
+builder.Services.AddScoped<ExternalLoginEmailService>();
+
 // Application Services
 builder.Services.AddSingleton<JwtTokenFactory>();
 // Planos Mesa/Clube/Liga (SPEC-20261023-1205): limites e recursos pelo plano efetivo do dono
@@ -330,6 +359,16 @@ var app = builder.Build();
 
 if (bool.TryParse(app.Configuration[PlanService.EnforceKey], out var enforcePlans) && !enforcePlans)
     Log.Warning("Plans:Enforce = false: nenhuma checagem de plano (limites e recursos pagos) está valendo");
+
+foreach (var provider in ExternalLoginProviders.All)
+{
+    if (externalLogin.ClientIdFor(provider.Provider) is { } clientId)
+        Log.Information("Login com {Provider} ligado (Client ID {ClientId})", provider.DisplayName, clientId);
+    else
+        Log.Information("Login com {Provider} desligado (Client ID não configurado)", provider.DisplayName);
+}
+if (app.Environment.IsDevelopment())
+    Log.Warning("Development: emissor de tokens de teste do login social ATIVO (POST /api/v1/auth/external/test-token)");
 
 // Aplicar migrations automaticamente em produção
 using (var scope = app.Services.CreateScope())
@@ -401,6 +440,9 @@ app.UseAuthorization();
 app.UseRateLimiter();
 
 app.MapControllers();
+// Emissor de tokens de teste do login social: rotas SÓ em Development (SPEC-20261023-1210)
+if (app.Environment.IsDevelopment())
+    app.MapDevelopmentTestTokenEndpoints();
 // Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)
 app.MapHub<TournamentHub>("/hubs/tournament", o => o.CloseOnAuthenticationExpiration = true);
 

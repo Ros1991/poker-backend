@@ -33,6 +33,7 @@ public interface IAppDbContext
     DbSet<DealerAccess> DealerAccesses { get; }
     DbSet<DealerRequest> DealerRequests { get; }
     DbSet<TournamentActivity> TournamentActivities { get; }
+    DbSet<UserLogin> UserLogins { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

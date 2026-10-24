@@ -35,6 +35,7 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<DealerAccess> DealerAccesses => Set<DealerAccess>();
     public DbSet<DealerRequest> DealerRequests => Set<DealerRequest>();
     public DbSet<TournamentActivity> TournamentActivities => Set<TournamentActivity>();
+    public DbSet<UserLogin> UserLogins => Set<UserLogin>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

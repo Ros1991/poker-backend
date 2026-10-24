@@ -32,18 +32,23 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// Entrar. E-mail ou senha errados → 400 neutro. Senha certa com o e-mail ainda não
-    /// confirmado → 403 <c>{ code: "email_not_confirmed", message }</c> (sem sessão).
+    /// Entrar. E-mail ou senha errados (ou conta que só entra pelo Google, sem senha) → 400 neutro. Senha certa
+    /// com o e-mail ainda não confirmado → 403 <c>{ code: "email_not_confirmed", message }</c> (sem sessão).
+    /// Com <c>linkTicket</c> (409 do login social) a senha certa também conecta o Google à conta; ticket
+    /// vencido/usado/de outra conta → 400. Senha errada demais → 429 <c>{ code: "too_many_attempts", retryAfter,
+    /// message }</c> + <c>Retry-After</c>, antes de conferir a senha: 10 por IP + e-mail, 50 por e-mail e 50 por IP a
+    /// cada 15 min, contando só as erradas (LoginAttemptLimiter) — a mesa no mesmo Wi-Fi não se trava.
     /// </summary>
     [HttpPost("login")]
     [AllowAnonymous]
     [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<AuthResponse>> Login(
         [FromBody] LoginRequest request, CancellationToken ct)
     {
-        var result = await _authService.LoginAsync(request, UserAgent, ct);
+        var result = await _authService.LoginAsync(request, UserAgent, ClientIp.Resolve(HttpContext), ct);
         return Ok(result);
     }
 
@@ -94,6 +99,59 @@ public class AuthController : ControllerBase
     {
         await _emailConfirmation.ResendAsync(request.Email, ClientIp.Resolve(HttpContext), UserAgent, ct);
         return Accepted(new { message = ResendConfirmationMessage });
+    }
+
+    // ---- Login social (SPEC-20261023-1210) ----
+
+    /// <summary>
+    /// Provedores de login social ligados e o Client ID público de cada um: <c>{ providers: [{ provider, clientId }] }</c>.
+    /// O site monta o botão oficial a partir daqui (sem variável nova no build). Apple desligada = fora da lista.
+    /// </summary>
+    [HttpGet("external/providers")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
+    [ProducesResponseType(typeof(ExternalProvidersResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public ActionResult<ExternalProvidersResponse> ExternalProviders() => Ok(_authService.GetExternalProviders());
+
+    /// <summary>
+    /// Nonce de uso único (10 min) que o site passa ao botão do provedor antes do clique; volta dentro do ID token e
+    /// é conferido e gasto em <c>POST auth/external/{provider}</c>. Assinado pela API e sem estado até ser gasto: pedir
+    /// nonce em massa não ocupa memória nem recusa ninguém (só o limite por IP do public-anon).
+    /// </summary>
+    [HttpPost("external/nonce")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
+    [ProducesResponseType(typeof(ExternalNonceResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public ActionResult<ExternalNonceResponse> ExternalNonce()
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Ok(_authService.IssueExternalNonce());
+    }
+
+    /// <summary>
+    /// Entrar com o provedor (<c>google</c>; <c>apple</c> só quando ligada). Corpo <c>{ idToken, nonce, linkTicket? }</c>.
+    /// 200 = a mesma <c>AuthResponse</c> do login por senha (sessão por aparelho). ID token inválido (assinatura,
+    /// emissor, audience, validade) ou nonce ausente/reusado/vencido → 400 neutro; sem e-mail verificado → 400;
+    /// conta desativada → 403 <c>{ code: "account_disabled" }</c>; conta confirmada que pede a senha → 409
+    /// <c>{ code: "link_requires_password", ticket, email, message }</c>; provedor desligado → 404.
+    /// </summary>
+    [HttpPost("external/{provider}")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<ActionResult<AuthResponse>> ExternalLogin(
+        string provider, [FromBody] ExternalLoginRequest request, CancellationToken ct)
+    {
+        var result = await _authService.ExternalLoginAsync(
+            provider, request, ClientIp.Resolve(HttpContext), UserAgent, ct);
+        return Ok(result);
     }
 
     [HttpPost("refresh")]

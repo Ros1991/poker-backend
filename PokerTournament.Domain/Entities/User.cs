@@ -5,7 +5,8 @@ public class User : BaseEntity
     public string FullName { get; set; } = string.Empty;
     public string? Nickname { get; set; }
     public string Email { get; set; } = string.Empty;
-    public string PasswordHash { get; set; } = string.Empty;
+    /// <summary>Hash PBKDF2 da senha. Null = conta só-social (entra pelo Google; pode definir senha depois — SPEC-20261023-1210).</summary>
+    public string? PasswordHash { get; set; }
     public string? Whatsapp { get; set; }
     public string? PhotoUrl { get; set; }
     public string Role { get; set; } = string.Empty;

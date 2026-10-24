@@ -269,7 +269,6 @@ public class EntryService
         var players = await _db.Persons
             .Where(p => p.HomeGameId == homeGameId
                      && p.IsActive
-                     && p.Type == "Jogador"
                      && !p.TournamentEntries.Any(e => e.TournamentId == tournamentId))
             .Select(p => new AvailablePlayerResponse
             {

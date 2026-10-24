@@ -31,9 +31,9 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .IsRequired()
             .HasMaxLength(200);
 
+        // Null = conta só-social (entra pelo Google — SPEC-20261023-1210)
         builder.Property(u => u.PasswordHash)
             .HasColumnName("password_hash")
-            .IsRequired()
             .HasMaxLength(500);
 
         builder.Property(u => u.Whatsapp)

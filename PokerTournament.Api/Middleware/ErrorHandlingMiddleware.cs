@@ -7,6 +7,8 @@ namespace PokerTournament.Api.Middleware;
 
 public class ErrorHandlingMiddleware
 {
+    public const string InternalErrorMessage = "Algo deu errado do nosso lado. Tente de novo em instantes.";
+
     private readonly RequestDelegate _next;
     private readonly ILogger<ErrorHandlingMiddleware> _logger;
 
@@ -34,15 +36,21 @@ public class ErrorHandlingMiddleware
         {
             // Senha certa, e-mail ainda não confirmado: 403 com code para o front oferecer "Reenviar"
             EmailNotConfirmedException notConfirmed => (HttpStatusCode.Forbidden, notConfirmed.Message),
+            // Login social (SPEC-20261023-1210): conta desativada → 403; conta confirmada que pede a senha → 409
+            AccountDisabledException disabled => (HttpStatusCode.Forbidden, disabled.Message),
+            ExternalLoginLinkRequiredException linkRequired => (HttpStatusCode.Conflict, linkRequired.Message),
             // Recusa por plano (SPEC-20261023-1205): ANTES de DomainException (ela herda dela) → 402
             PlanLimitException planLimit => (HttpStatusCode.PaymentRequired, planLimit.Message),
+            // Senha errada demais no login (LoginAttemptLimiter): ANTES de DomainException (herda dela) → 429
+            TooManyLoginAttemptsException tooMany => (HttpStatusCode.TooManyRequests, tooMany.Message),
             DomainException domainEx => (HttpStatusCode.BadRequest, domainEx.Message),
             // xmin mudou entre a leitura e a gravação: não vaza a mensagem crua do EF
             DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Outra pessoa alterou isso ao mesmo tempo. Tente de novo."),
             KeyNotFoundException => (HttpStatusCode.NotFound, "Recurso não encontrado."),
             UnauthorizedAccessException => (HttpStatusCode.Unauthorized, "Acesso não autorizado."),
             InvalidOperationException opEx => (HttpStatusCode.Conflict, opEx.Message),
-            _ => (HttpStatusCode.InternalServerError, $"Erro: {exception.Message} | Inner: {exception.InnerException?.Message} | {exception.InnerException?.InnerException?.Message}")
+            // A mensagem da exceção (e das internas) fica só no log: no corpo do 500 nunca vai detalhe interno
+            _ => (HttpStatusCode.InternalServerError, InternalErrorMessage)
         };
 
         if (statusCode == HttpStatusCode.InternalServerError)
@@ -56,10 +64,40 @@ public class ErrorHandlingMiddleware
 
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)statusCode;
+        if (exception is TooManyLoginAttemptsException wait)
+            context.Response.Headers.RetryAfter = wait.RetryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-        // Erros com código de máquina (ex.: "email_not_confirmed") levam o campo code no corpo
-        var code = exception is EmailNotConfirmedException enc ? enc.Code : null;
-        object response = exception is PlanLimitException plan
+        // Erros com código de máquina (ex.: "email_not_confirmed", "account_disabled") levam o campo code no corpo
+        var code = exception switch
+        {
+            EmailNotConfirmedException enc => enc.Code,
+            AccountDisabledException ad => ad.Code,
+            _ => null
+        };
+        object response = exception is ExternalLoginLinkRequiredException link
+            // 409 do login social: o site pede a senha da conta e conclui com POST auth/login { linkTicket }
+            ? new
+            {
+                status = (int)statusCode,
+                error = statusCode.ToString(), // "Conflict"
+                code = link.Code,
+                ticket = link.Ticket,
+                email = link.Email,
+                message,
+                timestamp = DateTimeOffset.UtcNow
+            }
+            : exception is TooManyLoginAttemptsException limited
+            // 429 do login: o site mostra a mensagem (quanto esperar) e pode contar o retryAfter
+            ? new
+            {
+                status = (int)statusCode,
+                error = statusCode.ToString(), // "TooManyRequests"
+                code = limited.Code,
+                retryAfter = limited.RetryAfterSeconds,
+                message,
+                timestamp = DateTimeOffset.UtcNow
+            }
+            : exception is PlanLimitException plan
             // Contrato único do 402 (o UpgradeModal lê exatamente estes campos; nulos vão como null)
             ? new
             {
