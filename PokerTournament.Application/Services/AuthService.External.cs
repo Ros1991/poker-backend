@@ -165,7 +165,8 @@ public partial class AuthService
                     user.PasswordHash = null;
                     user.RefreshToken = null;
                     user.RefreshTokenExpiresAt = null;
-                    await _emailConfirmation.RevokePendingAsync(user.Id, ct);
+                    // Links de confirmação E os cadastros pendentes presos a eles (D16.10): nenhum vai mais para a conta
+                    await _emailConfirmation.ClearPendingAsync(user.Id, ct);
                     await _db.PasswordResetTokens
                         .Where(t => t.UserId == user.Id && t.UsedAt == null && t.RevokedAt == null && t.ExpiresAt > now)
                         .ExecuteUpdateAsync(set => set

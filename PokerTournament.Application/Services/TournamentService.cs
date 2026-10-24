@@ -157,7 +157,8 @@ public class TournamentService
             ?? throw new DomainException("Home game não encontrado.");
 
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        await _plans.EnsureCanCreateTournamentAsync(homeGameId, bypassPlanLimits, ct);
+        // Quem cria: o 402 de quem não é o dono sai sem o uso/horário dos home games do dono
+        await _plans.EnsureCanCreateTournamentAsync(homeGameId, bypassPlanLimits, createdBy, ct);
 
         var tournament = _mapper.Map<Tournament>(request);
         tournament.HomeGameId = homeGameId;
@@ -229,9 +230,10 @@ public class TournamentService
     }
 
     /// <summary>
-    /// Mesa (sem o recurso Payments): o torneio não cria custos automáticos nem guarda PIX do dia —
+    /// Mesa (sem o recurso Payments): o torneio NASCE sem custos automáticos nem PIX do dia —
     /// senão NetPrizePool divergiria de TotalPrizePool sem o organizador conseguir ver o motivo.
     /// Vale pelo plano do DONO (não de quem cria/edita); desligado com Plans:Enforce = false.
+    /// Só na criação: a edição sem Payments mantém o que já estava gravado (ver UpdateAsync).
     /// </summary>
     private static void StripPaidFields(Tournament tournament)
     {
@@ -254,10 +256,21 @@ public class TournamentService
             throw new DomainException("Apenas torneios em rascunho podem ser editados.");
 
         var previousStructureId = tournament.BlindStructureId;
+        // Queda de plano não apaga nada: sem Payments (Mesa) a edição mantém o que já estava gravado (staff,
+        // ranking, contribuição e PIX do dia de um torneio criado no plano pago) e só ignora valores NOVOS da
+        // requisição. Torneio criado no Mesa tem tudo nulo e continua nulo.
+        var kept = (tournament.StaffAmount, tournament.RankingId, tournament.RankingContribMode,
+            tournament.RankingContribValue, tournament.ResponsiblePixKey);
         _mapper.Map(request, tournament);
         var hasPayments = await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.Payments, ct);
         if (!hasPayments)
-            StripPaidFields(tournament);
+        {
+            tournament.StaffAmount = kept.StaffAmount;
+            tournament.RankingId = kept.RankingId;
+            tournament.RankingContribMode = kept.RankingContribMode;
+            tournament.RankingContribValue = kept.RankingContribValue;
+            tournament.ResponsiblePixKey = kept.ResponsiblePixKey;
+        }
 
         // If the blind structure changed (or was set when previously null), copy levels
         if (request.BlindStructureId.HasValue && request.BlindStructureId != previousStructureId)
@@ -301,15 +314,12 @@ public class TournamentService
 
     /// <summary>
     /// Cria (idempotente) os custos automáticos de staff/ranking se faltarem. Sem o recurso Payments
-    /// (Mesa) não cria nada e zera os campos que os gerariam.
+    /// (Mesa) não cria nada — e não mexe nos campos já gravados (queda de plano não apaga nada).
     /// </summary>
     private async Task EnsureAutoCostsAsync(Tournament tournament, bool hasPayments, CancellationToken ct)
     {
         if (!hasPayments)
-        {
-            StripPaidFields(tournament);
             return;
-        }
 
         var existing = await _db.CostExtras
             .Where(c => c.TournamentId == tournament.Id)

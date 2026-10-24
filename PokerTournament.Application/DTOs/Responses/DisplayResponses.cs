@@ -82,6 +82,12 @@ public class TvTournamentInfo
     public string Plan { get; set; } = "Mesa";
     public bool ShowBadge { get; set; } = true;
     public string? ClubLogoUrl { get; set; } // só Liga
+    /// <summary>
+    /// Recursos que valem no torneio (os mesmos do TournamentResponse.planFeatures; com Plans:Enforce = false, todos).
+    /// O telão decide cada bloco por aqui — Payments: coluna "Deve" e card PIX; Prizes: premiação; Tables: visão de
+    /// mesas —, e não pelo nome do plano: Plan/ShowBadge/ClubLogoUrl ficam só para o selo.
+    /// </summary>
+    public List<string> PlanFeatures { get; set; } = [];
 }
 
 public class TvBlindLevel

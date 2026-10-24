@@ -417,6 +417,8 @@ public class DisplayService
                 ResponsiblePixKey = showPix ? t.ResponsiblePixKey : null,
                 Plan = plan,
                 ShowBadge = planDefinition.ShowBadge,
+                // O telão decide o conteúdo por aqui (com a chave de emergência desligada, todos os recursos)
+                PlanFeatures = [.. _plans.FeaturesFor(plan)],
                 // Decoração segue o plano de verdade (não a chave de emergência): logo só na Liga
                 ClubLogoUrl = planDefinition.Has(PlanFeature.ClubLogoOnTv) ? homeGame?.LogoUrl : null,
             },

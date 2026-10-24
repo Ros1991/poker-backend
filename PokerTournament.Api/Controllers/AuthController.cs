@@ -54,13 +54,17 @@ public class AuthController : ControllerBase
 
     /// <summary>
     /// Cadastro público: 202 com <c>{ email, message }</c> e SEM sessão — a conta só entra depois
-    /// de confirmar o e-mail pelo link (48 h). E-mail de conta confirmada → 400 "E-mail já está em
-    /// uso."; e-mail de conta ainda não confirmada → sobrescreve os dados e reenvia (202 igual).
+    /// de confirmar o e-mail pelo link (48 h) com a senha do cadastro. E-mail de conta confirmada → 400 "E-mail já
+    /// está em uso."; e-mail de conta ainda não confirmada → link novo com os dados novos, revogando os anteriores
+    /// (202 igual; dentro do cooldown de 2 min o e-mail não sai). Anônimo e manda e-mail: limite por IP de
+    /// 20/min (public-anon) + teto diário por IP → 429.
     /// </summary>
     [HttpPost("register")]
     [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
     [ProducesResponseType(typeof(RegisterResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<RegisterResponse>> Register(
         [FromBody] RegisterRequest request, CancellationToken ct)
     {
@@ -69,20 +73,38 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// Confirma o e-mail pelo token do link {PUBLIC_APP_URL}/confirmar-email/{token}: 204 (não loga).
-    /// Link inválido, expirado, já usado ou substituído por um mais novo → 400.
+    /// Confirma o e-mail pelo link {PUBLIC_APP_URL}/confirmar-email/{token} com a senha escolhida no cadastro
+    /// (D16.10): 200 com a MESMA <c>AuthResponse</c> do login (já entra). Link inválido, expirado, já usado ou
+    /// substituído por um mais novo → 400 "Link inválido ou expirado…"; senha errada → 400 "Senha incorreta." (o link
+    /// continua valendo; conta no limite de senhas erradas do login → 429 <c>too_many_attempts</c>).
     /// </summary>
     [HttpPost("confirm-email")]
     [AllowAnonymous]
     [EnableRateLimiting("public-anon")]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
-    public async Task<ActionResult> ConfirmEmail(
+    public async Task<ActionResult<AuthResponse>> ConfirmEmail(
         [FromBody] ConfirmEmailRequest request, CancellationToken ct)
     {
-        await _emailConfirmation.ConfirmAsync(request.Token, ClientIp.Resolve(HttpContext), UserAgent, ct);
-        return NoContent();
+        var result = await _authService.ConfirmEmailAsync(
+            request.Token, request.Password, ClientIp.Resolve(HttpContext), UserAgent, ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// O que a página do link mostra antes de pedir a senha: <c>{ valid, email }</c> com o e-mail MASCARADO
+    /// (ex.: "ro***@gmail.com"); link que não vale → <c>{ valid: false, email: null }</c>. Não consome o link.
+    /// </summary>
+    [HttpGet("confirm-email/{token}/info")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-anon")]
+    [ProducesResponseType(typeof(ConfirmEmailInfoResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<ActionResult<ConfirmEmailInfoResponse>> ConfirmEmailInfo(string token, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Ok(await _emailConfirmation.GetInfoAsync(token, ct));
     }
 
     /// <summary>

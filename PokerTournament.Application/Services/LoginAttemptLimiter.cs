@@ -136,14 +136,21 @@ public sealed class LoginAttemptLimiter
         return Attempt.Of(taken);
     }
 
-    /// <summary>IPv4 (inclusive o mapeado em IPv6) inteiro; IPv6 pelo prefixo /64; texto que não é IP como veio.</summary>
+    /// <summary>
+    /// IPv4 (inclusive o mapeado em IPv6) inteiro; IPv6 pelo prefixo /64; com porta ("1.2.3.4:5678", "[::1]:80") conta
+    /// só o endereço; texto que não é IP como veio.
+    /// </summary>
     public static string IpBucket(string? ip)
     {
         if (string.IsNullOrWhiteSpace(ip))
             return "desconhecido";
         var text = ip.Trim();
         if (!IPAddress.TryParse(text, out var address))
-            return text.Length <= 64 ? text : text[..64];
+        {
+            if (!IPEndPoint.TryParse(text, out var endPoint))
+                return text.Length <= 64 ? text : text[..64];
+            address = endPoint.Address;
+        }
         if (address.IsIPv4MappedToIPv6)
             address = address.MapToIPv4();
         if (address.AddressFamily != AddressFamily.InterNetworkV6)

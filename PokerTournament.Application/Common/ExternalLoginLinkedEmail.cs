@@ -6,11 +6,14 @@ namespace PokerTournament.Application.Common;
 /// <summary>
 /// Aviso "O Google foi conectado à sua conta" (SPEC-20261023-1210, pesquisa §10): sai quando o login social
 /// é vinculado SOZINHO a uma conta confirmada (<c>@gmail.com</c>). Mesmo molde do <see cref="PasswordResetEmail"/>;
-/// o botão leva ao "Esqueci minha senha" (quem não reconhece o vínculo troca a senha por lá).
+/// o botão leva ao "Esqueci minha senha" (quem não reconhece o vínculo troca a senha por lá). Saudação fixa ("Olá!"),
+/// como nos outros e-mails de conta: o nome da conta pode ter vindo de um cadastro feito por outra pessoa e nada
+/// digitado em formulário entra no corpo.
 /// </summary>
 public static class ExternalLoginLinkedEmail
 {
     public const string TemplateKey = "external_login_linked";
+    public const string Greeting = "Olá!";
 
     public static string SubjectFor(string connectedTitle) => $"{connectedTitle} — Poker da Galera";
 
@@ -18,11 +21,9 @@ public static class ExternalLoginLinkedEmail
     /// <param name="forgotPasswordLink">{PUBLIC_APP_URL}/esqueci-senha</param>
     /// <param name="logoUrl">URL pública da logo completa; null = sem logo.</param>
     public static EmailMessage Build(
-        string to, string fullName, string providerDisplayName, string connectedTitle,
+        string to, string providerDisplayName, string connectedTitle,
         string forgotPasswordLink, bool hasPassword, string? logoUrl = null)
     {
-        var name = string.IsNullOrWhiteSpace(fullName) ? "jogador" : fullName.Trim();
-        var safeName = WebUtility.HtmlEncode(name);
         var safeLink = WebUtility.HtmlEncode(forgotPasswordLink);
         var safeTitle = WebUtility.HtmlEncode(connectedTitle);
         var safeProvider = WebUtility.HtmlEncode(providerDisplayName);
@@ -42,7 +43,7 @@ public static class ExternalLoginLinkedEmail
                 <tr><td>
                   {logo}
                   <h1 style="font-size:20px;margin:0 0 16px;color:#1B2E4B;">{safeTitle}</h1>
-                  <p style="font-size:15px;line-height:1.5;margin:0 0 16px;">Olá, {safeName}.</p>
+                  <p style="font-size:15px;line-height:1.5;margin:0 0 16px;">{Greeting}</p>
                   <p style="font-size:15px;line-height:1.5;margin:0 0 24px;">Sua conta no Poker da Galera agora também entra com o botão "Continuar com {safeProvider}".{passwordNote}</p>
                   <p style="font-size:15px;line-height:1.5;margin:0 0 24px;"><strong>Não foi você?</strong> {action}:</p>
                   <p style="margin:0 0 24px;">
@@ -58,7 +59,7 @@ public static class ExternalLoginLinkedEmail
         var text = $"""
             {connectedTitle} — Poker da Galera
 
-            Olá, {name}.
+            {Greeting}
 
             Sua conta no Poker da Galera agora também entra com o botão "Continuar com {providerDisplayName}".{passwordNote}
 

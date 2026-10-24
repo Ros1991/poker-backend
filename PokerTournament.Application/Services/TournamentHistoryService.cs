@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -31,12 +32,15 @@ public class TournamentHistoryService
     private readonly IAppDbContext _db;
     private readonly EntryService _entryService;
     private readonly PaymentService _paymentService;
+    private readonly PlanService _plans;
 
-    public TournamentHistoryService(IAppDbContext db, EntryService entryService, PaymentService paymentService)
+    public TournamentHistoryService(
+        IAppDbContext db, EntryService entryService, PaymentService paymentService, PlanService plans)
     {
         _db = db;
         _entryService = entryService;
         _paymentService = paymentService;
+        _plans = plans;
     }
 
     public async Task<List<HistoryItemResponse>> GetHistoryAsync(
@@ -147,6 +151,9 @@ public class TournamentHistoryService
             || entries.Any(e => EntryService.IsPrizePaid(e, paidPrizeEntryIds))
             || await _db.TournamentPrizes.AnyAsync(p => p.TournamentId == tournamentId && p.Paid, ct);
         var moneyUndoBlocked = EntryService.MoneyUndoBlockedReason(tournamentStatus, anyPrizePaid);
+        // Estorno de pagamento/abatimento é financeiro: sem Payments no plano do dono (Mesa) não se desfaz por aqui
+        // (o POST .../undo responde 402, como o estorno de payments/*)
+        var paymentsUndoAllowed = await _plans.HasFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, ct);
 
         var items = new List<HistoryItemResponse>(transactions.Count + eliminations.Count + activities.Count);
 
@@ -180,7 +187,9 @@ public class TournamentHistoryService
 
                 case nameof(TransactionType.Payment):
                 case nameof(TransactionType.Settlement):
-                    item.CanUndo = !undone && t.EntryId.HasValue;
+                    item.CanUndo = !undone && t.EntryId.HasValue && paymentsUndoAllowed;
+                    if (!undone && !paymentsUndoAllowed)
+                        item.UndoBlockedReason = PlanCatalog.FeatureLockedMessage(PlanFeature.Payments);
                     break;
 
                 case nameof(TransactionType.BuyIn):
@@ -282,10 +291,14 @@ public class TournamentHistoryService
     /// Desfaz uma transação do histórico: rebuy/add-on (marca como desfeito), pagamento/abatimento
     /// (estorno) ou inscrição (só sem nada valendo). Rebuy/add-on/inscrição ficam bloqueados com o
     /// torneio encerrado ou prêmio pago (EnsureMoneyUndoAllowedAsync). Prêmio e reembolso não se
-    /// desfazem por aqui.
+    /// desfazem por aqui. Pagamento/abatimento é estorno (financeiro): exige o recurso Payments no plano do dono
+    /// → 402 feature_locked, igual ao POST payments/entries/{id}/{paymentId}/reverse (o token de dealer nunca
+    /// pula; o Admin do sistema passa <paramref name="bypassPlanLimits"/>). Rebuy/add-on/inscrição continuam sem
+    /// checagem de plano (invariante da SPEC-20261023-1205).
     /// </summary>
     public async Task<string> UndoTransactionAsync(
-        Guid tournamentId, Guid transactionId, Guid? undoneBy = null, CancellationToken ct = default)
+        Guid tournamentId, Guid transactionId, Guid? undoneBy = null, bool bypassPlanLimits = false,
+        CancellationToken ct = default)
     {
         var tx = await _db.Transactions
             .AsNoTracking()
@@ -305,6 +318,10 @@ public class TournamentHistoryService
         // Rebuy/add-on/inscrição mexem no bolo: bloqueados com torneio encerrado ou prêmio pago
         if (tx.Type is nameof(TransactionType.Rebuy) or nameof(TransactionType.Addon) or nameof(TransactionType.BuyIn))
             await _entryService.EnsureMoneyUndoAllowedAsync(tournamentId, ct);
+
+        // Estorno pelo histórico = estorno de payments/*: sem Payments no plano do dono → 402
+        if (tx.Type is nameof(TransactionType.Payment) or nameof(TransactionType.Settlement))
+            await _plans.EnsureFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, bypassPlanLimits, ct: ct);
 
         switch (tx.Type)
         {

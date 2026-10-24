@@ -34,6 +34,8 @@ public partial class AuthService
     public const string EmailInUseMessage = "E-mail já está em uso.";
     public const string RegisteredMessage =
         "Enviamos um link para confirmar seu e-mail. Ele vale por 48 horas; confira também a caixa de spam.";
+    /// <summary>D16.10: link certo com a senha errada do cadastro (o link continua valendo).</summary>
+    public const string WrongConfirmPasswordMessage = "Senha incorreta.";
 
     private readonly IAppDbContext _db;
     private readonly JwtTokenFactory _tokens;
@@ -46,6 +48,8 @@ public partial class AuthService
     private readonly ExternalLoginEmailService _externalEmail;
     // Limite de senhas erradas no login (revisão da onda 5)
     private readonly LoginAttemptLimiter _loginLimiter;
+    // Teto diário de cadastros por IP (revisão da SPEC-20261023-1209)
+    private readonly RegistrationLimiter _registrationLimiter;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
@@ -58,8 +62,10 @@ public partial class AuthService
         IOptions<ExternalLoginOptions> external,
         ExternalLoginEmailService externalEmail,
         LoginAttemptLimiter loginLimiter,
+        RegistrationLimiter registrationLimiter,
         ILogger<AuthService> logger)
     {
+        _registrationLimiter = registrationLimiter;
         _db = db;
         _tokens = tokens;
         _cache = cache;
@@ -141,7 +147,14 @@ public partial class AuthService
                 .FirstOrDefaultAsync(ct);
 
             // Sem senha gravada (conta criada pelo Google) cai no MESMO 400 de senha errada
-            if (user?.PasswordHash is null || !VerifyPassword(request.Password, user.PasswordHash))
+            var passwordOk = user?.PasswordHash is not null && VerifyPassword(request.Password, user.PasswordHash);
+            // Conta ainda não confirmada: a senha do cadastro pendente (D16.10 — o cadastro repetido não mexe na
+            // conta, os dados ficam no link) também leva ao 403 "confirme seu e-mail"; nunca a uma sessão
+            if (!passwordOk && user is { EmailConfirmedAt: null }
+                && await _emailConfirmation.LatestPendingAsync(user.Id, ct) is { } pending)
+                passwordOk = VerifyPassword(request.Password, pending.PasswordHash);
+
+            if (user is null || !passwordOk)
             {
                 wrongPassword = true;
                 _externalStore.RegisterFailedAttempt(request.LinkTicket);
@@ -190,14 +203,15 @@ public partial class AuthService
 
     /// <summary>
     /// Cadastro público (SPEC-20261023-1209): cria a conta com o e-mail NÃO confirmado, sem sessão
-    /// e sem LastLoginAt, e manda o link "Confirme seu e-mail" (48 h). Cadastro repetido com o
-    /// e-mail de uma conta ainda não confirmada sobrescreve nome/apelido/WhatsApp/senha e reenvia
-    /// o link (D16.4 — quem controla a caixa é quem confirma); conta confirmada (ou desativada) →
-    /// "E-mail já está em uso.". Os dois casos de sucesso devolvem exatamente a mesma resposta.
-    /// Dois cadastros simultâneos com o mesmo e-mail entram em fila pela trava consultiva por
-    /// e-mail: o segundo encontra a conta do primeiro e a sobrescreve (último a chegar vence).
-    /// O reenvio do cadastro repetido respeita o cooldown de 2 min do "Reenviar" (o link anterior
-    /// continua valendo e confirma a conta com os dados novos).
+    /// e sem LastLoginAt, e manda o link "Confirme seu e-mail" (48 h); conta confirmada (ou desativada) →
+    /// "E-mail já está em uso.". D16.10: os dados do cadastro (nome, apelido, WhatsApp e hash da senha) ficam
+    /// presos ao token do link e só vão para a conta quando AQUELE token for confirmado com a senha certa.
+    /// Cadastro repetido com o e-mail de uma conta ainda não confirmada NÃO mexe na conta: revoga SEMPRE os links
+    /// pendentes e cria um token novo com os dados novos — o cooldown de 2 min só decide se sai e-mail (dentro dele
+    /// o token novo existe, mas só chega à caixa pelo "Reenviar" depois do cooldown). Assim nenhum link já enviado
+    /// confirma uma senha que a dona da caixa não escolheu. Os casos de sucesso devolvem exatamente a mesma resposta.
+    /// Dois cadastros simultâneos com o mesmo e-mail entram em fila pela trava consultiva por e-mail (o último a
+    /// chegar fica com o link valendo). Teto de cadastros por IP no dia (<see cref="RegistrationLimiter"/>) → 429.
     /// </summary>
     public async Task<RegisterResponse> RegisterAsync(
         RegisterRequest request, string? ip = null, string? userAgent = null, CancellationToken ct = default)
@@ -208,8 +222,11 @@ public partial class AuthService
         var whatsapp = NullIfBlank(request.Whatsapp);
         // Tudo validado ANTES de olhar o banco: nenhuma mensagem de validação denuncia conta existente
         ValidateRegistration(email, fullName, nickname, whatsapp, request.Password);
+        // Depois da validação (erro de digitação não gasta o dia), antes do banco: e-mail em uso também conta
+        _registrationLimiter.Consume(ip);
 
-        User user;
+        var pending = new PendingRegistration(fullName, nickname, whatsapp, HashPassword(request.Password!));
+        string accountEmail;
         string? link = null;
         try
         {
@@ -225,33 +242,32 @@ public partial class AuthService
             var existing = matches.FirstOrDefault();
             if (existing is null)
             {
-                user = new User
+                // Conta nova: nasce com os dados deste cadastro (o mesmo que fica preso ao primeiro link)
+                var user = new User
                 {
                     FullName = fullName,
                     Nickname = nickname,
                     Email = email, // sempre em minúsculas no banco
                     Whatsapp = whatsapp,
-                    PasswordHash = HashPassword(request.Password),
+                    PasswordHash = pending.PasswordHash,
                     Role = "Player",
                     IsActive = true,
-                    EmailConfirmedAt = null // login bloqueado até clicar no link
+                    EmailConfirmedAt = null // login bloqueado até confirmar pelo link
                 };
                 _db.Users.Add(user);
+                await _db.SaveChangesAsync(ct);
+                link = await _emailConfirmation.IssueTokenAsync(user.Id, ip, userAgent, pending, emailSent: true, ct);
+                accountEmail = user.Email;
             }
             else
             {
-                // D16.4: conta ainda não confirmada — os dados novos substituem os antigos
-                user = existing;
-                user.FullName = fullName;
-                user.Nickname = nickname;
-                user.Whatsapp = whatsapp;
-                user.PasswordHash = HashPassword(request.Password);
+                // D16.10: conta ainda não confirmada — a conta fica como está; os dados novos vão para um link novo
+                // (revoga os anteriores). No cooldown o link novo existe, mas o e-mail não sai.
+                var sendEmail = !await _emailConfirmation.IsInCooldownAsync(existing.Id, ct);
+                var issued = await _emailConfirmation.IssueTokenAsync(existing.Id, ip, userAgent, pending, sendEmail, ct);
+                link = sendEmail ? issued : null;
+                accountEmail = existing.Email;
             }
-
-            await _db.SaveChangesAsync(ct);
-
-            if (existing is null || !await _emailConfirmation.IsInCooldownAsync(user.Id, ct))
-                link = await _emailConfirmation.IssueTokenAsync(user.Id, ip, userAgent, ct);
 
             await tx.CommitAsync(ct);
         }
@@ -264,9 +280,95 @@ public partial class AuthService
 
         // Depois do commit: o link do e-mail só existe se o token já estiver gravado
         if (link is not null)
-            _emailConfirmation.QueueEmail(user, link);
+            _emailConfirmation.QueueEmail(accountEmail, link);
 
-        return new RegisterResponse { Email = user.Email, Message = RegisteredMessage };
+        return new RegisterResponse { Email = accountEmail, Message = RegisteredMessage };
+    }
+
+    /// <summary>
+    /// Confirmar o e-mail pelo link (D16.10): token válido + a senha do cadastro que gerou o link (a do token; token
+    /// sem cadastro preso, anterior à D16.10, usa a senha da conta). Certo → aplica os dados do cadastro à conta,
+    /// confirma (AuditLog EmailConfirmed via link), revoga os outros links e devolve a MESMA sessão do login.
+    /// Link inexistente/usado/revogado/vencido/de conta já confirmada → 400 "Link inválido ou expirado…" (não conta
+    /// como senha errada). Senha errada → 400 "Senha incorreta." SEM consumir o token, contando no
+    /// <see cref="LoginAttemptLimiter"/> (IP + e-mail da conta) — estourou → 429 antes de conferir a senha.
+    /// Dois cliques simultâneos com a senha certa: um 200 e um 400.
+    /// </summary>
+    public async Task<AuthResponse> ConfirmEmailAsync(
+        string? token, string? password, string? ip = null, string? userAgent = null, CancellationToken ct = default)
+    {
+        var row = await _emailConfirmation.FindUsableAsync(token, ct)
+            ?? throw new DomainException(EmailConfirmationService.InvalidLinkMessage);
+
+        var attempt = _loginLimiter.Reserve(ip, row.User.Email);
+        var wrongPassword = false;
+        try
+        {
+            var expectedHash = row.PendingPasswordHash ?? row.User.PasswordHash;
+            if (expectedHash is null || !VerifyPassword(password, expectedHash))
+            {
+                wrongPassword = true;
+                throw new DomainException(WrongConfirmPasswordMessage);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            User user;
+            AuthSession session;
+            string refreshToken;
+            await using (var tx = await _db.Database.BeginTransactionAsync(ct))
+            {
+                // Mesma fila do cadastro/reenviar/Google: um cadastro repetido no meio do caminho revoga este link
+                // antes (e o UPDATE condicional abaixo falha) ou depois (e já encontra a conta confirmada)
+                await EmailConfirmationService.LockEmailAsync(_db, UserEmail.Normalize(row.User.Email), ct);
+
+                if (!await _emailConfirmation.TryClaimAsync(row.Id, ct))
+                    throw new DomainException(EmailConfirmationService.InvalidLinkMessage); // outro clique levou o link
+
+                user = await _db.Users.FirstAsync(u => u.Id == row.UserId, ct);
+                if (user.EmailConfirmedAt is not null || !user.IsActive)
+                    throw new DomainException(EmailConfirmationService.InvalidLinkMessage);
+
+                if (row.PendingPasswordHash is not null)
+                {
+                    // Os dados do cadastro DESTE link vão para a conta agora
+                    user.FullName = string.IsNullOrWhiteSpace(row.PendingFullName) ? user.FullName : row.PendingFullName;
+                    user.Nickname = row.PendingNickname;
+                    user.Whatsapp = row.PendingWhatsapp;
+                    user.PasswordHash = row.PendingPasswordHash;
+                }
+                else if (IsLegacyHash(user.PasswordHash))
+                {
+                    user.PasswordHash = HashPassword(password!);
+                }
+
+                user.EmailConfirmedAt = now;
+                user.LastLoginAt = now;
+                user.RefreshToken = null;
+                user.RefreshTokenExpiresAt = null;
+                AddAudit(user, EmailConfirmationService.AuditAction, """{"via":"link"}""", ip, userAgent, now);
+
+                // Sessões não deveriam existir em conta não confirmada; se houver, caem (a senha pode ter mudado)
+                await RevokeAllSessionsAsync(user.Id, ct);
+                (session, refreshToken) = NewSession(user.Id, userAgent);
+                _db.AuthSessions.Add(session);
+                await _db.SaveChangesAsync(ct);
+
+                // Qualquer outro link da conta deixa de valer e nenhum cadastro pendente sobra
+                await _emailConfirmation.ClearPendingAsync(user.Id, ct);
+                await tx.CommitAsync(ct);
+            }
+
+            // Entrou: as senhas erradas desta conta neste IP deixam de pesar
+            attempt.Succeeded(clearIpAndEmail: true);
+            _logger.LogInformation("E-mail confirmado pelo link (com a senha do cadastro) para o usuário {UserId}", user.Id);
+            return BuildResponse(user, session.Id, refreshToken);
+        }
+        finally
+        {
+            // Link/senha certos (mesmo que outro clique tenha levado o link) ou erro inesperado: não conta
+            if (!wrongPassword)
+                attempt.Succeeded();
+        }
     }
 
     private static void ValidateRegistration(

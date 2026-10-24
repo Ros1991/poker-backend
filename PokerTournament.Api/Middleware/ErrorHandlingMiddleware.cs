@@ -41,8 +41,9 @@ public class ErrorHandlingMiddleware
             ExternalLoginLinkRequiredException linkRequired => (HttpStatusCode.Conflict, linkRequired.Message),
             // Recusa por plano (SPEC-20261023-1205): ANTES de DomainException (ela herda dela) → 402
             PlanLimitException planLimit => (HttpStatusCode.PaymentRequired, planLimit.Message),
-            // Senha errada demais no login (LoginAttemptLimiter): ANTES de DomainException (herda dela) → 429
-            TooManyLoginAttemptsException tooMany => (HttpStatusCode.TooManyRequests, tooMany.Message),
+            // Senha errada demais (login/confirmação) ou cadastros demais por IP no dia: ANTES de DomainException
+            // (herdam dela) → 429
+            TooManyRequestsException tooMany => (HttpStatusCode.TooManyRequests, tooMany.Message),
             DomainException domainEx => (HttpStatusCode.BadRequest, domainEx.Message),
             // xmin mudou entre a leitura e a gravação: não vaza a mensagem crua do EF
             DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Outra pessoa alterou isso ao mesmo tempo. Tente de novo."),
@@ -64,7 +65,7 @@ public class ErrorHandlingMiddleware
 
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)statusCode;
-        if (exception is TooManyLoginAttemptsException wait)
+        if (exception is TooManyRequestsException wait)
             context.Response.Headers.RetryAfter = wait.RetryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
         // Erros com código de máquina (ex.: "email_not_confirmed", "account_disabled") levam o campo code no corpo
@@ -86,8 +87,8 @@ public class ErrorHandlingMiddleware
                 message,
                 timestamp = DateTimeOffset.UtcNow
             }
-            : exception is TooManyLoginAttemptsException limited
-            // 429 do login: o site mostra a mensagem (quanto esperar) e pode contar o retryAfter
+            : exception is TooManyRequestsException limited
+            // 429 do login/confirmação/cadastro: o site mostra a mensagem (quanto esperar) e pode contar o retryAfter
             ? new
             {
                 status = (int)statusCode,

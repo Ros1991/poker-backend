@@ -38,7 +38,11 @@ public class TournamentHistoryController : ControllerBase
     public async Task<ActionResult<UndoResultResponse>> UndoTransaction(
         Guid tournamentId, Guid transactionId, CancellationToken ct)
     {
-        var message = await _historyService.UndoTransactionAsync(tournamentId, transactionId, GetUserId(), ct);
+        // Estorno de pagamento/abatimento exige Payments no plano do dono (402); só o Admin do sistema pula — o token
+        // de dealer (escopo de torneio) nunca
+        var systemAdmin = User.IsInRole("Admin") && string.IsNullOrEmpty(User.FindFirst(TokenKinds.ClaimType)?.Value);
+        var message = await _historyService.UndoTransactionAsync(
+            tournamentId, transactionId, GetUserId(), bypassPlanLimits: systemAdmin, ct: ct);
         return Ok(new UndoResultResponse { Message = message });
     }
 

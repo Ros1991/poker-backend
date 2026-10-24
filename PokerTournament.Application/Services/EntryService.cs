@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -14,13 +15,23 @@ public class EntryService
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
     private readonly IWhatsAppProvider _whatsApp;
+    private readonly PlanService _plans;
 
-    public EntryService(IAppDbContext db, IMapper mapper, IWhatsAppProvider whatsApp)
+    public EntryService(IAppDbContext db, IMapper mapper, IWhatsAppProvider whatsApp, PlanService plans)
     {
         _db = db;
         _mapper = mapper;
         _whatsApp = whatsApp;
+        _plans = plans;
     }
+
+    /// <summary>
+    /// "Inscrição já paga" só com o recurso Payments no plano do DONO (D3 da SPEC-20261023-1205: no Mesa nem marcar
+    /// inscrição como paga, inclusive pelo token de dealer). Sem ele o pedido é atendido do mesmo jeito, só nasce
+    /// pendente — inscrição nunca é recusada por plano (o invariante continua: nada de 402 aqui).
+    /// </summary>
+    private async Task<bool> BuyInPaidAllowedAsync(Guid tournamentId, bool requested, CancellationToken ct) =>
+        requested && await _plans.HasFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, ct);
 
     public async Task<List<EntryResponse>> GetEntriesAsync(Guid tournamentId, CancellationToken ct = default)
     {
@@ -338,6 +349,7 @@ public class EntryService
             personId = person.Id;
         }
 
+        // RegisterEntryAsync ignora o "já pago" quando o dono não tem Payments (Mesa), inclusive no token de dealer
         var created = await RegisterEntryAsync(
             tournamentId, new CreateEntryRequest { PersonId = personId, BuyInPaid = request.BuyInPaid },
             registeredBy, ct);
@@ -473,6 +485,9 @@ public class EntryService
             ? (tournament.RankingContribValue ?? 0m)
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
+        // Mesa (sem Payments no plano do dono): a inscrição nasce pendente mesmo com buyInPaid=true (vale para
+        // POST entries, quick-add e o token de dealer)
+        var buyInPaid = await BuyInPaidAllowedAsync(tournamentId, request.BuyInPaid, ct);
 
         var entry = new TournamentEntry
         {
@@ -480,16 +495,16 @@ public class EntryService
             TournamentId = tournamentId,
             PersonId = request.PersonId,
             Status = nameof(EntryStatus.Active),
-            BuyInPaid = request.BuyInPaid,
+            BuyInPaid = buyInPaid,
             BuyInAmount = tournament.BuyInAmount,
             RebuyCount = 0,
             RebuyTotal = 0,
             AddonPurchased = false,
             AddonAmount = 0,
             TotalDue = entryCost,
-            TotalPaid = request.BuyInPaid ? entryCost : 0,
-            Balance = request.BuyInPaid ? 0 : entryCost,
-            PaymentStatus = request.BuyInPaid
+            TotalPaid = buyInPaid ? entryCost : 0,
+            Balance = buyInPaid ? 0 : entryCost,
+            PaymentStatus = buyInPaid
                 ? nameof(Domain.Enums.PaymentStatus.Paid)
                 : nameof(Domain.Enums.PaymentStatus.Pending),
             EntryNumber = entryNumber,
@@ -499,6 +514,8 @@ public class EntryService
         };
 
         _db.TournamentEntries.Add(entry);
+        // Nunca volta a false: o rascunho que já teve inscrição não devolve a vaga do limite semanal ao ser excluído
+        tournament.HadEntries = true;
 
         // Registrar transação de buy-in
         _db.Transactions.Add(new Transaction
@@ -583,6 +600,10 @@ public class EntryService
             ? (tournament.RankingContribValue ?? 0m)
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
+        // Mesa (sem Payments no plano do dono): as inscrições nascem pendentes mesmo com buyInPaid=true
+        var buyInPaid = await BuyInPaidAllowedAsync(tournamentId, request.BuyInPaid, ct);
+        // Nunca volta a false (limite semanal do Mesa: rascunho que já teve inscrição não devolve a vaga)
+        tournament.HadEntries = true;
 
         var createdEntries = new List<TournamentEntry>();
         foreach (var personId in toCreate)
@@ -594,16 +615,16 @@ public class EntryService
                 TournamentId = tournamentId,
                 PersonId = personId,
                 Status = nameof(EntryStatus.Active),
-                BuyInPaid = request.BuyInPaid,
+                BuyInPaid = buyInPaid,
                 BuyInAmount = tournament.BuyInAmount,
                 RebuyCount = 0,
                 RebuyTotal = 0,
                 AddonPurchased = false,
                 AddonAmount = 0,
                 TotalDue = entryCost,
-                TotalPaid = request.BuyInPaid ? entryCost : 0,
-                Balance = request.BuyInPaid ? 0 : entryCost,
-                PaymentStatus = request.BuyInPaid
+                TotalPaid = buyInPaid ? entryCost : 0,
+                Balance = buyInPaid ? 0 : entryCost,
+                PaymentStatus = buyInPaid
                     ? nameof(Domain.Enums.PaymentStatus.Paid)
                     : nameof(Domain.Enums.PaymentStatus.Pending),
                 EntryNumber = 1,

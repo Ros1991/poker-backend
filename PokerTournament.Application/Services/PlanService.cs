@@ -28,6 +28,9 @@ namespace PokerTournament.Application.Services;
 public class PlanService
 {
     public const string EnforceKey = "Plans:Enforce";
+    /// <summary>402 tournaments_per_week para quem não é o dono do home game (sem uso nem horário do dono).</summary>
+    public const string NotOwnerTournamentsPerWeekMessage =
+        "O plano do dono deste home game atingiu o limite de torneios da semana.";
 
     // Plano por conta (dono): cache curto; ChangePlanAsync invalida na hora
     private static readonly TimeSpan PlanCacheTtl = TimeSpan.FromSeconds(30);
@@ -228,10 +231,15 @@ public class PlanService
 
     /// <summary>
     /// Novo torneio no home game (plano do dono): com TournamentsPer7Days definido (Mesa: 1), conta os
-    /// torneios criados pelos home games do dono nos últimos 7 dias — cancelados e excluídos contam; o
-    /// rascunho sem inscrição excluído libera a vaga — e lança 402 tournaments_per_week com nextAllowedAt.
+    /// torneios criados pelos home games do dono nos últimos 7 dias — cancelados e excluídos contam; só o
+    /// rascunho excluído que NUNCA teve inscrição (Tournament.HadEntries) libera a vaga — e lança 402
+    /// tournaments_per_week. Para o dono (<paramref name="callerId"/> = dono ou não informado) o 402 traz usage e
+    /// nextAllowedAt; para quem não é o dono (membro administrador) sai sem usage/nextAllowedAt e com uma mensagem
+    /// genérica — a contagem e o horário são dos home games do dono, inclusive os que o membro não enxerga
+    /// (o detalhe fica no GET me/plan do dono).
     /// </summary>
-    public async Task EnsureCanCreateTournamentAsync(Guid homeGameId, bool bypass = false, CancellationToken ct = default)
+    public async Task EnsureCanCreateTournamentAsync(
+        Guid homeGameId, bool bypass = false, Guid? callerId = null, CancellationToken ct = default)
     {
         if (bypass || !Enforce)
             return;
@@ -251,6 +259,11 @@ public class PlanService
             return;
 
         var next = NextPlan(plan, p => p.TournamentsPer7Days is null || p.TournamentsPer7Days > window.Count);
+        if (callerId is { } caller && caller != owner.Value)
+            throw new PlanLimitException(
+                PlanLimitException.TournamentsPerWeek, NotOwnerTournamentsPerWeekMessage, plan,
+                next?.Name ?? PlanCatalog.Clube, limit: limit.Value);
+
         var message =
             $"O plano {plan} permite criar {Count(limit.Value, "torneio", "torneios")} a cada 7 dias. " +
             $"O próximo libera {Until(nextAllowedAt.Value)}.";
@@ -445,7 +458,9 @@ public class PlanService
 
     /// <summary>
     /// CreatedAt (crescente) dos torneios que contam na janela de 7 dias dos home games do dono:
-    /// inclusive cancelados, excluídos e de home game excluído; fora só o rascunho sem inscrição excluído.
+    /// inclusive cancelados, excluídos e de home game excluído; fora só o rascunho excluído que nunca teve
+    /// inscrição. HadEntries é gravado na primeira inscrição e nunca limpo: apagar as inscrições (delete físico)
+    /// antes de excluir o rascunho não devolve a vaga.
     /// </summary>
     private async Task<List<DateTimeOffset>> TournamentsInWindowAsync(Guid ownerId, CancellationToken ct)
     {
@@ -453,7 +468,7 @@ public class PlanService
         var draft = nameof(TournamentStatus.Draft);
         return await _db.Tournaments.IgnoreQueryFilters().AsNoTracking()
             .Where(t => t.HomeGame.OwnerId == ownerId && t.CreatedAt >= since
-                && !(t.DeletedAt != null && t.Status == draft && !t.Entries.Any()))
+                && !(t.DeletedAt != null && t.Status == draft && !t.HadEntries))
             .OrderBy(t => t.CreatedAt)
             .Select(t => t.CreatedAt)
             .ToListAsync(ct);

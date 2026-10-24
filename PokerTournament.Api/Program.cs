@@ -311,6 +311,8 @@ builder.Services.Configure<ExternalLoginOptions>(o =>
 builder.Services.AddSingleton<ExternalLoginStore>();
 // Senhas erradas em POST auth/login: 10 por IP + e-mail, 50 por e-mail e 50 por IP a cada 15 min (só as erradas contam)
 builder.Services.AddSingleton<LoginAttemptLimiter>();
+// Cadastros por IP no dia (POST auth/register manda e-mail): padrão 20 a cada 24 h (Registration:MaxPerIpPerDay)
+builder.Services.AddSingleton<RegistrationLimiter>();
 builder.Services.AddHttpClient(OidcTokenValidator.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(10));
 // Emissor de tokens de teste (chave local): existe SÓ em Development — fora dele nem entra no DI, e o
 // validador só confia nele quando o recebe daqui

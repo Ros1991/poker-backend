@@ -87,8 +87,8 @@ public class PasswordResetService
 
         var (_, link) = await IssueTokenAsync(user.Id, ip, userAgent, ct);
 
-        var message = PasswordResetEmail.Build(
-            user.Email, user.FullName, link, _publicApp.BuildUrl("brand/logo-completa.png"));
+        // Saudação fixa: o nome da conta pode ter sido digitado por quem fez o cadastro (conta não confirmada)
+        var message = PasswordResetEmail.Build(user.Email, link, _publicApp.BuildUrl("brand/logo-completa.png"));
         // Fire-and-forget de propósito: a resposta 202 sai agora, com o mesmo tempo de quem
         // não tem conta. O envio usa escopo próprio (o desta requisição morre com ela).
         _ = Task.Run(() => SendInBackgroundAsync(message));
@@ -221,8 +221,9 @@ public class PasswordResetService
         }
 
         await _db.SaveChangesAsync(ct);
+        // Links de confirmação e cadastros pendentes presos a eles (D16.10) deixam de valer: a senha agora é esta
         if (confirmsEmail)
-            await _emailConfirmation.RevokePendingAsync(user.Id, ct);
+            await _emailConfirmation.ClearPendingAsync(user.Id, ct);
         await _auth.RevokeAllSessionsAsync(user.Id, ct);
 
         _logger.LogInformation("Senha redefinida pelo link para o usuário {UserId}", user.Id);

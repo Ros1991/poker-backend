@@ -781,9 +781,33 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<bool>("EmailSent")
+                        .HasColumnType("boolean")
+                        .HasColumnName("email_sent");
+
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
+
+                    b.Property<string>("PendingFullName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("pending_full_name");
+
+                    b.Property<string>("PendingNickname")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("pending_nickname");
+
+                    b.Property<string>("PendingPasswordHash")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("pending_password_hash");
+
+                    b.Property<string>("PendingWhatsapp")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("pending_whatsapp");
 
                     b.Property<string>("RequestedIp")
                         .HasMaxLength(45)
@@ -1529,6 +1553,10 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
+
+                    b.Property<bool>("HadEntries")
+                        .HasColumnType("boolean")
+                        .HasColumnName("had_entries");
 
                     b.Property<Guid>("HomeGameId")
                         .HasColumnType("uuid")

@@ -55,6 +55,9 @@ public class Tournament : SoftDeletableEntity
     public int TotalRebuys { get; set; }
     public int TotalAddons { get; set; }
     public int PlayersRemaining { get; set; }
+    // Já teve inscrição (gravado na primeira e nunca limpo). O limite semanal do plano Mesa só devolve a vaga
+    // de rascunho excluído que NUNCA teve inscrição: apagar as inscrições antes de excluir não libera nada.
+    public bool HadEntries { get; set; }
 
     public string? Notes { get; set; }
     // PIX do responsável pelo torneio no dia (opcional) — informado na criação

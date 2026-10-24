@@ -31,7 +31,6 @@ public class ExternalLoginEmailService
     {
         var message = ExternalLoginLinkedEmail.Build(
             user.Email,
-            user.FullName,
             provider.DisplayName,
             provider.ConnectedTitle,
             _publicApp.BuildUrl("esqueci-senha"),
