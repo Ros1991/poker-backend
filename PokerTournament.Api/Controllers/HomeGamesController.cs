@@ -140,6 +140,53 @@ public class HomeGamesController : HomeGameScopedControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Logo do clube (SPEC-20261023-1213, ajuste do orquestrador): aparece no telão e no ranking público no plano
+    /// Liga. Dono, membro administrador ou Admin do sistema. JPEG/PNG/WebP até 2 MB (assinatura conferida); a logo
+    /// vem do navegador na proporção original, lado maior até 512 px. Sem checagem de plano: guardar a logo vale em
+    /// qualquer plano, quem decide se ela aparece é o plano do dono (DisplayService/ranking público).
+    /// </summary>
+    [HttpPost("{id:guid}/logo")]
+    [RequestSizeLimit(PokerTournament.Application.Common.ImageFiles.MaxRequestBytes)]
+    public async Task<ActionResult<HomeGameResponse>> UploadLogo(
+        Guid id, IFormFile? file, [FromServices] PhotoService photos, CancellationToken ct)
+    {
+        var homeGame = await _db.HomeGames
+            .Include(h => h.Members)
+            .Include(h => h.Tournaments)
+            .FirstOrDefaultAsync(h => h.Id == id, ct);
+        if (homeGame is null)
+            return NotFound(new { message = "Home game não encontrado." });
+        if (!await CanManageAsync(id, ct))
+            return Forbidden();
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = PokerTournament.Application.Common.ImageFiles.InvalidLogoMessage });
+
+        await using var stream = file.OpenReadStream();
+        await photos.SetHomeGameLogoAsync(homeGame, stream, file.Length, ct);
+
+        return Ok(await ToResponseAsync(homeGame, ct));
+    }
+
+    /// <summary>Remove a logo do clube (mesma regra do envio).</summary>
+    [HttpDelete("{id:guid}/logo")]
+    public async Task<ActionResult<HomeGameResponse>> RemoveLogo(
+        Guid id, [FromServices] PhotoService photos, CancellationToken ct)
+    {
+        var homeGame = await _db.HomeGames
+            .Include(h => h.Members)
+            .Include(h => h.Tournaments)
+            .FirstOrDefaultAsync(h => h.Id == id, ct);
+        if (homeGame is null)
+            return NotFound(new { message = "Home game não encontrado." });
+        if (!await CanManageAsync(id, ct))
+            return Forbidden();
+
+        await photos.RemoveHomeGameLogoAsync(homeGame, ct);
+
+        return Ok(await ToResponseAsync(homeGame, ct));
+    }
+
     [HttpGet("{id:guid}/members")]
     public async Task<ActionResult<List<HomeGameMemberResponse>>> GetMembers(Guid id, CancellationToken ct)
     {

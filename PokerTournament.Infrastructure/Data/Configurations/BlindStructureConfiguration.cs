@@ -83,6 +83,15 @@ public class BlindStructureConfiguration : IEntityTypeConfiguration<BlindStructu
             .HasColumnName("default_ranking_contrib_value")
             .HasColumnType("decimal(10,2)");
 
+        // Custo de dealer (SPEC-20261023-1215, CP16): valor por dealer, por torneio
+        builder.Property(b => b.DefaultHasDealer)
+            .HasColumnName("default_has_dealer")
+            .HasDefaultValue(false);
+
+        builder.Property(b => b.DefaultDealerFee)
+            .HasColumnName("default_dealer_fee")
+            .HasColumnType("decimal(10,2)");
+
         builder.HasOne(b => b.HomeGame)
             .WithMany()
             .HasForeignKey(b => b.HomeGameId)

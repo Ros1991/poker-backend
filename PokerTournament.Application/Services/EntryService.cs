@@ -25,13 +25,10 @@ public class EntryService
         _plans = plans;
     }
 
-    /// <summary>
-    /// "Inscrição já paga" só com o recurso Payments no plano do DONO (D3 da SPEC-20261023-1205: no Mesa nem marcar
-    /// inscrição como paga, inclusive pelo token de dealer). Sem ele o pedido é atendido do mesmo jeito, só nasce
-    /// pendente — inscrição nunca é recusada por plano (o invariante continua: nada de 402 aqui).
-    /// </summary>
-    private async Task<bool> BuyInPaidAllowedAsync(Guid tournamentId, bool requested, CancellationToken ct) =>
-        requested && await _plans.HasFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, ct);
+    // Inscrição sem "buy-in pago" (SPEC-20261023-1213, F15): toda inscrição nasce Pendente (TotalPaid 0, Balance =
+    // custo da entrada) e o dinheiro entra só pela tela de pagamentos (forma de pagamento e caixa corretos). Isso
+    // também cumpre a D3 da SPEC-20261023-1205 (no Mesa nem marcar como paga) sem checar plano: inscrição nunca é
+    // recusada por plano. TournamentEntry.BuyInPaid fica como legado (sempre false em inscrição nova).
 
     public async Task<List<EntryResponse>> GetEntriesAsync(Guid tournamentId, CancellationToken ct = default)
     {
@@ -296,142 +293,6 @@ public class EntryService
             .ToList();
     }
 
-    /// <summary>
-    /// Adicionar jogador pelo terminal: jogador do home game (PersonId) ou cadastro rápido
-    /// (nome e apelido). Inscreve com as regras de sempre (RegisterEntryAsync) e, se já houver
-    /// mesas, senta sozinho na mesa com menos jogadores ativos (empate → menor número) num
-    /// lugar livre aleatório. Tudo numa transação.
-    /// </summary>
-    public async Task<QuickAddEntryResponse> QuickAddAsync(
-        Guid tournamentId, QuickAddEntryRequest request, Guid? registeredBy = null, CancellationToken ct = default)
-    {
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        // Senta sozinho: serializa com move/quebra/sorteio antes de ler a ocupação
-        await LockSeatingAsync(_db, tournamentId, ct);
-
-        var tournament = await _db.Tournaments
-            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
-            ?? throw new DomainException("Torneio não encontrado.");
-
-        Guid personId;
-        if (request.PersonId.HasValue)
-        {
-            personId = request.PersonId.Value;
-        }
-        else
-        {
-            var fullName = NormalizeSpaces(request.FullName);
-            if (fullName.Length < 2 || fullName.Length > 120)
-                throw new DomainException("Informe o nome do jogador (de 2 a 120 caracteres).");
-
-            var nickname = NormalizeSpaces(request.Nickname);
-            if (nickname.Length > 100)
-                throw new DomainException("O apelido pode ter no máximo 100 caracteres.");
-
-            // Mesmo nome (ignorando maiúsculas e espaços) já cadastrado no home game → usar a lista
-            var existingNames = await _db.Persons
-                .Where(p => p.HomeGameId == tournament.HomeGameId)
-                .Select(p => p.FullName)
-                .ToListAsync(ct);
-            var key = NameKey(fullName);
-            if (existingNames.Any(n => NameKey(n) == key))
-                throw new DomainException("Já existe um jogador com esse nome. Procure na lista.");
-
-            var person = new Person
-            {
-                HomeGameId = tournament.HomeGameId,
-                Type = "Jogador",
-                FullName = fullName,
-                Nickname = nickname.Length == 0 ? null : nickname
-            };
-            _db.Persons.Add(person);
-            await _db.SaveChangesAsync(ct); // garante o Id real da pessoa
-            personId = person.Id;
-        }
-
-        // RegisterEntryAsync ignora o "já pago" quando o dono não tem Payments (Mesa), inclusive no token de dealer
-        var created = await RegisterEntryAsync(
-            tournamentId, new CreateEntryRequest { PersonId = personId, BuyInPaid = request.BuyInPaid },
-            registeredBy, ct);
-
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
-            .FirstAsync(e => e.Id == created.Id, ct);
-
-        TournamentTable? seatedAt = null;
-        var tables = await _db.TournamentTables
-            .Where(t => t.TournamentId == tournamentId && t.IsActive)
-            .OrderBy(t => t.TableNumber)
-            .ToListAsync(ct);
-
-        if (tables.Count > 0)
-        {
-            var tableIds = tables.Select(t => t.Id).ToList();
-            var seated = await _db.TournamentEntries
-                .Where(e => e.TournamentId == tournamentId
-                         && e.Id != entry.Id
-                         && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered))
-                         && e.TableId != null
-                         && tableIds.Contains(e.TableId.Value))
-                .Select(e => new { TableId = e.TableId!.Value, e.SeatNumber })
-                .ToListAsync(ct);
-
-            var candidates = tables
-                .Select(t =>
-                {
-                    var taken = seated.Where(s => s.TableId == t.Id && s.SeatNumber != null)
-                        .Select(s => s.SeatNumber!.Value).ToHashSet();
-                    var free = Enumerable.Range(1, t.MaxSeats).Where(s => !taken.Contains(s)).ToList();
-                    return new { Table = t, Count = seated.Count(s => s.TableId == t.Id), Free = free };
-                })
-                // Lotação também conta: lugar "livre" numa mesa já com MaxSeats jogadores não serve
-                .Where(c => c.Free.Count > 0 && c.Count < c.Table.MaxSeats)
-                .OrderBy(c => c.Count)
-                .ThenBy(c => c.Table.TableNumber)
-                .FirstOrDefault();
-
-            if (candidates is not null)
-            {
-                seatedAt = candidates.Table;
-                entry.TableId = seatedAt.Id;
-                entry.SeatNumber = candidates.Free[Random.Shared.Next(candidates.Free.Count)];
-
-                _db.TournamentActivities.Add(new TournamentActivity
-                {
-                    TournamentId = tournamentId,
-                    EntryId = entry.Id,
-                    Type = nameof(TournamentActivityType.PlayerSeated),
-                    Description = $"{PlayerDisplayName(entry.Person)} sentou na {TableDisplayName(seatedAt)}, lugar {entry.SeatNumber}",
-                    CreatedBy = registeredBy
-                });
-
-                await _db.SaveChangesAsync(ct);
-            }
-        }
-
-        await tx.CommitAsync(ct);
-
-        var response = _mapper.Map<EntryResponse>(entry);
-        // O terminal (inclusive o dealer por QR) nunca recebe contato/documento
-        response.Person.Email = null;
-        response.Person.Whatsapp = null;
-        response.Person.Document = null;
-        response.Person.Notes = null;
-
-        return new QuickAddEntryResponse
-        {
-            Entry = response,
-            TableId = seatedAt?.Id,
-            TableName = seatedAt is null ? null : TableDisplayName(seatedAt),
-            SeatNumber = seatedAt is null ? null : entry.SeatNumber
-        };
-    }
-
-    private static string NormalizeSpaces(string? value) =>
-        string.Join(' ', (value ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-
-    private static string NameKey(string value) => NormalizeSpaces(value).ToUpperInvariant();
-
     /// <summary>Nome exibido no terminal/histórico: apelido, senão o nome completo.</summary>
     public static string PlayerDisplayName(Person? person) =>
         person is null
@@ -485,28 +346,24 @@ public class EntryService
             ? (tournament.RankingContribValue ?? 0m)
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
-        // Mesa (sem Payments no plano do dono): a inscrição nasce pendente mesmo com buyInPaid=true (vale para
-        // POST entries, quick-add e o token de dealer)
-        var buyInPaid = await BuyInPaidAllowedAsync(tournamentId, request.BuyInPaid, ct);
 
+        // Sempre Pendente (F15): o pagamento é registrado depois, pela tela de pagamentos
         var entry = new TournamentEntry
         {
             Id = Guid.NewGuid(),
             TournamentId = tournamentId,
             PersonId = request.PersonId,
             Status = nameof(EntryStatus.Active),
-            BuyInPaid = buyInPaid,
+            BuyInPaid = false,
             BuyInAmount = tournament.BuyInAmount,
             RebuyCount = 0,
             RebuyTotal = 0,
             AddonPurchased = false,
             AddonAmount = 0,
             TotalDue = entryCost,
-            TotalPaid = buyInPaid ? entryCost : 0,
-            Balance = buyInPaid ? 0 : entryCost,
-            PaymentStatus = buyInPaid
-                ? nameof(Domain.Enums.PaymentStatus.Paid)
-                : nameof(Domain.Enums.PaymentStatus.Pending),
+            TotalPaid = 0,
+            Balance = entryCost,
+            PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             EntryNumber = entryNumber,
             IsReentry = entryNumber > 1,
             RegisteredAt = DateTimeOffset.UtcNow,
@@ -545,9 +402,10 @@ public class EntryService
     }
 
     /// <summary>
-    /// Inscreve vários jogadores de uma vez (multi-seleção). Atômico (transação).
-    /// Após criar as inscrições, se o torneio JÁ tiver mesas sorteadas, auto-aloca
-    /// os novos jogadores (preenche vagas; se encher tudo, cria mesa e rebalanceia).
+    /// Inscreve vários jogadores de uma vez (multi-seleção) — rota única do painel e do terminal (F13). Atômico
+    /// (transação). Todas nascem Pendentes. Após criar as inscrições, se o torneio JÁ tiver mesas sorteadas,
+    /// auto-aloca os novos jogadores (preenche vagas; se encher tudo, cria mesa e rebalanceia) e registra
+    /// "Fulano sentou na Mesa X, lugar Y" para cada um que sentou.
     /// </summary>
     public async Task<List<EntryResponse>> RegisterEntriesBulkAsync(
         Guid tournamentId, BulkCreateEntriesRequest request, Guid? registeredBy = null, CancellationToken ct = default)
@@ -600,8 +458,6 @@ public class EntryService
             ? (tournament.RankingContribValue ?? 0m)
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
-        // Mesa (sem Payments no plano do dono): as inscrições nascem pendentes mesmo com buyInPaid=true
-        var buyInPaid = await BuyInPaidAllowedAsync(tournamentId, request.BuyInPaid, ct);
         // Nunca volta a false (limite semanal do Mesa: rascunho que já teve inscrição não devolve a vaga)
         tournament.HadEntries = true;
 
@@ -615,18 +471,16 @@ public class EntryService
                 TournamentId = tournamentId,
                 PersonId = personId,
                 Status = nameof(EntryStatus.Active),
-                BuyInPaid = buyInPaid,
+                BuyInPaid = false,
                 BuyInAmount = tournament.BuyInAmount,
                 RebuyCount = 0,
                 RebuyTotal = 0,
                 AddonPurchased = false,
                 AddonAmount = 0,
                 TotalDue = entryCost,
-                TotalPaid = buyInPaid ? entryCost : 0,
-                Balance = buyInPaid ? 0 : entryCost,
-                PaymentStatus = buyInPaid
-                    ? nameof(Domain.Enums.PaymentStatus.Paid)
-                    : nameof(Domain.Enums.PaymentStatus.Pending),
+                TotalPaid = 0,
+                Balance = entryCost,
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
                 EntryNumber = 1,
                 IsReentry = false,
                 RegisteredAt = DateTimeOffset.UtcNow,
@@ -660,7 +514,7 @@ public class EntryService
         await _db.SaveChangesAsync(ct);
 
         // Auto-alocação em mesas — somente se já existir pelo menos 1 mesa.
-        await AutoSeatNewEntriesAsync(tournament, createdEntries, ct);
+        await AutoSeatNewEntriesAsync(tournament, createdEntries, registeredBy, ct);
 
         await tx.CommitAsync(ct);
 
@@ -672,9 +526,12 @@ public class EntryService
     /// ainda não houver mesa criada (o sorteio acontece depois pelo fluxo normal).
     /// Preenche a mesa com vaga e menor lotação; se todas estiverem cheias, cria a
     /// próxima mesa e rebalanceia sorteando quem muda até diferença ≤ 1.
+    /// ÚNICO lugar em que a inscrição senta jogador (o quick-add saiu — SPEC-20261023-1213, F13); registra
+    /// "Fulano sentou na Mesa X, lugar Y" (PlayerSeated, autor = <paramref name="registeredBy"/>) por jogador novo
+    /// sentado. Regra de criação/divisão de mesa: SPEC-20261023-1214.
     /// </summary>
     private async Task AutoSeatNewEntriesAsync(
-        Tournament tournament, List<TournamentEntry> newEntries, CancellationToken ct)
+        Tournament tournament, List<TournamentEntry> newEntries, Guid? registeredBy, CancellationToken ct)
     {
         var tables = await _db.TournamentTables
             .Where(t => t.TournamentId == tournament.Id && t.IsActive)
@@ -685,6 +542,10 @@ public class EntryService
             return; // mesas ainda não sorteadas → deixa pro sorteio posterior
 
         var newTableSeats = tournament.SeatsPerTable > 1 ? tournament.SeatsPerTable : 9;
+        // Mesa nova só com o recurso Tables no plano do DONO (D13: o Mesa não tem controle de mesas — vale também para
+        // o torneio rebaixado que já tinha mesas). Sem ele, com todas cheias, o jogador fica sem lugar (como o antigo
+        // quick-add do terminal); a inscrição nunca é recusada por plano (só CONSULTA, nada de 402).
+        var canOpenTable = await _plans.HasFeatureForTournamentAsync(tournament.Id, PlanFeature.Tables, ct);
 
         // Ocupação atual: jogadores ainda no torneio já assentados, por mesa.
         var seatedActive = await _db.TournamentEntries
@@ -713,6 +574,9 @@ public class EntryService
 
             if (target is null)
             {
+                if (!canOpenTable)
+                    continue; // fica sem mesa: no Mesa a inscrição não abre mesa
+
                 // Todas cheias → cria a próxima mesa e rebalanceia (sorteando quem muda).
                 target = new TournamentTable
                 {
@@ -747,6 +611,22 @@ public class EntryService
             entry.TableId = target.Id;
             entry.SeatNumber = seat;
             occupancy[target.Id].Add(entry);
+        }
+
+        // Onde cada jogador novo ficou (depois de todo o rebalanceamento do lote): uma linha no histórico por jogador
+        var tableById = tables.ToDictionary(t => t.Id);
+        foreach (var entry in newEntries)
+        {
+            if (entry.TableId is not { } tableId || entry.SeatNumber is null || !tableById.TryGetValue(tableId, out var table))
+                continue;
+            _db.TournamentActivities.Add(new TournamentActivity
+            {
+                TournamentId = tournament.Id,
+                EntryId = entry.Id,
+                Type = nameof(TournamentActivityType.PlayerSeated),
+                Description = $"{PlayerDisplayName(entry.Person)} sentou na {TableDisplayName(table)}, lugar {entry.SeatNumber}",
+                CreatedBy = registeredBy
+            });
         }
 
         await _db.SaveChangesAsync(ct);

@@ -43,18 +43,11 @@ public class EntriesController : ControllerBase
         return Ok(result);
     }
 
-    [AllowTokenKind(TokenKinds.Dealer)]
-    [HttpPost("quick-add")]
-    public async Task<ActionResult<QuickAddEntryResponse>> QuickAdd(
-        Guid tournamentId, [FromBody] QuickAddEntryRequest request, CancellationToken ct)
-    {
-        var userId = GetUserId();
-        var result = await _entryService.QuickAddAsync(tournamentId, request, userId, ct);
-        return Ok(result);
-    }
+    // SPEC-20261023-1213 (F13): o quick-add (um por vez, com regra de assento própria) saiu; painel e terminal
+    // inscrevem pelo lote. Cadastrar jogador novo: POST tournaments/{id}/players (TournamentPlayersController).
 
+    /// <summary>Inscrição individual (organizador). Nasce sempre Pendente: o dinheiro entra pela tela de pagamentos.</summary>
     [HttpPost]
-    
     public async Task<ActionResult<EntryResponse>> Register(
         Guid tournamentId, [FromBody] CreateEntryRequest request, CancellationToken ct)
     {
@@ -63,6 +56,12 @@ public class EntriesController : ControllerBase
         return CreatedAtAction(nameof(GetAll), new { tournamentId }, result);
     }
 
+    /// <summary>
+    /// Inscrição em lote — a ÚNICA rota que o painel e o terminal usam (F13), liberada ao dealer autorizado.
+    /// Todas nascem Pendentes (sem "buy-in pago"); com mesas já criadas, senta quem entrou (atividade PlayerSeated).
+    /// O ScopedTokenContactFilter tira contato das pessoas da resposta quando é o dealer.
+    /// </summary>
+    [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("bulk")]
     public async Task<ActionResult<List<EntryResponse>>> RegisterBulk(
         Guid tournamentId, [FromBody] BulkCreateEntriesRequest request, CancellationToken ct)

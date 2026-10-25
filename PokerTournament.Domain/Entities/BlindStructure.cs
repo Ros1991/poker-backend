@@ -26,7 +26,14 @@ public class BlindStructure : BaseEntity
     public string? DefaultRankingContribMode { get; set; } // PerPlayer | Percent
     public decimal? DefaultRankingContribValue { get; set; }
 
+    // Custo de dealer (SPEC-20261023-1215, CP16): valor POR DEALER, fixo por torneio. A criação do torneio
+    // pergunta a quantidade e lança "Dealers (N × R$ X)". Não substitui o Staff (que é por jogador/entrada).
+    public bool DefaultHasDealer { get; set; }
+    public decimal? DefaultDealerFee { get; set; }
+
     // Navigation
     public HomeGame? HomeGame { get; set; }
     public ICollection<BlindLevel> Levels { get; set; } = [];
+    /// <summary>Custos padrão de valor fixo copiados para cada torneio criado com a estrutura (CP1).</summary>
+    public ICollection<BlindStructureDefaultCost> DefaultCosts { get; set; } = [];
 }

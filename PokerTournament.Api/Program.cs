@@ -341,6 +341,11 @@ builder.Services.AddScoped<TimerService>();
 builder.Services.AddScoped<TournamentHistoryService>();
 builder.Services.AddScoped<RankingLeaderboardService>();
 builder.Services.AddScoped<RankingSlugService>();
+// Fotos de pessoa e logo do clube no disco (SPEC-20261023-1213): pasta única de uploads para gravar e servir
+var uploadsOptions = new UploadsOptions(UploadsOptions.ResolveRoot(builder.Environment.ContentRootPath));
+builder.Services.AddSingleton(uploadsOptions);
+builder.Services.AddScoped<PhotoService>();
+builder.Services.AddScoped<TournamentPlayerService>();
 
 // Cache curto do ranking público (link compartilhado por WhatsApp)
 builder.Services.AddMemoryCache();
@@ -423,16 +428,26 @@ app.UseSerilogRequestLogging();
 
 app.UseCors("AllowFrontend");
 
-// Servir arquivos estáticos (uploads de fotos)
-var uploadsPath = Environment.GetEnvironmentVariable("UPLOADS_PATH")
-    ?? Path.Combine(app.Environment.ContentRootPath, "uploads");
+// Servir arquivos estáticos (fotos de pessoa e logo do clube) da MESMA pasta em que o upload grava
+// (UploadsOptions: UPLOADS_PATH, senão ContentRootPath/uploads — em produção o volume /app/uploads).
+// Cada envio gera um nome de arquivo novo, então photos/ e logos/ podem ter cache longo e imutável (SPEC-20261023-1213).
+var uploadsPath = uploadsOptions.RootPath;
 if (!Directory.Exists(uploadsPath))
     Directory.CreateDirectory(uploadsPath);
 
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uploadsPath),
-    RequestPath = "/uploads"
+    RequestPath = UploadsOptions.RequestPath,
+    OnPrepareResponse = ctx =>
+    {
+        var headers = ctx.Context.Response.Headers;
+        headers.XContentTypeOptions = "nosniff";
+        var path = ctx.Context.Request.Path.Value ?? string.Empty;
+        if (path.StartsWith($"{UploadsOptions.RequestPath}/{UploadsOptions.PhotosFolder}/", StringComparison.Ordinal)
+            || path.StartsWith($"{UploadsOptions.RequestPath}/{UploadsOptions.LogosFolder}/", StringComparison.Ordinal))
+            headers.CacheControl = "public, max-age=31536000, immutable";
+    }
 });
 
 app.UseAuthentication();

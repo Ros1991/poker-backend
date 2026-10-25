@@ -395,7 +395,9 @@ public class DisplayService
                 prizes = []; // prêmio ainda não calculável (poucos jogadores / pool zerado)
             }
             var costs = await _db.CostExtras.Where(c => c.TournamentId == tournamentId).SumAsync(c => c.Amount, ct);
-            prizePool = collected - costs;
+            // Telão nunca mostra prêmio negativo (SPEC-20261023-1215, CP10): com custo fixo (ex.: churrasqueiro)
+            // o líquido começa negativo até a receita cobrir os custos. Financeiro e Premiação mostram o valor real.
+            prizePool = Math.Max(0m, collected - costs);
         }
 
         return new TvSnapshotResponse

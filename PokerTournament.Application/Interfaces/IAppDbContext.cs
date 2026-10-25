@@ -14,6 +14,7 @@ public interface IAppDbContext
     DbSet<ScoringRule> ScoringRules { get; }
     DbSet<BlindStructure> BlindStructures { get; }
     DbSet<BlindLevel> BlindLevels { get; }
+    DbSet<BlindStructureDefaultCost> BlindStructureDefaultCosts { get; }
     DbSet<TournamentBlindLevel> TournamentBlindLevels { get; }
     DbSet<Tournament> Tournaments { get; }
     DbSet<TournamentEntry> TournamentEntries { get; }

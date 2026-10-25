@@ -24,6 +24,24 @@ public class CreateBlindStructureRequest
     public string? DefaultRankingContribMode { get; set; }
     public decimal? DefaultRankingContribValue { get; set; }
 
+    // SPEC-20261023-1215 — custos padrão de valor fixo por torneio (CP1/CP7). No PUT: null/ausente = MANTER a
+    // lista atual; lista (inclusive vazia) = SUBSTITUIR tudo. No POST: null = nenhum custo padrão.
+    public List<DefaultCostItem>? DefaultCosts { get; set; }
+
+    // Custo de dealer (CP16): null = manter no PUT. DefaultHasDealer = true exige DefaultDealerFee > 0 e
+    // <= 99.999,99; false apaga o valor.
+    public bool? DefaultHasDealer { get; set; }
+    public decimal? DefaultDealerFee { get; set; }
+
+    public class DefaultCostItem
+    {
+        public string Description { get; set; } = string.Empty;
+        public decimal Amount { get; set; }
+        public string? Beneficiary { get; set; }
+        public string? PixKey { get; set; }
+        public string? PixKeyType { get; set; }
+    }
+
     public class BlindLevelItem
     {
         public int LevelNumber { get; set; }

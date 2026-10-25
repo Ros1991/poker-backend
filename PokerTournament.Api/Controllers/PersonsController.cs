@@ -2,6 +2,7 @@ using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
@@ -14,6 +15,10 @@ namespace PokerTournament.Api.Controllers;
 /// A rota não tem {homeGameId}/{tournamentId}, então o TenantAccessFilter não age aqui:
 /// cada ação resolve o home game da pessoa (ou o da query) e aplica a mesma regra
 /// (dono, membro ou Admin) via <see cref="HomeGameScopedControllerBase"/>.
+/// Foto (SPEC-20261023-1213): POST/DELETE {id}/photo pelo <see cref="PhotoService"/> (JPEG/PNG/WebP até 2 MB,
+/// conferidos pela assinatura; nome de arquivo novo a cada envio). Token de dealer nunca chega aqui (403 do
+/// TokenKindHandler): o dealer põe foto por POST tournaments/{id}/players/{personId}/photo.
+/// WhatsApp normalizado no servidor (F18) e repetido no home game → 400 com mensagem (antes estourava o índice).
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -21,10 +26,45 @@ namespace PokerTournament.Api.Controllers;
 public class PersonsController : HomeGameScopedControllerBase
 {
     private readonly IMapper _mapper;
+    private readonly PhotoService _photos;
 
-    public PersonsController(IAppDbContext db, IMapper mapper) : base(db)
+    public PersonsController(IAppDbContext db, IMapper mapper, PhotoService photos) : base(db)
     {
         _mapper = mapper;
+        _photos = photos;
+    }
+
+    /// <summary>
+    /// Normaliza o que veio do formulário (nome sem espaços sobrando, vazio → null em apelido/e-mail, WhatsApp só
+    /// com os dígitos locais) e confere nome obrigatório, WhatsApp e e-mail únicos no home game. Null = tudo certo.
+    /// </summary>
+    private async Task<string?> NormalizeAndValidateAsync(Person person, CancellationToken ct)
+    {
+        person.FullName = PlayerNames.NormalizeSpaces(person.FullName);
+        if (person.FullName.Length == 0)
+            return "Informe o nome completo do jogador.";
+        if (person.FullName.Length > 200)
+            return "O nome pode ter no máximo 200 caracteres.";
+
+        var nickname = PlayerNames.NormalizeSpaces(person.Nickname);
+        person.Nickname = nickname.Length == 0 ? null : nickname;
+        if (nickname.Length > 100)
+            return "O apelido pode ter no máximo 100 caracteres.";
+
+        person.Email = string.IsNullOrWhiteSpace(person.Email) ? null : person.Email.Trim();
+        person.Whatsapp = PhoneNumbers.NormalizeLocal(person.Whatsapp);
+        if (person.Whatsapp is { Length: > 20 })
+            return PhoneNumbers.InvalidWhatsappMessage;
+
+        if (person.Whatsapp is { } whatsapp
+            && await _db.Persons.AnyAsync(p => p.HomeGameId == person.HomeGameId && p.Id != person.Id && p.Whatsapp == whatsapp, ct))
+            return TournamentPlayerService.DuplicateWhatsappMessage;
+
+        if (person.Email is { } email
+            && await _db.Persons.AnyAsync(p => p.HomeGameId == person.HomeGameId && p.Id != person.Id && p.Email == email, ct))
+            return "Esse e-mail já está cadastrado em outro jogador do home game.";
+
+        return null;
     }
 
     [HttpGet("{id:guid}/history")]
@@ -108,6 +148,10 @@ public class PersonsController : HomeGameScopedControllerBase
             return Forbidden();
 
         var person = _mapper.Map<Person>(request);
+        // Foto só pelo upload (POST {id}/photo): nada de URL arbitrária vinda do formulário
+        person.PhotoUrl = null;
+        if (await NormalizeAndValidateAsync(person, ct) is { } error)
+            return BadRequest(new { message = error });
         _db.Persons.Add(person);
         await _db.SaveChangesAsync(ct);
 
@@ -127,7 +171,10 @@ public class PersonsController : HomeGameScopedControllerBase
         if (!await CanAccessAsync(person.HomeGameId, ct))
             return Forbidden();
 
+        // Campos nulos no pedido não mudam nada (MappingProfile); "" limpa (apelido, e-mail, WhatsApp, notas)
         _mapper.Map(request, person);
+        if (await NormalizeAndValidateAsync(person, ct) is { } error)
+            return BadRequest(new { message = error });
         await _db.SaveChangesAsync(ct);
 
         return Ok(_mapper.Map<PersonResponse>(person));
@@ -152,8 +199,29 @@ public class PersonsController : HomeGameScopedControllerBase
     }
 
     [HttpPost("{id:guid}/photo")]
+    [RequestSizeLimit(ImageFiles.MaxRequestBytes)]
     public async Task<ActionResult<PersonResponse>> UploadPhoto(
-        Guid id, IFormFile file, CancellationToken ct)
+        Guid id, IFormFile? file, CancellationToken ct)
+    {
+        var person = await _db.Persons
+            .FirstOrDefaultAsync(p => p.Id == id, ct);
+
+        if (person is null)
+            return NotFound(new { message = "Pessoa não encontrada." });
+        if (!await CanAccessAsync(person.HomeGameId, ct))
+            return Forbidden();
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = ImageFiles.InvalidPhotoMessage });
+
+        await using var stream = file.OpenReadStream();
+        await _photos.SetPersonPhotoAsync(person, stream, file.Length, ct: ct);
+
+        return Ok(_mapper.Map<PersonResponse>(person));
+    }
+
+    /// <summary>Remove a foto (só o organizador: dono, membro ou Admin). PhotoUrl volta a null.</summary>
+    [HttpDelete("{id:guid}/photo")]
+    public async Task<ActionResult<PersonResponse>> RemovePhoto(Guid id, CancellationToken ct)
     {
         var person = await _db.Persons
             .FirstOrDefaultAsync(p => p.Id == id, ct);
@@ -163,21 +231,7 @@ public class PersonsController : HomeGameScopedControllerBase
         if (!await CanAccessAsync(person.HomeGameId, ct))
             return Forbidden();
 
-        // Salvar arquivo no disco
-        var uploadsRoot = Environment.GetEnvironmentVariable("UPLOADS_PATH")
-            ?? Path.Combine(Directory.GetCurrentDirectory(), "uploads");
-        var uploadsPath = Path.Combine(uploadsRoot, "photos");
-        Directory.CreateDirectory(uploadsPath);
-
-        var extension = Path.GetExtension(file.FileName);
-        var fileName = $"{person.Id}{extension}";
-        var filePath = Path.Combine(uploadsPath, fileName);
-
-        await using var stream = new FileStream(filePath, FileMode.Create);
-        await file.CopyToAsync(stream, ct);
-
-        person.PhotoUrl = $"/uploads/photos/{fileName}";
-        await _db.SaveChangesAsync(ct);
+        await _photos.RemovePersonPhotoAsync(person, ct);
 
         return Ok(_mapper.Map<PersonResponse>(person));
     }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
@@ -15,6 +16,17 @@ public class TournamentService
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
     private readonly PlanService _plans;
+
+    /// <summary>Quantidade de dealers aceita na criação (CP17 da SPEC-20261023-1215).</summary>
+    public const int MaxDealerCount = 20;
+
+    // Valores em pt-BR sem depender de ICU/cultura do servidor: R$ 1.234,56 (mesmo formato do TournamentHistoryService)
+    private static readonly NumberFormatInfo PtBrNumber = new()
+    {
+        NumberDecimalSeparator = ",",
+        NumberGroupSeparator = ".",
+        NumberDecimalDigits = 2
+    };
 
     public TournamentService(IAppDbContext db, IMapper mapper, PlanService plans)
     {
@@ -147,6 +159,9 @@ public class TournamentService
     /// <paramref name="bypassPlanLimits"/> = true. Sem o recurso Payments (Mesa) o torneio nasce sem
     /// custos automáticos de staff/ranking, sem ranking e sem PIX do dia (ver StripPaidFields).
     /// Tudo numa transação com trava por dono: dois cliques simultâneos não criam dois torneios no Mesa.
+    /// SPEC-20261023-1215: com a estrutura escolhida, o torneio já nasce com os custos padrão dela (CostType
+    /// Default, Pending) e, se ela tem dealer pago, com "Dealers (N × R$ X)" (N = DealerCount, null = 1) — só se o
+    /// dono tem o recurso CostExtras (no Mesa nada é copiado); TotalCosts/NetPrizePool na mesma gravação.
     /// </summary>
     public async Task<TournamentResponse> CreateAsync(
         Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null,
@@ -155,6 +170,7 @@ public class TournamentService
         var homeGame = await _db.HomeGames
             .FirstOrDefaultAsync(h => h.Id == homeGameId, ct)
             ?? throw new DomainException("Home game não encontrado.");
+        EnsureValidDealerCount(request.DealerCount);
 
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         // Quem cria: o 402 de quem não é o dono sai sem o uso/horário dos home games do dono
@@ -167,12 +183,17 @@ public class TournamentService
         tournament.CurrentLevel = 1;
         if (!await _plans.HasFeatureForHomeGameAsync(homeGameId, PlanFeature.Payments, ct))
             StripPaidFields(tournament);
+        // Custos padrão da estrutura (CP6/CP19): só com o recurso CostExtras do DONO (Mesa não recebe; com
+        // Plans:Enforce = false, recebe). No catálogo CostExtras e Payments andam juntos.
+        var copyDefaultCosts = await _plans.HasFeatureForHomeGameAsync(homeGameId, PlanFeature.CostExtras, ct);
 
         // Copy blind levels from template if specified
         if (request.BlindStructureId.HasValue)
         {
             var structure = await _db.BlindStructures
                 .Include(bs => bs.Levels)
+                .Include(bs => bs.DefaultCosts)
+                .AsSplitQuery()
                 .FirstOrDefaultAsync(bs => bs.Id == request.BlindStructureId.Value, ct);
             if (structure != null)
             {
@@ -193,6 +214,13 @@ public class TournamentService
                         IsBreak = level.IsBreak,
                         BreakDescription = level.BreakDescription,
                     });
+                }
+
+                // Custos padrão + dealer (CP3/CP17/CP18): foto do momento da criação (CP5)
+                if (copyDefaultCosts)
+                {
+                    foreach (var cost in BuildDefaultCostExtras(structure, request.DealerCount ?? 1, createdBy))
+                        tournament.CostExtras.Add(cost);
                 }
             }
         }
@@ -221,6 +249,11 @@ public class TournamentService
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             });
         }
+
+        // Torneio novo: receita 0, staff e ranking 0 → só os custos padrão contam (líquido começa negativo
+        // com custo fixo; o telão mostra 0 — DisplayService)
+        tournament.TotalCosts = tournament.CostExtras.Sum(c => c.Amount);
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
 
         _db.Tournaments.Add(tournament);
         await _db.SaveChangesAsync(ct);
@@ -254,6 +287,7 @@ public class TournamentService
 
         if (tournament.Status != nameof(TournamentStatus.Draft))
             throw new DomainException("Apenas torneios em rascunho podem ser editados.");
+        EnsureValidDealerCount(request.DealerCount);
 
         var previousStructureId = tournament.BlindStructureId;
         // Queda de plano não apaga nada: sem Payments (Mesa) a edição mantém o que já estava gravado (staff,
@@ -273,6 +307,7 @@ public class TournamentService
         }
 
         // If the blind structure changed (or was set when previously null), copy levels
+        var addedDefaultCosts = false;
         if (request.BlindStructureId.HasValue && request.BlindStructureId != previousStructureId)
         {
             foreach (var existing in tournament.BlindLevels.ToList())
@@ -280,6 +315,8 @@ public class TournamentService
 
             var structure = await _db.BlindStructures
                 .Include(bs => bs.Levels)
+                .Include(bs => bs.DefaultCosts)
+                .AsSplitQuery()
                 .FirstOrDefaultAsync(bs => bs.Id == request.BlindStructureId.Value, ct);
             if (structure != null)
             {
@@ -301,11 +338,31 @@ public class TournamentService
                         BreakDescription = level.BreakDescription,
                     });
                 }
+
+                // Custos padrão (CP4): trocar A → B não cria, não apaga e não altera custos. Única exceção:
+                // rascunho que estava SEM estrutura, recebe a primeira e ainda não tem nenhum custo Default
+                // ("esqueci de escolher a estrutura na criação") — inclusive o de dealer, com DealerCount.
+                if (previousStructureId is null
+                    && await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.CostExtras, ct)
+                    && !await _db.CostExtras.AnyAsync(
+                        c => c.TournamentId == tournament.Id && c.CostType == nameof(CostType.Default), ct))
+                {
+                    foreach (var cost in BuildDefaultCostExtras(structure, request.DealerCount ?? 1, tournament.CreatedBy))
+                    {
+                        cost.TournamentId = tournament.Id;
+                        _db.CostExtras.Add(cost);
+                        addedDefaultCosts = true;
+                    }
+                }
             }
         }
 
         // Garante custos automáticos caso staff/ranking tenham sido definidos só na edição.
         await EnsureAutoCostsAsync(tournament, hasPayments, ct);
+
+        // Custos padrão entraram num rascunho (que pode já ter inscrições): totais e ranking % na mesma gravação
+        if (addedDefaultCosts)
+            await RecalcTotalsWithPendingAsync(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
 
@@ -354,6 +411,85 @@ public class TournamentService
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             });
         }
+    }
+
+    /// <summary>Quantidade de dealers do pedido (CP17): null = não informado (vale 1); fora de 0–20 → 400.</summary>
+    private static void EnsureValidDealerCount(int? dealerCount)
+    {
+        if (dealerCount is < 0 or > MaxDealerCount)
+            throw new DomainException("Informe de 0 a 20 dealers.");
+    }
+
+    /// <summary>
+    /// Custos que a estrutura lança no torneio (SPEC-20261023-1215): um CostExtra Default por custo padrão, na
+    /// ordem da estrutura, com descrição, valor, beneficiário e chave PIX copiados; depois, se a estrutura tem
+    /// dealer pago e <paramref name="dealerCount"/> &gt; 0, um único "Dealer" (1) ou "Dealers (N × R$ X)" = N × valor,
+    /// sem beneficiário nem PIX (cada dealer recebe à parte). Todos Pending, CreatedBy = quem criou o torneio.
+    /// </summary>
+    private static List<CostExtra> BuildDefaultCostExtras(BlindStructure structure, int dealerCount, Guid? createdBy)
+    {
+        var costs = structure.DefaultCosts
+            .OrderBy(c => c.SortOrder)
+            .Select(c => new CostExtra
+            {
+                Description = c.Description,
+                Amount = c.Amount,
+                Beneficiary = c.Beneficiary,
+                PixKey = c.PixKey,
+                PixKeyType = c.PixKeyType,
+                CostType = nameof(CostType.Default),
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
+                CreatedBy = createdBy,
+            })
+            .ToList();
+
+        if (structure.DefaultHasDealer && structure.DefaultDealerFee is > 0 && dealerCount > 0)
+        {
+            var fee = structure.DefaultDealerFee.Value;
+            costs.Add(new CostExtra
+            {
+                Description = dealerCount == 1 ? "Dealer" : $"Dealers ({dealerCount} × {Money(fee)})",
+                Amount = dealerCount * fee,
+                CostType = nameof(CostType.Default),
+                PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
+                CreatedBy = createdBy,
+            });
+        }
+
+        return costs;
+    }
+
+    private static string Money(decimal value) => $"R$ {value.ToString("N2", PtBrNumber)}";
+
+    /// <summary>
+    /// Totais do torneio com os custos gravados + os recém-adicionados (ainda não salvos): ranking % = múltiplo
+    /// de 10 de % × (receita − staff − custos comuns), TotalCosts = soma, NetPrizePool = receita − custos.
+    /// GOTCHA: a mesma fórmula está em EntryService.RecalcAutoCostsAndTotals e em
+    /// CostExtrasController.RecomputeTournamentFinancials — mudar nos três.
+    /// </summary>
+    private async Task RecalcTotalsWithPendingAsync(Tournament tournament, CancellationToken ct)
+    {
+        // Carrega (e rastreia) os gravados; o Local junta os adicionados nesta requisição e tira os removidos
+        await _db.CostExtras.Where(c => c.TournamentId == tournament.Id).LoadAsync(ct);
+        var costs = _db.CostExtras.Local.Where(c => c.TournamentId == tournament.Id).ToList();
+
+        if (tournament.RankingContribMode == "Percent" && tournament.RankingContribValue is > 0)
+        {
+            var rankingCost = costs.FirstOrDefault(c => c.CostType == "RankingAccumulated");
+            if (rankingCost is not null)
+            {
+                var staff = costs.Where(c => c.CostType == "Staff").Sum(c => c.Amount);
+                var common = costs
+                    .Where(c => c.CostType != "Staff" && c.CostType != "RankingAccumulated")
+                    .Sum(c => c.Amount);
+                var baseForPct = tournament.TotalPrizePool - staff - common;
+                var raw = (tournament.RankingContribValue!.Value / 100m) * baseForPct;
+                rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
+            }
+        }
+
+        tournament.TotalCosts = costs.Sum(c => c.Amount);
+        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
     }
 
     public async Task<List<TournamentBlindLevelResponse>> GetBlindLevelsAsync(

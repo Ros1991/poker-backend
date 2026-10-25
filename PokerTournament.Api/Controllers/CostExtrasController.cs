@@ -31,9 +31,12 @@ public class CostExtrasController : ControllerBase
     [HttpGet]
     public async Task<ActionResult> GetAll(Guid tournamentId, CancellationToken ct)
     {
+        // Custos criados juntos (ex.: os padrão da estrutura, na criação do torneio) têm o mesmo CreatedAt:
+        // desempate pela descrição para a ordem não variar (SPEC-20261023-1215, CP15)
         var costExtras = await _db.CostExtras
             .Where(c => c.TournamentId == tournamentId)
             .OrderBy(c => c.CreatedAt)
+            .ThenBy(c => c.Description)
             .ToListAsync(ct);
 
         return Ok(costExtras.Select(c => new
@@ -100,10 +103,14 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
-        // Preserva o CostType (request manual sempre traz "Manual"/vazio).
+        // Preserva o CostType (request manual sempre traz "Manual"/vazio) e o IsCashBox (a tela nunca o edita;
+        // o Caixa é único por torneio e tem regra própria). Beneficiário e chave PIX vêm do pedido: a aba Custos
+        // manda todos os campos do custo (SPEC-20261023-1215, CP9).
         var preservedCostType = costExtra.CostType;
+        var preservedIsCashBox = costExtra.IsCashBox;
         _mapper.Map(request, costExtra);
         costExtra.CostType = preservedCostType;
+        costExtra.IsCashBox = preservedIsCashBox;
         await _db.SaveChangesAsync(ct);
 
         await RecomputeTournamentFinancials(tournamentId, ct);

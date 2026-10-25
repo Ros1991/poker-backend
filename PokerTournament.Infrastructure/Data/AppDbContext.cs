@@ -16,6 +16,7 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<ScoringRule> ScoringRules => Set<ScoringRule>();
     public DbSet<BlindStructure> BlindStructures => Set<BlindStructure>();
     public DbSet<BlindLevel> BlindLevels => Set<BlindLevel>();
+    public DbSet<BlindStructureDefaultCost> BlindStructureDefaultCosts => Set<BlindStructureDefaultCost>();
     public DbSet<TournamentBlindLevel> TournamentBlindLevels => Set<TournamentBlindLevel>();
     public DbSet<Tournament> Tournaments => Set<Tournament>();
     public DbSet<TournamentEntry> TournamentEntries => Set<TournamentEntry>();

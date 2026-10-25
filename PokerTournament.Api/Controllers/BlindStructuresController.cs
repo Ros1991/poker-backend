@@ -6,6 +6,7 @@ using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
+using PokerTournament.Domain.Exceptions;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -14,6 +15,9 @@ namespace PokerTournament.Api.Controllers;
 /// Estrutura com home game: lê quem acessa o home game (dono/membro/Admin), escreve quem o
 /// gerencia (dono/membro admin/Admin). Estrutura global (HomeGameId nulo) é template do sistema:
 /// lê qualquer autenticado, escreve só Admin do sistema.
+/// SPEC-20261023-1215: a estrutura guarda também os custos padrão de valor fixo por torneio (defaultCosts) e o
+/// custo de dealer (defaultHasDealer/defaultDealerFee), em QUALQUER plano (sem 402: salvar estrutura é livre no
+/// Mesa e queda de plano nunca apaga nada). Quem decide se o torneio recebe os custos é o TournamentService.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -33,6 +37,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
     {
         var query = _db.BlindStructures
             .Include(bs => bs.Levels.OrderBy(l => l.LevelNumber))
+            .Include(bs => bs.DefaultCosts)
+            .AsSplitQuery()
             .Where(bs => bs.IsActive);
 
         if (homeGameId.HasValue)
@@ -75,6 +81,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             bs.DefaultStaffAmount,
             bs.DefaultRankingContribMode,
             bs.DefaultRankingContribValue,
+            bs.DefaultHasDealer,
+            bs.DefaultDealerFee,
+            DefaultCosts = ProjectDefaultCosts(bs),
             LevelCount = bs.Levels.Count,
             Levels = bs.Levels.Select(l => new
             {
@@ -96,6 +105,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
     {
         var structure = await _db.BlindStructures
             .Include(bs => bs.Levels.OrderBy(l => l.LevelNumber))
+            .Include(bs => bs.DefaultCosts)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(bs => bs.Id == id, ct);
 
         if (structure is null)
@@ -126,6 +137,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             structure.DefaultStaffAmount,
             structure.DefaultRankingContribMode,
             structure.DefaultRankingContribValue,
+            structure.DefaultHasDealer,
+            structure.DefaultDealerFee,
+            DefaultCosts = ProjectDefaultCosts(structure),
             Levels = structure.Levels.Select(l => new
             {
                 l.Id,
@@ -148,6 +162,10 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         if (!await CanWriteAsync(request.HomeGameId, ct))
             return Forbidden();
 
+        // Custos padrão e dealer (SPEC-20261023-1215): valida antes de gravar (DomainException → 400)
+        var defaultCosts = request.DefaultCosts is null ? [] : BuildDefaultCosts(request.DefaultCosts);
+        var (hasDealer, dealerFee) = ResolveDealer(request.DefaultHasDealer ?? false, request.DefaultDealerFee);
+
         var structure = new BlindStructure
         {
             Name = request.Name,
@@ -169,6 +187,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             DefaultStaffAmount = request.DefaultStaffAmount,
             DefaultRankingContribMode = request.DefaultRankingContribMode,
             DefaultRankingContribValue = request.DefaultRankingContribValue,
+            DefaultHasDealer = hasDealer,
+            DefaultDealerFee = dealerFee,
         };
 
         foreach (var levelRequest in request.Levels)
@@ -186,6 +206,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             });
         }
 
+        foreach (var cost in defaultCosts)
+            structure.DefaultCosts.Add(cost);
+
         _db.BlindStructures.Add(structure);
         await _db.SaveChangesAsync(ct);
 
@@ -199,6 +222,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
     {
         var structure = await _db.BlindStructures
             .Include(bs => bs.Levels)
+            .Include(bs => bs.DefaultCosts)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(bs => bs.Id == id, ct);
 
         if (structure is null)
@@ -213,6 +238,13 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             return Forbidden();
         if (targetHomeGameId != structure.HomeGameId && !await CanWriteAsync(targetHomeGameId, ct))
             return Forbidden();
+
+        // Custos padrão (CP7): null/ausente = manter; lista (inclusive vazia) = substituir tudo.
+        // Dealer: DefaultHasDealer null = manter os dois campos. Valida tudo antes de mexer na estrutura.
+        var newDefaultCosts = request.DefaultCosts is null ? null : BuildDefaultCosts(request.DefaultCosts);
+        var (keepHasDealer, keepDealerFee) = request.DefaultHasDealer is null
+            ? (structure.DefaultHasDealer, structure.DefaultDealerFee)
+            : ResolveDealer(request.DefaultHasDealer.Value, request.DefaultDealerFee);
 
         structure.Name = request.Name;
         structure.Description = request.Description;
@@ -232,6 +264,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         structure.DefaultStaffAmount = request.DefaultStaffAmount;
         structure.DefaultRankingContribMode = request.DefaultRankingContribMode;
         structure.DefaultRankingContribValue = request.DefaultRankingContribValue;
+        structure.DefaultHasDealer = keepHasDealer;
+        structure.DefaultDealerFee = keepDealerFee;
 
         // Remover levels existentes e recriar
         foreach (var level in structure.Levels.ToList())
@@ -253,6 +287,19 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             });
         }
 
+        // Mesmo padrão dos níveis: remove todos e recria na ordem da lista. Torneios já criados não mudam
+        // (os custos foram copiados para eles na criação — CP5).
+        if (newDefaultCosts is not null)
+        {
+            foreach (var cost in structure.DefaultCosts.ToList())
+                _db.BlindStructureDefaultCosts.Remove(cost);
+            foreach (var cost in newDefaultCosts)
+            {
+                cost.BlindStructureId = structure.Id;
+                structure.DefaultCosts.Add(cost);
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
         return Ok(new { structure.Id, structure.Name });
     }
@@ -270,12 +317,96 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         if (!await CanWriteAsync(structure.HomeGameId, ct))
             return Forbidden();
 
-        // Hard delete
+        // Hard delete (níveis e custos padrão vão junto em cascata; os torneios já criados guardam as cópias)
         _db.BlindStructures.Remove(structure);
         await _db.SaveChangesAsync(ct);
 
         return NoContent();
     }
+
+    /// <summary>Teto de custos padrão por estrutura (CP1).</summary>
+    public const int MaxDefaultCosts = 20;
+    /// <summary>Teto do valor de cada custo padrão e do valor por dealer (cabe em decimal(10,2)).</summary>
+    public const decimal MaxDefaultCostAmount = 99_999.99m;
+
+    /// <summary>
+    /// Valida e converte a lista do pedido (CP1, passo 3 da SPEC-20261023-1215): descrição obrigatória até 200,
+    /// valor &gt; 0 e &lt;= 99.999,99, "para quem" e chave PIX até 200, no máximo 20 itens. Textos com Trim();
+    /// vazios viram null. SortOrder = posição na lista. Erro → DomainException (400 com a mensagem).
+    /// </summary>
+    private static List<BlindStructureDefaultCost> BuildDefaultCosts(
+        List<CreateBlindStructureRequest.DefaultCostItem> items)
+    {
+        if (items.Count > MaxDefaultCosts)
+            throw new DomainException("Uma estrutura pode ter no máximo 20 custos padrão.");
+
+        var result = new List<BlindStructureDefaultCost>(items.Count);
+        foreach (var item in items)
+        {
+            var description = item?.Description?.Trim();
+            if (string.IsNullOrEmpty(description))
+                throw new DomainException("Informe a descrição de cada custo padrão.");
+            if (description.Length > 200)
+                throw new DomainException("A descrição do custo padrão pode ter no máximo 200 caracteres.");
+            if (item!.Amount <= 0)
+                throw new DomainException("O valor de cada custo padrão precisa ser maior que zero.");
+            if (item.Amount > MaxDefaultCostAmount)
+                throw new DomainException("O valor de cada custo padrão pode ser no máximo R$ 99.999,99.");
+
+            var beneficiary = NullIfEmpty(item.Beneficiary);
+            var pixKey = NullIfEmpty(item.PixKey);
+            var pixKeyType = NullIfEmpty(item.PixKeyType);
+            if (beneficiary is { Length: > 200 })
+                throw new DomainException("O campo \"Para quem\" do custo padrão pode ter no máximo 200 caracteres.");
+            if (pixKey is { Length: > 200 })
+                throw new DomainException("A chave PIX do custo padrão pode ter no máximo 200 caracteres.");
+            if (pixKeyType is { Length: > 50 })
+                throw new DomainException("O tipo da chave PIX do custo padrão pode ter no máximo 50 caracteres.");
+
+            result.Add(new BlindStructureDefaultCost
+            {
+                Description = description,
+                Amount = Math.Round(item.Amount, 2, MidpointRounding.AwayFromZero),
+                Beneficiary = beneficiary,
+                PixKey = pixKey,
+                PixKeyType = pixKeyType,
+                SortOrder = result.Count,
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Custo de dealer (CP16): com dealer pago, o valor por dealer é obrigatório (&gt; 0 e &lt;= 99.999,99);
+    /// sem dealer, o valor é apagado.
+    /// </summary>
+    private static (bool HasDealer, decimal? Fee) ResolveDealer(bool hasDealer, decimal? fee)
+    {
+        if (!hasDealer)
+            return (false, null);
+        if (fee is not > 0 || fee > MaxDefaultCostAmount)
+            throw new DomainException("Informe o valor por dealer.");
+        return (true, Math.Round(fee.Value, 2, MidpointRounding.AwayFromZero));
+    }
+
+    private static string? NullIfEmpty(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>Custos padrão na resposta, na ordem da estrutura.</summary>
+    private static IEnumerable<object> ProjectDefaultCosts(BlindStructure structure) =>
+        structure.DefaultCosts
+            .OrderBy(c => c.SortOrder)
+            .Select(c => new
+            {
+                c.Id,
+                c.Description,
+                c.Amount,
+                c.Beneficiary,
+                c.PixKey,
+                c.PixKeyType,
+                c.SortOrder,
+            })
+            .ToList();
 
     /// <summary>
     /// Escrita em estrutura: com home game, quem o gerencia (dono, membro admin ou Admin);

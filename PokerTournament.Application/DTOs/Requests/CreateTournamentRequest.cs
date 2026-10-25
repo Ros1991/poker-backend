@@ -22,4 +22,9 @@ public class CreateTournamentRequest
     public decimal? StaffAmount { get; set; }
     public string? RankingContribMode { get; set; }
     public decimal? RankingContribValue { get; set; }
+
+    // SPEC-20261023-1215 (CP17): quantos dealers trabalham no torneio quando a estrutura tem dealer pago.
+    // null = 1 (cliente que não conhece o campo); 0 = sem custo de dealer; fora de 0–20 → 400. Não é gravado
+    // no torneio: vira o custo "Dealers (N × R$ X)" na criação (e na primeira estrutura de um rascunho).
+    public int? DealerCount { get; set; }
 }

@@ -263,6 +263,16 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("default_buy_in");
 
+                    b.Property<decimal?>("DefaultDealerFee")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("default_dealer_fee");
+
+                    b.Property<bool>("DefaultHasDealer")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("default_has_dealer");
+
                     b.Property<int?>("DefaultLateRegistrationLevel")
                         .HasColumnType("integer")
                         .HasColumnName("default_late_registration_level");
@@ -340,6 +350,68 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDatabaseName("ix_blind_structures_home_game_id");
 
                     b.ToTable("blind_structures", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.BlindStructureDefaultCost", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("Beneficiary")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("beneficiary");
+
+                    b.Property<Guid>("BlindStructureId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("blind_structure_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("PixKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("pix_key");
+
+                    b.Property<string>("PixKeyType")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("pix_key_type");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BlindStructureId")
+                        .HasDatabaseName("ix_blind_structure_default_costs_structure");
+
+                    b.ToTable("blind_structure_default_costs", "public");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.CostExtra", b =>
@@ -2536,6 +2608,17 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Navigation("HomeGame");
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.BlindStructureDefaultCost", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.BlindStructure", "BlindStructure")
+                        .WithMany("DefaultCosts")
+                        .HasForeignKey("BlindStructureId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("BlindStructure");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.CostExtra", b =>
                 {
                     b.HasOne("PokerTournament.Domain.Entities.Tournament", "Tournament")
@@ -2932,6 +3015,8 @@ namespace PokerTournament.Infrastructure.Migrations
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.BlindStructure", b =>
                 {
+                    b.Navigation("DefaultCosts");
+
                     b.Navigation("Levels");
                 });
 
