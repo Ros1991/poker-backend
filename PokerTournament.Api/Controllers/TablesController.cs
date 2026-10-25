@@ -13,6 +13,7 @@ using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
 using PokerTournament.Api.Filters;
 using PokerTournament.Application.Plans;
+using PokerTournament.Application.Seating;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -66,8 +67,8 @@ public class TablesController : ControllerBase
     }
 
     // Faixa de lugares por mesa aceita no sorteio e na criação (o terminal desenha 1..MaxSeats)
-    private const int MinSeatsPerTable = 2;
-    private const int MaxSeatsPerTable = 12;
+    private const int MinSeatsPerTable = SeatingPlanner.MinSeatsPerTable;
+    private const int MaxSeatsPerTable = SeatingPlanner.MaxSeatsPerTable;
 
     [HttpPost]
     public async Task<ActionResult> Create(
@@ -88,49 +89,10 @@ public class TablesController : ControllerBase
         if (existing is { IsActive: true })
             return Conflict(new { message = $"Já existe uma mesa com o número {request.TableNumber}." });
 
-        TournamentTable table;
-        if (existing is not null)
-        {
-            // Mesa inativa (quebrada ou excluída) — o painel não a mostra: reativa como mesa nova
-            // em vez de recusar o número
-            existing.IsActive = true;
-            existing.MaxSeats = request.MaxSeats;
-            existing.IsFinalTable = false;
-            existing.TableName = request.TableName ?? $"Mesa {request.TableNumber}";
-            existing.DealerPersonId = null;
-
-            // Quem ainda apontava para ela (mesa excluída sem desocupar) já aparecia sem mesa:
-            // continua sem mesa, em vez de reaparecer num lugar antigo
-            var stale = await _db.TournamentEntries
-                .Where(e => e.TournamentId == tournamentId && e.TableId == existing.Id)
-                .ToListAsync(ct);
-            foreach (var e in stale)
-            {
-                e.TableId = null;
-                e.SeatNumber = null;
-            }
-
-            table = existing;
-        }
-        else
-        {
-            table = new TournamentTable
-            {
-                TournamentId = tournamentId,
-                TableNumber = request.TableNumber,
-                TableName = request.TableName ?? $"Mesa {request.TableNumber}",
-                MaxSeats = request.MaxSeats,
-                IsActive = true
-            };
-            _db.TournamentTables.Add(table);
-        }
-
-        // Passou a haver mais de uma mesa ativa: nenhuma é mais a mesa final
-        var otherActive = await _db.TournamentTables
-            .Where(t => t.TournamentId == tournamentId && t.IsActive && t.Id != table.Id)
-            .ToListAsync(ct);
-        foreach (var t in otherActive)
-            t.IsFinalTable = false;
+        // Mesmo ajudante da inscrição (SPEC-20261023-1214): mesa inativa (quebrada ou excluída) com esse número é
+        // reativada — quem ainda apontava para ela continua sem mesa — e as outras deixam de ser a mesa final
+        var table = await TableOpener.OpenAsync(
+            _db, tournamentId, request.TableNumber, request.MaxSeats, request.TableName, ct);
 
         await _db.SaveChangesAsync(ct);
         await dbTx.CommitAsync(ct);
@@ -165,11 +127,14 @@ public class TablesController : ControllerBase
             maxSeats = request.MaxSeatsPerTable.Value;
             if (maxSeats < MinSeatsPerTable || maxSeats > MaxSeatsPerTable)
                 throw new DomainException($"Lugares por mesa: de {MinSeatsPerTable} a {MaxSeatsPerTable}.");
+            // "Sortear de novo" com lotação escolhida: vale também para as mesas que a inscrição abrir depois
+            // (SPEC-20261023-1214, MA12)
+            tournament.SeatsPerTable = maxSeats;
         }
         else
         {
             // Padrão do torneio, trazido para a faixa aceita
-            maxSeats = tournament.SeatsPerTable < MinSeatsPerTable ? 9 : Math.Min(tournament.SeatsPerTable, MaxSeatsPerTable);
+            maxSeats = EntryService.EffectiveSeatsPerTable(tournament);
         }
 
         int tableCount;
@@ -586,15 +551,21 @@ public class TablesController : ControllerBase
     public async Task<ActionResult> Unseat(
         Guid tournamentId, [FromBody] UnseatPlayerRequest request, CancellationToken ct)
     {
+        // Muda a ocupação: mesma trava da inscrição (SPEC-20261023-1214, MA14)
+        await using var dbTx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, tournamentId, ct);
+
         var entry = await _db.TournamentEntries
             .FirstOrDefaultAsync(e => e.Id == request.EntryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
-        // Remove o jogador da mesa SEM eliminá-lo (continua ativo, mas sem assento)
+        // Remove o jogador da mesa SEM eliminá-lo (continua ativo, mas sem assento). A inscrição de outra pessoa
+        // não o senta de novo enquanto houver mesa (MA17): fica para o dealer
         entry.TableId = null;
         entry.SeatNumber = null;
 
         await _db.SaveChangesAsync(ct);
+        await dbTx.CommitAsync(ct);
         return Ok(new { message = "Jogador removido da mesa." });
     }
 

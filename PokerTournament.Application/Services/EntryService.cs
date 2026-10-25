@@ -4,6 +4,7 @@ using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Plans;
+using PokerTournament.Application.Seating;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -44,6 +45,10 @@ public class EntryService
     public async Task DeleteEntryAsync(
         Guid tournamentId, Guid entryId, CancellationToken ct = default)
     {
+        // Tira alguém da ocupação das mesas: mesma trava da inscrição (SPEC-20261023-1214, MA14)
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await LockSeatingAsync(_db, tournamentId, ct);
+
         var entry = await _db.TournamentEntries
             .Include(e => e.Transactions)
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
@@ -52,6 +57,7 @@ public class EntryService
         await RemoveEntryAndAdjustTotalsAsync(tournamentId, entry, ct);
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
     }
 
     /// <summary>
@@ -202,11 +208,13 @@ public class EntryService
     }
 
     /// <summary>
-    /// Serializa, por torneio, as operações que mexem em lugares (mover, quebrar, sortear,
-    /// criar mesa, adicionar com assento, inscrição em lote, desfazer eliminação): sem isso,
-    /// duas requisições leem o mesmo lugar livre e as duas sentam alguém nele (linhas diferentes,
-    /// o xmin não pega). pg_advisory_xact_lock com chave tirada do id do torneio; tem que rodar
-    /// DENTRO da transação explícita (solta no commit/rollback) e quem chama lê a ocupação DEPOIS.
+    /// Serializa, por torneio, as operações que mexem em lugares ou na ocupação das mesas (mover, quebrar,
+    /// sortear, criar mesa, inscrição individual e em lote, eliminar, desfazer eliminação, desfazer/excluir
+    /// inscrição, tirar da mesa — SPEC-20261023-1214, MA14): sem isso, duas requisições leem o mesmo lugar
+    /// livre e as duas sentam alguém nele (linhas diferentes, o xmin não pega), ou uma eliminação simultânea
+    /// faz a mesa parecer cheia e a inscrição abre mesa à toa. pg_advisory_xact_lock com chave tirada do id do
+    /// torneio; tem que rodar DENTRO da transação explícita (solta no commit/rollback) e quem chama lê a
+    /// ocupação DEPOIS.
     /// </summary>
     public static async Task LockSeatingAsync(IAppDbContext db, Guid tournamentId, CancellationToken ct)
     {
@@ -227,6 +235,8 @@ public class EntryService
         Guid tournamentId, Guid entryId, Guid? undoneBy = null, CancellationToken ct = default)
     {
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        // Libera um lugar: mesma trava da inscrição (MA14). Não desfaz mesa aberta nem devolve quem mudou (MA11)
+        await LockSeatingAsync(_db, tournamentId, ct);
 
         var entry = await _db.TournamentEntries
             .Include(e => e.Transactions)
@@ -302,8 +312,41 @@ public class EntryService
     public static string TableDisplayName(TournamentTable table) =>
         string.IsNullOrWhiteSpace(table.TableName) ? $"Mesa {table.TableNumber}" : table.TableName;
 
+    /// <summary>
+    /// Inscrição individual (POST entries): já senta o jogador pelo planejador (SPEC-20261023-1214, MA1) dentro da
+    /// transação com a trava de lugares. Abre a transação só se ainda não houver uma (BeginTransaction aninhado dá
+    /// erro no EF); a trava vem antes de qualquer leitura de ocupação.
+    /// </summary>
     public async Task<EntryResponse> RegisterEntryAsync(
         Guid tournamentId, CreateEntryRequest request, Guid? registeredBy = null, CancellationToken ct = default)
+    {
+        var ownTx = _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(ct)
+            : null;
+        try
+        {
+            await LockSeatingAsync(_db, tournamentId, ct);
+
+            var (entry, tournament) = await RegisterEntryCoreAsync(tournamentId, request, registeredBy, ct);
+            await SeatNewEntriesAsync(tournament, [entry], registeredBy, ct);
+
+            if (ownTx is not null)
+                await ownTx.CommitAsync(ct);
+            return _mapper.Map<EntryResponse>(entry);
+        }
+        finally
+        {
+            if (ownTx is not null)
+                await ownTx.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Núcleo da inscrição individual: regras, contadores, custos automáticos e transação de buy-in; salva. Roda
+    /// dentro da transação de quem chama (que já pegou a trava). Não senta ninguém.
+    /// </summary>
+    private async Task<(TournamentEntry Entry, Tournament Tournament)> RegisterEntryCoreAsync(
+        Guid tournamentId, CreateEntryRequest request, Guid? registeredBy, CancellationToken ct)
     {
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
@@ -398,16 +441,17 @@ public class EntryService
         await _db.SaveChangesAsync(ct);
 
         entry.Person = person;
-        return _mapper.Map<EntryResponse>(entry);
+        return (entry, tournament);
     }
 
     /// <summary>
     /// Inscreve vários jogadores de uma vez (multi-seleção) — rota única do painel e do terminal (F13). Atômico
-    /// (transação). Todas nascem Pendentes. Após criar as inscrições, se o torneio JÁ tiver mesas sorteadas,
-    /// auto-aloca os novos jogadores (preenche vagas; se encher tudo, cria mesa e rebalanceia) e registra
-    /// "Fulano sentou na Mesa X, lugar Y" para cada um que sentou.
+    /// (transação com a trava de lugares). Todas nascem Pendentes. Depois de criar as inscrições, senta todo mundo
+    /// numa passada só pelo planejador (SPEC-20261023-1214, MA6): a primeira inscrição cria a Mesa 1, as seguintes
+    /// vão para a mesa com menos gente e, quando tudo enche, abre mesa e equilibra. Devolve as inscrições (já com
+    /// mesa/lugar) e o resultado do assento (MA16).
     /// </summary>
-    public async Task<List<EntryResponse>> RegisterEntriesBulkAsync(
+    public async Task<BulkCreateEntriesResponse> RegisterEntriesBulkAsync(
         Guid tournamentId, BulkCreateEntriesRequest request, Guid? registeredBy = null, CancellationToken ct = default)
     {
         // Transação desde o início: o auto-assento lê a ocupação e precisa da trava de lugares
@@ -513,168 +557,240 @@ public class EntryService
 
         await _db.SaveChangesAsync(ct);
 
-        // Auto-alocação em mesas — somente se já existir pelo menos 1 mesa.
-        await AutoSeatNewEntriesAsync(tournament, createdEntries, registeredBy, ct);
+        // Senta todos numa passada só (MA6); com o plano do dono sem Tables, ninguém senta (MA13)
+        var seating = await SeatNewEntriesAsync(tournament, createdEntries, registeredBy, ct);
 
         await tx.CommitAsync(ct);
 
-        return createdEntries.Select(e => _mapper.Map<EntryResponse>(e)).ToList();
+        return new BulkCreateEntriesResponse
+        {
+            Entries = createdEntries.Select(e => _mapper.Map<EntryResponse>(e)).ToList(),
+            Seating = seating
+        };
     }
 
+    /// <summary>Lotação das mesas novas do torneio: SeatsPerTable trazido para 2–12 (abaixo de 2 → 9).</summary>
+    public static int EffectiveSeatsPerTable(Tournament tournament) =>
+        SeatingPlanner.EffectiveSeatsPerTable(tournament.SeatsPerTable);
+
     /// <summary>
-    /// Auto-aloca os novos jogadores nas mesas existentes. Regra: NÃO faz nada se
-    /// ainda não houver mesa criada (o sorteio acontece depois pelo fluxo normal).
-    /// Preenche a mesa com vaga e menor lotação; se todas estiverem cheias, cria a
-    /// próxima mesa e rebalanceia sorteando quem muda até diferença ≤ 1.
-    /// ÚNICO lugar em que a inscrição senta jogador (o quick-add saiu — SPEC-20261023-1213, F13); registra
-    /// "Fulano sentou na Mesa X, lugar Y" (PlayerSeated, autor = <paramref name="registeredBy"/>) por jogador novo
-    /// sentado. Regra de criação/divisão de mesa: SPEC-20261023-1214.
+    /// Senta as inscrições novas (SPEC-20261023-1214) — ÚNICO lugar em que a inscrição senta jogador. Roda dentro da
+    /// transação de quem chama, DEPOIS da trava de lugares e do SaveChanges das inscrições. Só com o recurso Tables
+    /// no plano efetivo do DONO (MA13; consulta silenciosa, nunca recusa — Plans:Enforce=false libera): sem ele,
+    /// ninguém senta e nenhuma mesa é criada. Lê a ocupação, chama o <see cref="SeatingPlanner"/>, abre/reaproveita
+    /// mesas (<see cref="TableOpener"/>), aplica lugares e movimentos e grava o histórico da MA15:
+    /// TableOpened ("Mesa 2 aberta: 4 jogadores movidos — …"), PlayerMoved só no histórico de quem mudou e
+    /// PlayerSeated ("Fulano sentou na Mesa X, lugar Y" visível com 1 inscrito; com 2 ou mais, uma linha resumo
+    /// visível e a de cada um só no histórico dele). Autor = <paramref name="registeredBy"/>. Salva.
+    /// Ativos sem lugar só entram na conta quando não há mesa ativa (MA2/MA17).
     /// </summary>
-    private async Task AutoSeatNewEntriesAsync(
+    private async Task<SeatingResultResponse> SeatNewEntriesAsync(
         Tournament tournament, List<TournamentEntry> newEntries, Guid? registeredBy, CancellationToken ct)
     {
+        var result = new SeatingResultResponse
+        {
+            InProgress = tournament.Status == nameof(TournamentStatus.InProgress)
+        };
+
+        result.TablesEnabled = await _plans.HasFeatureForTournamentAsync(tournament.Id, PlanFeature.Tables, ct);
+        if (!result.TablesEnabled || newEntries.Count == 0)
+            return result;
+
         var tables = await _db.TournamentTables
             .Where(t => t.TournamentId == tournament.Id && t.IsActive)
             .OrderBy(t => t.TableNumber)
             .ToListAsync(ct);
+        var tableIds = tables.Select(t => t.Id).ToHashSet();
 
-        if (tables.Count == 0)
-            return; // mesas ainda não sorteadas → deixa pro sorteio posterior
-
-        var newTableSeats = tournament.SeatsPerTable > 1 ? tournament.SeatsPerTable : 9;
-        // Mesa nova só com o recurso Tables no plano do DONO (D13: o Mesa não tem controle de mesas — vale também para
-        // o torneio rebaixado que já tinha mesas). Sem ele, com todas cheias, o jogador fica sem lugar (como o antigo
-        // quick-add do terminal); a inscrição nunca é recusada por plano (só CONSULTA, nada de 402).
-        var canOpenTable = await _plans.HasFeatureForTournamentAsync(tournament.Id, PlanFeature.Tables, ct);
-
-        // Ocupação atual: jogadores ainda no torneio já assentados, por mesa.
-        var seatedActive = await _db.TournamentEntries
+        var newIds = newEntries.Select(e => e.Id).ToHashSet();
+        var playing = await _db.TournamentEntries
+            .Include(e => e.Person)
             .Where(e => e.TournamentId == tournament.Id
-                     && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered))
-                     && e.TableId != null)
+                     && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered)))
             .ToListAsync(ct);
+        var entryById = playing.ToDictionary(e => e.Id);
+        foreach (var e in newEntries)
+            entryById[e.Id] = e;
 
-        var occupancy = tables.ToDictionary(
-            t => t.Id,
-            t => seatedActive.Where(e => e.TableId == t.Id).ToList());
+        var seated = playing
+            .Where(e => !newIds.Contains(e.Id) && e.TableId is { } tid && tableIds.Contains(tid))
+            .ToList();
+        // MA2: sem mesa ativa, quem já está inscrito sem lugar senta junto; com mesa, fica para o dealer (MA17)
+        var unseated = tables.Count == 0
+            ? playing.Where(e => !newIds.Contains(e.Id)).Select(e => e.Id).ToList()
+            : [];
 
-        // Conta também as mesas quebradas (inativas): o número é único por torneio.
-        var nextTableNumber = await _db.TournamentTables
-            .Where(t => t.TournamentId == tournament.Id)
-            .MaxAsync(t => t.TableNumber, ct) + 1;
-
-        foreach (var entry in newEntries)
+        var inputs = tables.Select(t => new ActiveTableInput
         {
-            // Mesa com assento livre (lotação abaixo do MaxSeats E um número de lugar livre em
-            // 1..MaxSeats) e menor lotação; empate → menor número.
-            var target = tables
-                .Where(t => occupancy[t.Id].Count < t.MaxSeats && NextSeat(t, occupancy[t.Id]).HasValue)
-                .OrderBy(t => occupancy[t.Id].Count)
-                .FirstOrDefault();
+            Id = t.Id,
+            Number = t.TableNumber,
+            Name = TableDisplayName(t),
+            MaxSeats = t.MaxSeats,
+            Occupants = seated.Where(e => e.TableId == t.Id).Select(e => new SeatedPlayer(e.Id, e.SeatNumber)).ToList()
+        }).ToList();
 
-            if (target is null)
-            {
-                if (!canOpenTable)
-                    continue; // fica sem mesa: no Mesa a inscrição não abre mesa
+        var plan = SeatingPlanner.Plan(
+            inputs, newEntries.Select(e => e.Id).ToList(), unseated, EffectiveSeatsPerTable(tournament), Random.Shared);
 
-                // Todas cheias → cria a próxima mesa e rebalanceia (sorteando quem muda).
-                target = new TournamentTable
-                {
-                    TournamentId = tournament.Id,
-                    TableNumber = nextTableNumber,
-                    TableName = $"Mesa {nextTableNumber}",
-                    MaxSeats = newTableSeats,
-                    IsActive = true
-                };
-                nextTableNumber++;
-                _db.TournamentTables.Add(target);
+        // Abre/reaproveita as mesas ANTES de aplicar os lugares (reativar limpa quem ainda apontava para a linha)
+        var realTable = tables.ToDictionary(t => t.Id);
+        var opened = new Dictionary<PlannedTable, TournamentTable>();
+        foreach (var p in plan.Opened)
+        {
+            var table = await TableOpener.OpenAsync(_db, tournament.Id, p.Number, p.MaxSeats, p.Name, ct);
+            opened[p] = table;
+        }
+        TournamentTable Resolve(PlannedTable p) => p.Id is { } id ? realTable[id] : opened[p];
 
-                // Passou a haver mais de uma mesa ativa: nenhuma é mais a mesa final
-                foreach (var t in tables)
-                    t.IsFinalTable = false;
-
-                await _db.SaveChangesAsync(ct); // garante o Id real da nova mesa
-
-                tables.Add(target);
-                occupancy[target.Id] = [];
-
-                RebalanceRandom(tables, occupancy);
-                target = tables.OrderBy(t => occupancy[t.Id].Count).First();
-            }
-
-            // Assento = menor lugar livre da mesa; não mexe nos assentos de quem já está.
-            // Sem lugar livre (dados antigos fora do MaxSeats) → fica sem mesa e o dealer o senta.
-            var seat = NextSeat(target, occupancy[target.Id]);
-            if (seat is null)
-                continue;
-
-            entry.TableId = target.Id;
-            entry.SeatNumber = seat;
-            occupancy[target.Id].Add(entry);
+        foreach (var s in plan.Seats)
+        {
+            var e = entryById[s.EntryId];
+            e.TableId = Resolve(s.Table).Id;
+            e.SeatNumber = s.Seat;
+        }
+        foreach (var mv in plan.Moves)
+        {
+            var e = entryById[mv.EntryId];
+            e.TableId = Resolve(mv.To).Id;
+            e.SeatNumber = mv.ToSeat;
         }
 
-        // Onde cada jogador novo ficou (depois de todo o rebalanceamento do lote): uma linha no histórico por jogador
-        var tableById = tables.ToDictionary(t => t.Id);
-        foreach (var entry in newEntries)
+        // ---------------------------------------------------------------- resposta
+        result.OpenedTables = plan.Opened
+            .Select(p => new SeatingOpenedTable { TableId = opened[p].Id, TableName = TableDisplayName(opened[p]) })
+            .ToList();
+        result.Seated = plan.Seats
+            .Select(s => new SeatingSeat
+            {
+                EntryId = s.EntryId,
+                PlayerName = PlayerDisplayName(entryById[s.EntryId].Person),
+                TableId = Resolve(s.Table).Id,
+                TableName = TableDisplayName(Resolve(s.Table)),
+                SeatNumber = s.Seat
+            })
+            // Os inscritos agora primeiro (na ordem do pedido), depois quem estava sem lugar
+            .OrderBy(s => newIds.Contains(s.EntryId) ? newEntries.FindIndex(e => e.Id == s.EntryId) : int.MaxValue)
+            .ToList();
+        result.Moves = plan.Moves
+            .OrderBy(mv => mv.To.Number)
+            .ThenBy(mv => mv.ToSeat)
+            .Select(mv => new SeatingMove
+            {
+                EntryId = mv.EntryId,
+                PlayerName = PlayerDisplayName(entryById[mv.EntryId].Person),
+                FromTableId = Resolve(mv.From).Id,
+                FromTableName = TableDisplayName(Resolve(mv.From)),
+                FromSeat = mv.FromSeat,
+                ToTableId = Resolve(mv.To).Id,
+                ToTableName = TableDisplayName(Resolve(mv.To)),
+                ToSeat = mv.ToSeat
+            })
+            .ToList();
+
+        var openedLabel = OpenedTablesLabel(result.OpenedTables.Select(t => t.TableName).ToList());
+        var newSeated = result.Seated.Where(s => newIds.Contains(s.EntryId)).ToList();
+        var oldUnseatedSeated = result.Seated.Count - newSeated.Count;
+        result.Summary = result.Moves.Count > 0
+            ? $"{openedLabel}: {Plural(result.Moves.Count, "jogador movido", "jogadores movidos")}"
+            : openedLabel ?? SeatDistribution(newSeated);
+
+        // ---------------------------------------------------------------- histórico (MA15)
+        if (openedLabel is not null)
         {
-            if (entry.TableId is not { } tableId || entry.SeatNumber is null || !tableById.TryGetValue(tableId, out var table))
-                continue;
+            var description = openedLabel;
+            if (result.Moves.Count > 0)
+                description += $": {Plural(result.Moves.Count, "jogador movido", "jogadores movidos")} — "
+                             + string.Join("; ", result.Moves.Select(MoveText));
+            else if (oldUnseatedSeated > 0)
+                description += $": {Plural(oldUnseatedSeated, "jogador que estava sem mesa também sentou", "jogadores que estavam sem mesa também sentaram")}";
             _db.TournamentActivities.Add(new TournamentActivity
             {
                 TournamentId = tournament.Id,
-                EntryId = entry.Id,
-                Type = nameof(TournamentActivityType.PlayerSeated),
-                Description = $"{PlayerDisplayName(entry.Person)} sentou na {TableDisplayName(table)}, lugar {entry.SeatNumber}",
+                Type = nameof(TournamentActivityType.TableOpened),
+                Description = Cut(description),
                 CreatedBy = registeredBy
             });
         }
 
-        await _db.SaveChangesAsync(ct);
-    }
-
-    /// <summary>
-    /// Menor lugar livre de 1..MaxSeats da mesa (<paramref name="seated"/> = quem ainda está
-    /// no torneio sentado nela). Null quando não há lugar livre — nunca devolve além do MaxSeats.
-    /// </summary>
-    private static int? NextSeat(TournamentTable table, List<TournamentEntry> seated)
-    {
-        var taken = seated
-            .Where(e => e.SeatNumber.HasValue)
-            .Select(e => e.SeatNumber!.Value)
-            .ToHashSet();
-        for (var seat = 1; seat <= table.MaxSeats; seat++)
-            if (!taken.Contains(seat))
-                return seat;
-        return null;
-    }
-
-    /// <summary>
-    /// Move jogadores sorteados da mesa mais cheia para a mais vazia até a diferença ser ≤ 1.
-    /// Quem é movido recebe o menor lugar livre no destino (sem colidir com quem já está lá).
-    /// </summary>
-    private static void RebalanceRandom(
-        List<TournamentTable> tables, Dictionary<Guid, List<TournamentEntry>> occupancy)
-    {
-        while (true)
+        foreach (var mv in result.Moves)
         {
-            var max = tables.OrderByDescending(t => occupancy[t.Id].Count).First();
-            var min = tables.OrderBy(t => occupancy[t.Id].Count).First();
-            if (occupancy[max.Id].Count - occupancy[min.Id].Count <= 1)
-                break;
-
-            var seat = NextSeat(min, occupancy[min.Id]);
-            if (seat is null)
-                break; // mesa mais vazia sem lugar livre: não força ninguém além do MaxSeats
-
-            var fromList = occupancy[max.Id];
-            var idx = Random.Shared.Next(fromList.Count);
-            var mover = fromList[idx];
-            fromList.RemoveAt(idx);
-            mover.TableId = min.Id;
-            mover.SeatNumber = seat;
-            occupancy[min.Id].Add(mover);
+            _db.TournamentActivities.Add(new TournamentActivity
+            {
+                TournamentId = tournament.Id,
+                EntryId = mv.EntryId,
+                Type = nameof(TournamentActivityType.PlayerMoved),
+                Description = Cut($"{mv.ToTableName} aberta — {MoveText(mv)}"),
+                CreatedBy = registeredBy,
+                PlayerOnly = true
+            });
         }
+
+        if (newSeated.Count >= 2)
+        {
+            _db.TournamentActivities.Add(new TournamentActivity
+            {
+                TournamentId = tournament.Id,
+                Type = nameof(TournamentActivityType.PlayerSeated),
+                Description = Cut($"{newSeated.Count} jogadores inscritos e sentados: {SeatCounts(newSeated)}"),
+                CreatedBy = registeredBy
+            });
+        }
+        foreach (var s in result.Seated)
+        {
+            _db.TournamentActivities.Add(new TournamentActivity
+            {
+                TournamentId = tournament.Id,
+                EntryId = s.EntryId,
+                Type = nameof(TournamentActivityType.PlayerSeated),
+                Description = $"{s.PlayerName} sentou na {s.TableName}, lugar {s.SeatNumber}",
+                CreatedBy = registeredBy,
+                // Visível só quando entrou um jogador só; com lote, o resumo acima é a linha visível
+                PlayerOnly = newSeated.Count >= 2 || !newIds.Contains(s.EntryId)
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return result;
     }
+
+    private static string MoveText(SeatingMove mv) =>
+        $"{mv.PlayerName}: {mv.FromTableName}{(mv.FromSeat is { } fs ? $", lugar {fs}" : string.Empty)} → {mv.ToTableName}, lugar {mv.ToSeat}";
+
+    /// <summary>"Mesa 2 aberta" / "Mesas 2 e 3 abertas" / "Mesas 1, 2 e 3 abertas"; nulo sem mesa aberta.</summary>
+    private static string? OpenedTablesLabel(List<string> names) => names.Count switch
+    {
+        0 => null,
+        1 => $"{names[0]} aberta",
+        _ => $"Mesas {JoinNumbers(names)} abertas"
+    };
+
+    // "Mesa 1", "Mesa 2" → "1 e 2"; nomes fora do padrão entram inteiros
+    private static string JoinNumbers(List<string> names)
+    {
+        var parts = names.Select(n => n.StartsWith("Mesa ", StringComparison.Ordinal) ? n[5..] : n).ToList();
+        return parts.Count == 1 ? parts[0] : string.Join(", ", parts.Take(parts.Count - 1)) + " e " + parts[^1];
+    }
+
+    /// <summary>"Mesa 1 (6), Mesa 2 (6)" na ordem das mesas.</summary>
+    private static string SeatCounts(IEnumerable<SeatingSeat> seats) =>
+        string.Join(", ", seats
+            .GroupBy(s => s.TableName)
+            .OrderBy(g => g.Key.Length).ThenBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => $"{g.Key} ({g.Count()})"));
+
+    /// <summary>Resumo sem mesa aberta: "Fulano sentou na Mesa 1, lugar 3" ou "3 jogadores sentados: Mesa 1 (2), Mesa 2 (1)".</summary>
+    private static string? SeatDistribution(List<SeatingSeat> seats) => seats.Count switch
+    {
+        0 => null,
+        1 => $"{seats[0].PlayerName} sentou na {seats[0].TableName}, lugar {seats[0].SeatNumber}",
+        _ => $"{seats.Count} jogadores sentados: {SeatCounts(seats)}"
+    };
+
+    private static string Plural(int n, string singular, string plural) =>
+        $"{n} {(n == 1 ? singular : plural)}";
+
+    // tournament_activities.description: até 1000 caracteres
+    private static string Cut(string text) => text.Length > 1000 ? text[..997] + "..." : text;
 
     public async Task<EntryResponse> RegisterRebuyAsync(
         Guid tournamentId, Guid entryId, RebuyRequest request, Guid? registeredBy = null, CancellationToken ct = default)
@@ -923,6 +1039,10 @@ public class EntryService
 
         try
         {
+            // Tira o eliminado da mesa: mesma trava da inscrição (MA14) — sem ela, uma inscrição simultânea veria a
+            // mesa cheia e abriria mesa à toa. Antes de qualquer leitura de ocupação.
+            await LockSeatingAsync(_db, tournamentId, ct);
+
             var tournament = await _db.Tournaments
                 .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
                 ?? throw new DomainException("Torneio não encontrado.");

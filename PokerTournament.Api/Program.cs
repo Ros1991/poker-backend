@@ -323,6 +323,8 @@ builder.Services.AddSingleton(sp => new OidcTokenValidator(
     sp.GetService<DevelopmentTestTokenIssuer>(),
     sp.GetRequiredService<ILogger<OidcTokenValidator>>()));
 builder.Services.AddScoped<ExternalLoginEmailService>();
+// E-mails do "Meu perfil" (SPEC-20261023-1211): "Definir sua senha" da conta que só entra pelo Google
+builder.Services.AddScoped<AccountEmailService>();
 
 // Application Services
 builder.Services.AddSingleton<JwtTokenFactory>();
