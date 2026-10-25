@@ -23,6 +23,11 @@ public class PasswordResetService
     public const string ResetPath = "redefinir-senha";
 
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(1);
+    /// <summary>
+    /// Link gerado pela administração para mandar por WhatsApp (SPEC-20261023-1206): 24 h, porque a mensagem pode ser
+    /// lida bem depois. Continua de uso único e gerar outro revoga o anterior.
+    /// </summary>
+    public static readonly TimeSpan AdminLinkLifetime = TimeSpan.FromHours(24);
     // Segunda camada de proteção (a primeira é o limite por IP): um atacante com vários
     // IPs não bombardeia a caixa de entrada de uma vítima.
     private static readonly TimeSpan Cooldown = TimeSpan.FromMinutes(5);
@@ -119,10 +124,11 @@ public class PasswordResetService
     /// <summary>
     /// Gera o token (revogando os pendentes e limpando os velhos) sem enviar nada.
     /// Devolve o token puro e o link completo — ponto de reaproveitamento para
-    /// "gerar link e mandar por WhatsApp" na administração.
+    /// "gerar link e mandar por WhatsApp" na administração. <paramref name="lifetime"/> = validade do link
+    /// (null = 1 h do fluxo público; a administração usa <see cref="AdminLinkLifetime"/>).
     /// </summary>
     public async Task<(string Token, string Link)> IssueTokenAsync(
-        Guid userId, string? ip, string? userAgent, CancellationToken ct = default)
+        Guid userId, string? ip, string? userAgent, CancellationToken ct = default, TimeSpan? lifetime = null)
     {
         var now = DateTimeOffset.UtcNow;
         var cleanupBefore = now - CleanupAge;
@@ -144,7 +150,7 @@ public class PasswordResetService
         {
             UserId = userId,
             TokenHash = AuthService.HashToken(token),
-            ExpiresAt = now + TokenLifetime,
+            ExpiresAt = now + (lifetime ?? TokenLifetime),
             RequestedIp = Truncate(ip, 45),
             UserAgent = Truncate(userAgent, 300),
         });

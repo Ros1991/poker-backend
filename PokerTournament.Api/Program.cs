@@ -293,6 +293,8 @@ else
     if (!builder.Environment.IsDevelopment() && !hasResendToken)
         Log.Error("RESEND_APITOKEN ausente: nenhum e-mail é enviado (os links de redefinição de senha e de confirmação de e-mail ficam só no log do servidor)");
 }
+// Administração (SPEC-20261023-1206): sem Resend, "Enviar e-mail de redefinição" e "Reenviar confirmação" respondem 409
+builder.Services.AddSingleton(new EmailDeliveryStatus(useResend));
 
 // Login social (SPEC-20261023-1210): Client ID público do Google em Auth:Google:ClientId (default no
 // appsettings.json, sobrescrevível por Auth__Google__ClientId); Auth:Apple:ClientId vazio = Apple desligada (D17).
@@ -333,6 +335,8 @@ builder.Services.AddScoped<PlanService>();
 builder.Services.AddScoped<EmailConfirmationService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<PasswordResetService>();
+// Administração geral (SPEC-20261023-1206): api/v1/admin/users
+builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<DealerAccessService>();
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
