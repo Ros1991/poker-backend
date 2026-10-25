@@ -1,5 +1,6 @@
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
@@ -33,8 +34,7 @@ public class EntryService
 
     public async Task<List<EntryResponse>> GetEntriesAsync(Guid tournamentId, CancellationToken ct = default)
     {
-        var entries = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entries = await _db.EntriesWithPerson()
             .Where(e => e.TournamentId == tournamentId)
             .OrderBy(e => e.RegisteredAt)
             .ToListAsync(ct);
@@ -54,9 +54,8 @@ public class EntryService
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         await LockSeatingAsync(_db, tournamentId, ct);
 
-        var entry = await _db.TournamentEntries
+        var entry = await _db.EntriesWithPerson()
             .Include(e => e.Transactions)
-            .Include(e => e.Person)
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -255,9 +254,8 @@ public class EntryService
         // Libera um lugar: mesma trava da inscrição (MA14). Não desfaz mesa aberta nem devolve quem mudou (MA11)
         await LockSeatingAsync(_db, tournamentId, ct);
 
-        var entry = await _db.TournamentEntries
+        var entry = await _db.EntriesWithPerson()
             .Include(e => e.Transactions)
-            .Include(e => e.Person)
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -620,8 +618,7 @@ public class EntryService
         var tableIds = tables.Select(t => t.Id).ToHashSet();
 
         var newIds = newEntries.Select(e => e.Id).ToHashSet();
-        var playing = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var playing = await _db.EntriesWithPerson()
             .Where(e => e.TournamentId == tournament.Id
                      && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered)))
             .ToListAsync(ct);
@@ -827,8 +824,7 @@ public class EntryService
         if (tournament.RebuyUntilLevel.HasValue && tournament.CurrentLevel > tournament.RebuyUntilLevel)
             throw new DomainException("Período de rebuy encerrado.");
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -882,8 +878,7 @@ public class EntryService
         if (isDouble && !tournament.AddonDoubleAllowed)
             throw new DomainException("Addon duplo não está habilitado neste torneio.");
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -952,8 +947,7 @@ public class EntryService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -1014,8 +1008,7 @@ public class EntryService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -1067,8 +1060,7 @@ public class EntryService
             if (tournament.Status == nameof(TournamentStatus.Finished))
                 throw new DomainException("Torneio já está finalizado.");
 
-            var entry = await _db.TournamentEntries
-                .Include(e => e.Person)
+            var entry = await _db.EntriesWithPerson()
                 .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
                 ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -1229,8 +1221,7 @@ public class EntryService
             string? eliminatedByName = null;
             if (request.EliminatedByEntryId.HasValue)
             {
-                var eliminator = await _db.TournamentEntries
-                    .Include(e => e.Person)
+                var eliminator = await _db.EntriesWithPerson()
                     .FirstOrDefaultAsync(e => e.Id == request.EliminatedByEntryId, ct);
                 eliminatedByName = eliminator?.Person.FullName;
             }
@@ -1263,15 +1254,13 @@ public class EntryService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
         // Prêmio já pago dele ou de quem mudaria de posição (campeão e quem saiu depois dele):
         // recalcular a classificação redistribuiria prêmios já entregues.
-        var allEntries = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var allEntries = await _db.EntriesWithPerson()
             .Where(e => e.TournamentId == tournamentId)
             .ToListAsync(ct);
         var paidPrizeEntryIds = await PaidPrizeEntryIdsAsync(tournamentId, ct);

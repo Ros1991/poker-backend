@@ -1,6 +1,7 @@
 using System.Globalization;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
@@ -50,23 +51,30 @@ public class TournamentService
     public async Task<PaginatedResponse<TournamentResponse>> GetAllAsync(
         Guid homeGameId, int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
+        // Página/tamanho fora da faixa (page 0, negativa ou enorme; pageSize ≤ 0) não chegam ao OFFSET/LIMIT:
+        // antes o PostgreSQL respondia 2201X/2201W e a API dava 500. Além do fim = lista vazia com 200.
+        var paging = Paging.Normalize(page, pageSize);
         var query = _db.Tournaments
             .Include(t => t.HomeGame)
             .Include(t => t.Ranking)
             .Where(t => t.HomeGameId == homeGameId && t.Status != nameof(TournamentStatus.Cancelled))
-            .OrderByDescending(t => t.Date);
+            .OrderByDescending(t => t.Date)
+            .ThenBy(t => t.Id);
 
         var totalCount = await query.CountAsync(ct);
+        if (paging.IsPastEnd(totalCount))
+            return new PaginatedResponse<TournamentResponse>([], paging.Page, paging.PageSize, totalCount);
+
         var items = await query
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
+            .Skip(paging.Skip)
+            .Take(paging.PageSize)
             .ToListAsync(ct);
 
         var mapped = _mapper.Map<List<TournamentResponse>>(items);
         // Todos do mesmo home game: uma leitura de plano (cacheada) por página
         foreach (var item in mapped)
             await _plans.ApplyOwnerPlanAsync(item, ct);
-        return new PaginatedResponse<TournamentResponse>(mapped, page, pageSize, totalCount);
+        return new PaginatedResponse<TournamentResponse>(mapped, paging.Page, paging.PageSize, totalCount);
     }
 
     /// <summary>

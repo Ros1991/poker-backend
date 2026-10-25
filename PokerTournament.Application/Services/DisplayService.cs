@@ -303,7 +303,9 @@ public class DisplayService
             .Select(l => new TvBlindLevel { LevelNumber = l.LevelNumber, DurationMinutes = l.DurationMinutes, IsBreak = l.IsBreak })
             .ToList();
 
-        var entries = await _db.TournamentEntries.AsNoTracking()
+        // IgnoreQueryFilters: e.Person na projeção é INNER JOIN com a pessoa filtrada — o jogador removido do cadastro
+        // sumiria do telão (contagem e lugar); ele continua no torneio com o nome (EntryQueries)
+        var entries = await _db.TournamentEntries.IgnoreQueryFilters().AsNoTracking()
             .Where(e => e.TournamentId == tournamentId)
             .OrderBy(e => e.RegisteredAt)
             .Select(e => new TvEntry
@@ -343,7 +345,7 @@ public class DisplayService
         }
 
         var activeStatus = nameof(EntryStatus.Active);
-        var tables = !showTables ? new List<TvTable>() : await _db.TournamentTables.AsNoTracking()
+        var tables = !showTables ? new List<TvTable>() : await _db.TournamentTables.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.TournamentId == tournamentId && x.IsActive)
             .OrderBy(x => x.TableNumber)
             .Select(x => new TvTable

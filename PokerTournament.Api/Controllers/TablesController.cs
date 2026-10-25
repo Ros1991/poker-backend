@@ -35,7 +35,10 @@ public class TablesController : ControllerBase
     [HttpGet]
     public async Task<ActionResult> GetAll(Guid tournamentId, CancellationToken ct)
     {
+        // IgnoreQueryFilters: jogador removido do cadastro continua na mesa com o nome (EntryQueries) — sem isso o
+        // INNER JOIN com a pessoa filtrada tirava ele da lista e o lugar dele aparecia livre no terminal
         var tables = await _db.TournamentTables
+            .IgnoreQueryFilters()
             .Include(t => t.DealerPerson)
             .Include(t => t.Entries.Where(e => e.Status == nameof(EntryStatus.Active)))
                 .ThenInclude(e => e.Person)
@@ -286,8 +289,7 @@ public class TablesController : ControllerBase
         await using var dbTx = await _db.Database.BeginTransactionAsync(ct);
         await EntryService.LockSeatingAsync(_db, tournamentId, ct);
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == request.EntryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -312,8 +314,7 @@ public class TablesController : ControllerBase
             : null;
 
         // Ocupante = jogador ainda no torneio sentado no lugar de destino
-        var occupant = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var occupant = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.TournamentId == tournamentId
                                    && e.TableId == request.ToTableId
                                    && e.SeatNumber == request.ToSeat
@@ -426,8 +427,7 @@ public class TablesController : ControllerBase
             throw new DomainException("Não há outra mesa ativa para receber os jogadores.");
 
         var activeTableIds = activeTables.Select(t => t.Id).ToList();
-        var seated = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var seated = await _db.EntriesWithPerson()
             .Where(e => e.TournamentId == tournamentId
                      && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered))
                      && e.TableId != null

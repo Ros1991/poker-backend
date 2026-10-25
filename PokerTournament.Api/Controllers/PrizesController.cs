@@ -38,7 +38,9 @@ public class PrizesController : ControllerBase
     [HttpGet]
     public async Task<ActionResult> GetPrizes(Guid tournamentId, CancellationToken ct)
     {
+        // IgnoreQueryFilters: premiado removido do cadastro continua com o nome (EntryQueries)
         var prizes = await _db.TournamentPrizes
+            .IgnoreQueryFilters()
             .Where(p => p.TournamentId == tournamentId)
             .OrderBy(p => p.Position)
             .Select(p => new

@@ -1018,12 +1018,12 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDatabaseName("ix_home_games_not_deleted")
                         .HasFilter("deleted_at IS NULL");
 
-                    b.HasIndex("Name")
-                        .IsUnique()
-                        .HasDatabaseName("ix_home_games_name")
-                        .HasFilter("deleted_at IS NULL");
-
                     b.HasIndex("OwnerId");
+
+                    b.HasIndex("OwnerId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_home_games_owner_name")
+                        .HasFilter("deleted_at IS NULL");
 
                     b.ToTable("home_games", "public");
                 });

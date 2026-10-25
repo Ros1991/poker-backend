@@ -79,7 +79,9 @@ public class TournamentHistoryService
             ?? throw new DomainException("Torneio não encontrado.");
 
         // 1) inscrições do torneio (nomes de jogadores e eliminadores, status para o desfazer)
+        // Com a pessoa removida do cadastro também (EntryQueries): o histórico continua com o nome dela
         var entries = await _db.TournamentEntries
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Include(e => e.Person)
             .Where(e => e.TournamentId == tournamentId)
@@ -265,6 +267,8 @@ public class TournamentHistoryService
                 EntryId = e.EntryId,
                 PlayerName = PlayerOf(e.EntryId),
                 Description = DescribeElimination(e, PlayerOf(e.EliminatedByEntryId)),
+                Position = e.Position,
+                EliminatedByName = PlayerOf(e.EliminatedByEntryId),
                 Amount = null,
                 At = e.EliminatedAt,
                 By = ResolveActor(e.CreatedBy),

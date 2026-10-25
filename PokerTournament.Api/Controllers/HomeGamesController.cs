@@ -2,12 +2,14 @@ using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
+using PokerTournament.Domain.Exceptions;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -96,8 +98,11 @@ public class HomeGamesController : HomeGameScopedControllerBase
         homeGame.PixKey = PixKeyNormalizer.NormalizeForWrite(request.PixKey, request.PixKeyType);
         homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
 
+        // Nome único por dono (trava por dono + checagem; a corrida que escapar cai no índice → mesma mensagem)
+        await HomeGameNames.EnsureAvailableAsync(_db, userId, homeGame.Name, exceptId: null, ct);
+
         _db.HomeGames.Add(homeGame);
-        await _db.SaveChangesAsync(ct);
+        await SaveNameCheckedAsync(homeGame.Name, ct);
         await tx.CommitAsync(ct);
 
         return CreatedAtAction(nameof(GetById), new { id = homeGame.Id },
@@ -109,6 +114,9 @@ public class HomeGamesController : HomeGameScopedControllerBase
         Guid id, [FromBody] CreateHomeGameRequest request, CancellationToken ct)
     {
         var userId = GetUserId();
+
+        // Transação: a checagem do nome único por dono trava o dono até gravar
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
         var homeGame = await _db.HomeGames
             .FirstOrDefaultAsync(h => h.Id == id, ct);
@@ -124,9 +132,27 @@ public class HomeGamesController : HomeGameScopedControllerBase
         // Chave nova no formato do DICT; a MESMA chave antiga que não normaliza fica como está (seção escondida no Mesa)
         homeGame.PixKey = PixKeyNormalizer.NormalizeForUpdate(request.PixKey, request.PixKeyType, currentPixKey);
         homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
-        await _db.SaveChangesAsync(ct);
+        await HomeGameNames.EnsureAvailableAsync(_db, homeGame.OwnerId, homeGame.Name, exceptId: homeGame.Id, ct);
+        await SaveNameCheckedAsync(homeGame.Name, ct);
+        await tx.CommitAsync(ct);
 
         return Ok(await ToResponseAsync(homeGame, ct));
+    }
+
+    /// <summary>
+    /// SaveChanges do criar/editar: a violação do índice (owner_id, name) — corrida que escapou da trava — vira o mesmo
+    /// 400 da checagem, nunca 500.
+    /// </summary>
+    private async Task SaveNameCheckedAsync(string name, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (HomeGameNames.IsDuplicateName(ex))
+        {
+            throw new DomainException(HomeGameNames.DuplicateMessage(name));
+        }
     }
 
     [HttpDelete("{id:guid}")]

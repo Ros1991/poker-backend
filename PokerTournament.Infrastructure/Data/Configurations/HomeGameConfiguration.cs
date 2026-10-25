@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using PokerTournament.Application.Common;
 using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Infrastructure.Data.Configurations;
@@ -54,11 +55,17 @@ public class HomeGameConfiguration : IEntityTypeConfiguration<HomeGame>
             .HasColumnName("owner_id")
             .IsRequired();
 
-        // Unique name where not deleted
-        builder.HasIndex(h => h.Name)
+        // Nome único POR DONO entre os não excluídos (revisão geral do programa, ondas 7–9): donos diferentes podem
+        // repetir o nome; o mesmo dono recebe 400 "Você já tem um home game chamado X." (HomeGamesController, também na
+        // corrida). O índice antigo ix_home_games_name era do banco inteiro e o 2º grupo com o mesmo nome levava 500.
+        builder.HasIndex(h => new { h.OwnerId, h.Name })
             .IsUnique()
             .HasFilter("deleted_at IS NULL")
-            .HasDatabaseName("ix_home_games_name");
+            .HasDatabaseName(HomeGameNames.UniqueOwnerNameIndex);
+
+        // Índice da FK do dono declarado à parte: o composto acima é parcial (deleted_at IS NULL) e não serve às
+        // buscas por dono que incluem os excluídos
+        builder.HasIndex(h => h.OwnerId);
 
         builder.HasIndex(h => h.DeletedAt)
             .HasFilter("deleted_at IS NULL")

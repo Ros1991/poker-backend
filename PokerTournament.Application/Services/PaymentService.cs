@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
@@ -24,8 +25,7 @@ public class PaymentService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -126,8 +126,7 @@ public class PaymentService
     public async Task<EntryResponse> SettleAgainstCostAsync(
         Guid tournamentId, Guid entryId, Guid costExtraId, decimal amount, Guid? createdBy = null, CancellationToken ct = default)
     {
-        var entry = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
@@ -292,8 +291,7 @@ public class PaymentService
     public async Task<PaymentSummaryResponse> GetPaymentSummaryAsync(
         Guid tournamentId, CancellationToken ct = default)
     {
-        var entries = await _db.TournamentEntries
-            .Include(e => e.Person)
+        var entries = await _db.EntriesWithPerson()
             .Where(e => e.TournamentId == tournamentId)
             .OrderBy(e => e.Person.FullName)
             .ToListAsync(ct);

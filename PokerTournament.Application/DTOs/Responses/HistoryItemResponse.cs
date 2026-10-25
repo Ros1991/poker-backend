@@ -24,6 +24,10 @@ public class HistoryItemResponse
     // Aviso para quem PODE desfazer mesmo assim (organizador com token de usuário: rebuy, add-on ou inscrição com o
     // torneio encerrado/cancelado ou prêmio pago — SPEC-20261023-1217, L4); a tela mostra na confirmação. Null = sem aviso.
     public string? UndoWarning { get; set; }
+    // Só na eliminação (Kind == "Elimination"): posição em que saiu e quem eliminou (apelido, senão nome). A confirmação
+    // do desfazer monta a frase com eles ("Desfazer a eliminação de Duda (10º lugar, quem eliminou foi Beto)?").
+    public int? Position { get; set; }
+    public string? EliminatedByName { get; set; }
 }
 
 public class UndoResultResponse

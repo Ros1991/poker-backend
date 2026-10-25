@@ -8,6 +8,7 @@ using PokerTournament.Api.Development;
 using PokerTournament.Api.Http;
 using PokerTournament.Application.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using PokerTournament.Api.Hubs;
@@ -63,7 +64,14 @@ else
 var schemaForMigrations = Environment.GetEnvironmentVariable("DB_SCHEMA") ?? "public";
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString, npg =>
-        npg.MigrationsHistoryTable("__EFMigrationsHistory", schemaForMigrations)));
+            npg.MigrationsHistoryTable("__EFMigrationsHistory", schemaForMigrations))
+        // Falha de comando/gravação/consulta do EF desce para Debug (fora do log): quem decide o nível é quem trata a
+        // exceção. Erro de negócio que vem do banco (ex.: 23505 de nome repetido → 400) fica só no Warning sem stack do
+        // ErrorHandlingMiddleware, e o 500 de verdade sai uma vez só, com o stack, no Error dele.
+        .ConfigureWarnings(w => w.Log(
+            (CoreEventId.SaveChangesFailed, LogLevel.Debug),
+            (CoreEventId.QueryIterationFailed, LogLevel.Debug),
+            (RelationalEventId.CommandError, LogLevel.Debug))));
 
 builder.Services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
 
@@ -439,6 +447,17 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// Log de requisições POR FORA do tratamento de erros (revisão geral do programa, ondas 7–9): registra o status FINAL
+// (400/402/429 de erro de negócio em Information, sem stack). Por dentro, ele via a exceção passar e logava "responded 500"
+// com o stack trace inteiro para toda DomainException. O ErrorHandlingMiddleware loga o erro de negócio como Warning
+// sem stack e a exceção não tratada (500 de verdade) como Error com stack, uma vez só.
+app.UseSerilogRequestLogging(options => options.GetLevel = (http, _, ex) =>
+    // 5xx que o ErrorHandlingMiddleware já registrou (Error com stack) fica em Information aqui: o 500 aparece uma vez
+    // só como erro. 5xx sem esse registro (ou exceção que escapou) continua Error.
+    ex is not null || (http.Response.StatusCode >= 500 && !http.Items.ContainsKey(ErrorHandlingMiddleware.ErrorLoggedItem))
+        ? Serilog.Events.LogEventLevel.Error
+        : Serilog.Events.LogEventLevel.Information);
+
 // Middleware de tratamento de erros
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
@@ -448,8 +467,6 @@ app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "Poker da Galera API v1");
 });
-
-app.UseSerilogRequestLogging();
 
 app.UseCors("AllowFrontend");
 

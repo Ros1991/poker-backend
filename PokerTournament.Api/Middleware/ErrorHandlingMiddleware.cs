@@ -9,6 +9,12 @@ public class ErrorHandlingMiddleware
 {
     public const string InternalErrorMessage = "Algo deu errado do nosso lado. Tente de novo em instantes.";
 
+    /// <summary>
+    /// Marca em HttpContext.Items de que o 500 já foi registrado aqui (Error com stack): o log de requisições do Serilog,
+    /// que fica POR FORA deste middleware, registra a linha "responded 500" em Information para o erro aparecer uma vez só.
+    /// </summary>
+    public const string ErrorLoggedItem = "poker.error-logged";
+
     private readonly RequestDelegate _next;
     private readonly ILogger<ErrorHandlingMiddleware> _logger;
 
@@ -57,6 +63,7 @@ public class ErrorHandlingMiddleware
         if (statusCode == HttpStatusCode.InternalServerError)
         {
             _logger.LogError(exception, "Erro não tratado: {Message}", exception.Message);
+            context.Items[ErrorLoggedItem] = true;
         }
         else
         {

@@ -115,8 +115,11 @@ public class AdminUserService
     public async Task<PaginatedResponse<AdminUserListItemResponse>> ListAsync(
         string? search, int page, int pageSize, string? plan, string? status, bool requested, CancellationToken ct = default)
     {
-        page = Math.Max(1, page);
-        pageSize = pageSize <= 0 ? DefaultPageSize : Math.Min(pageSize, MaxPageSize);
+        // Página fora da faixa não pode estourar o OFFSET: (page - 1) * pageSize em int virava negativo com page enorme
+        // e o PostgreSQL respondia 2201X (500). Página limitada e offset em long (Paging); além do fim = lista vazia com 200.
+        var paging = Paging.Normalize(page, pageSize, DefaultPageSize, MaxPageSize);
+        page = paging.Page;
+        pageSize = paging.PageSize;
         var now = DateTimeOffset.UtcNow;
 
         var query = _db.Users.AsNoTracking().AsQueryable();
@@ -161,12 +164,15 @@ public class AdminUserService
         }
 
         var total = await query.CountAsync(ct);
+        if (paging.IsPastEnd(total))
+            return new PaginatedResponse<AdminUserListItemResponse>([], page, pageSize, total);
+
         var ordered = requested
             ? query.OrderByDescending(u => u.RequestedPlanAt).ThenBy(u => u.FullName).ThenBy(u => u.Id)
             : query.OrderBy(u => u.FullName).ThenBy(u => u.Email).ThenBy(u => u.Id);
 
         var rows = await ordered
-            .Skip((page - 1) * pageSize)
+            .Skip(paging.Skip)
             .Take(pageSize)
             .Select(u => new
             {
