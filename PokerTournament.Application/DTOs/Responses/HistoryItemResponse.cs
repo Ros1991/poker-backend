@@ -21,6 +21,9 @@ public class HistoryItemResponse
     public string? UndoneBy { get; set; }
     public bool CanUndo { get; set; }
     public string? UndoBlockedReason { get; set; }
+    // Aviso para quem PODE desfazer mesmo assim (organizador com token de usuário: rebuy, add-on ou inscrição com o
+    // torneio encerrado/cancelado ou prêmio pago — SPEC-20261023-1217, L4); a tela mostra na confirmação. Null = sem aviso.
+    public string? UndoWarning { get; set; }
 }
 
 public class UndoResultResponse

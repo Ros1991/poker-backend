@@ -3,7 +3,9 @@ namespace PokerTournament.Application.Common;
 /// <summary>
 /// WhatsApp/celular brasileiro no servidor (SPEC-20261023-1213, F18) — mesma regra do front (<c>utils/phone.ts</c>):
 /// guarda só os dígitos locais (DDD + número, 10 ou 11 dígitos), sem o 55 do país. <see cref="ToE164Br"/> dá o
-/// formato internacional (55 + DDD + número) para quem precisa dele (WhatsApp da conta, chave PIX de celular).
+/// formato internacional (55 + DDD + número) para quem precisa dele (WhatsApp da conta).
+/// A chave PIX de celular NÃO passa por aqui: ela usa o <see cref="Pix.PixKeyNormalizer"/> (SPEC-20261023-1218), que é
+/// mais estrito (DDDs da Anatel, 9 obrigatório, fixo recusado, gravado como +55…). Não unificar as duas regras.
 /// </summary>
 public static class PhoneNumbers
 {

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Exceptions;
@@ -241,7 +242,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
 
         // Custos padrão (CP7): null/ausente = manter; lista (inclusive vazia) = substituir tudo.
         // Dealer: DefaultHasDealer null = manter os dois campos. Valida tudo antes de mexer na estrutura.
-        var newDefaultCosts = request.DefaultCosts is null ? null : BuildDefaultCosts(request.DefaultCosts);
+        // Chaves PIX já gravadas: a MESMA chave antiga que não normaliza pode voltar como está (SPEC-20261023-1218)
+        var currentPixKeys = structure.DefaultCosts.Select(c => c.PixKey).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        var newDefaultCosts = request.DefaultCosts is null ? null : BuildDefaultCosts(request.DefaultCosts, currentPixKeys);
         var (keepHasDealer, keepDealerFee) = request.DefaultHasDealer is null
             ? (structure.DefaultHasDealer, structure.DefaultDealerFee)
             : ResolveDealer(request.DefaultHasDealer.Value, request.DefaultDealerFee);
@@ -331,11 +334,14 @@ public class BlindStructuresController : HomeGameScopedControllerBase
 
     /// <summary>
     /// Valida e converte a lista do pedido (CP1, passo 3 da SPEC-20261023-1215): descrição obrigatória até 200,
-    /// valor &gt; 0 e &lt;= 99.999,99, "para quem" e chave PIX até 200, no máximo 20 itens. Textos com Trim();
-    /// vazios viram null. SortOrder = posição na lista. Erro → DomainException (400 com a mensagem).
+    /// valor &gt; 0 e &lt;= 99.999,99, "para quem" até 200, no máximo 20 itens. Textos com Trim(); vazios viram null.
+    /// SortOrder = posição na lista. Erro → DomainException (400 com a mensagem).
+    /// Chave PIX (SPEC-20261023-1218): gravada no formato do DICT (PixKeyNormalizer; pixKeyType do item é a escolha
+    /// da tela) e o tipo gravado é o da chave normalizada. Na edição, uma chave de <paramref name="currentPixKeys"/>
+    /// (já gravada na estrutura) que não normaliza volta como está.
     /// </summary>
     private static List<BlindStructureDefaultCost> BuildDefaultCosts(
-        List<CreateBlindStructureRequest.DefaultCostItem> items)
+        List<CreateBlindStructureRequest.DefaultCostItem> items, IReadOnlySet<string>? currentPixKeys = null)
     {
         if (items.Count > MaxDefaultCosts)
             throw new DomainException("Uma estrutura pode ter no máximo 20 custos padrão.");
@@ -354,14 +360,14 @@ public class BlindStructuresController : HomeGameScopedControllerBase
                 throw new DomainException("O valor de cada custo padrão pode ser no máximo R$ 99.999,99.");
 
             var beneficiary = NullIfEmpty(item.Beneficiary);
-            var pixKey = NullIfEmpty(item.PixKey);
-            var pixKeyType = NullIfEmpty(item.PixKeyType);
             if (beneficiary is { Length: > 200 })
                 throw new DomainException("O campo \"Para quem\" do custo padrão pode ter no máximo 200 caracteres.");
+            var typedPixKey = NullIfEmpty(item.PixKey);
+            var pixKey = PixKeyNormalizer.NormalizeForUpdate(item.PixKey, item.PixKeyType,
+                typedPixKey is not null && currentPixKeys?.Contains(typedPixKey) == true ? typedPixKey : null);
             if (pixKey is { Length: > 200 })
                 throw new DomainException("A chave PIX do custo padrão pode ter no máximo 200 caracteres.");
-            if (pixKeyType is { Length: > 50 })
-                throw new DomainException("O tipo da chave PIX do custo padrão pode ter no máximo 50 caracteres.");
+            var pixKeyType = PixKeyNormalizer.TypeOf(pixKey);
 
             result.Add(new BlindStructureDefaultCost
             {

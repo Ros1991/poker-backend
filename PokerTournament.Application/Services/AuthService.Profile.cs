@@ -96,6 +96,12 @@ public partial class AuthService
             LastLoginAt = user.LastLoginAt,
             OwnedHomeGames = owned,
             EffectivePlan = PlanCatalog.EffectivePlan(user),
+            // Boas-vindas (SPEC-20261023-1212, AuthService.Onboarding.cs)
+            NeedsOnboarding = user.OnboardedAt is null,
+            OnboardedAt = user.OnboardedAt,
+            PhotoFromProvider = IsProviderPhoto(user.PhotoUrl),
+            RequestedPlan = user.RequestedPlan,
+            RequestedPlanAt = user.RequestedPlanAt,
         };
     }
 

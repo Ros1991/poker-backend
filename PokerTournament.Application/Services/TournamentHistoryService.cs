@@ -43,8 +43,34 @@ public class TournamentHistoryService
         _plans = plans;
     }
 
+    public const string UndoWarningFinished =
+        "O torneio já terminou. Desfazer muda o bolo depois do fim; confira a premiação.";
+
+    public const string UndoWarningCancelled =
+        "O torneio foi cancelado. Desfazer muda o bolo de um torneio cancelado.";
+
+    public const string UndoWarningPrizePaid =
+        "Já há prêmio pago. Desfazer diminui o bolo, mas o prêmio entregue não muda; confira a premiação.";
+
+    /// <summary>
+    /// Aviso do organizador (SPEC-20261023-1217, L4) nos casos em que o dealer fica bloqueado
+    /// (<see cref="EntryService.MoneyUndoBlockedReason"/>): torneio encerrado, cancelado ou com prêmio pago. Null = sem aviso.
+    /// </summary>
+    public static string? MoneyUndoWarning(string tournamentStatus, bool anyPrizePaid) =>
+        tournamentStatus == nameof(TournamentStatus.Finished) ? UndoWarningFinished
+        : tournamentStatus == nameof(TournamentStatus.Cancelled) ? UndoWarningCancelled
+        : anyPrizePaid ? UndoWarningPrizePaid
+        : null;
+
+    /// <summary>
+    /// Histórico do torneio (ou de um jogador). <paramref name="asOrganizer"/> = token de usuário (dono, membro ou Admin
+    /// que passou no TenantAccessFilter — SPEC-20261023-1217, L4): rebuy, add-on e inscrição NÃO ficam bloqueados pelo
+    /// torneio encerrado/cancelado nem por prêmio pago; o item vem com <c>UndoWarning</c>. A regra "inscrição só sem nada
+    /// valendo", a eliminação (prêmio pago dele ou de quem ficou à frente, campeão), o cadeado de plano do pagamento e o
+    /// prêmio pago valem para todos. Sem <paramref name="asOrganizer"/> (token de dealer), exatamente como antes.
+    /// </summary>
     public async Task<List<HistoryItemResponse>> GetHistoryAsync(
-        Guid tournamentId, Guid? entryId = null, CancellationToken ct = default)
+        Guid tournamentId, Guid? entryId = null, bool asOrganizer = false, CancellationToken ct = default)
     {
         var tournamentStatus = await _db.Tournaments
             .Where(t => t.Id == tournamentId)
@@ -151,6 +177,10 @@ public class TournamentHistoryService
             || entries.Any(e => EntryService.IsPrizePaid(e, paidPrizeEntryIds))
             || await _db.TournamentPrizes.AnyAsync(p => p.TournamentId == tournamentId && p.Paid, ct);
         var moneyUndoBlocked = EntryService.MoneyUndoBlockedReason(tournamentStatus, anyPrizePaid);
+        // Organizador (token de usuário): o bloqueio do dealer vira aviso na confirmação (L4)
+        var moneyUndoWarning = asOrganizer ? MoneyUndoWarning(tournamentStatus, anyPrizePaid) : null;
+        if (asOrganizer)
+            moneyUndoBlocked = null;
         // Estorno de pagamento/abatimento é financeiro: sem Payments no plano do dono (Mesa) não se desfaz por aqui
         // (o POST .../undo responde 402, como o estorno de payments/*)
         var paymentsUndoAllowed = await _plans.HasFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, ct);
@@ -183,6 +213,8 @@ public class TournamentHistoryService
                     item.CanUndo = !undone && t.EntryId.HasValue && moneyUndoBlocked is null;
                     if (!undone && moneyUndoBlocked is not null)
                         item.UndoBlockedReason = moneyUndoBlocked;
+                    if (item.CanUndo)
+                        item.UndoWarning = moneyUndoWarning;
                     break;
 
                 case nameof(TransactionType.Payment):
@@ -209,6 +241,8 @@ public class TournamentHistoryService
                             && !liveEliminationByEntry.Contains(entry.Id);
                         if (!item.CanUndo)
                             item.UndoBlockedReason = EntryService.UndoRegistrationBlockedMessage;
+                        else
+                            item.UndoWarning = moneyUndoWarning;
                     }
                     break;
 
@@ -294,11 +328,13 @@ public class TournamentHistoryService
     /// desfazem por aqui. Pagamento/abatimento é estorno (financeiro): exige o recurso Payments no plano do dono
     /// → 402 feature_locked, igual ao POST payments/entries/{id}/{paymentId}/reverse (o token de dealer nunca
     /// pula; o Admin do sistema passa <paramref name="bypassPlanLimits"/>). Rebuy/add-on/inscrição continuam sem
-    /// checagem de plano (invariante da SPEC-20261023-1205).
+    /// checagem de plano (invariante da SPEC-20261023-1205). <paramref name="asOrganizer"/> (token de usuário —
+    /// SPEC-20261023-1217, L4) pula o bloqueio de torneio encerrado/prêmio pago em rebuy/add-on/inscrição; a regra
+    /// "inscrição só sem nada valendo" (UndoRegistrationAsync) continua valendo para todos.
     /// </summary>
     public async Task<string> UndoTransactionAsync(
         Guid tournamentId, Guid transactionId, Guid? undoneBy = null, bool bypassPlanLimits = false,
-        CancellationToken ct = default)
+        bool asOrganizer = false, CancellationToken ct = default)
     {
         var tx = await _db.Transactions
             .AsNoTracking()
@@ -315,8 +351,10 @@ public class TournamentHistoryService
             throw new DomainException("Inscrição não encontrada.");
         var entryId = tx.EntryId.Value;
 
-        // Rebuy/add-on/inscrição mexem no bolo: bloqueados com torneio encerrado ou prêmio pago
-        if (tx.Type is nameof(TransactionType.Rebuy) or nameof(TransactionType.Addon) or nameof(TransactionType.BuyIn))
+        // Rebuy/add-on/inscrição mexem no bolo: bloqueados com torneio encerrado ou prêmio pago — para o dealer; o
+        // organizador desfaz mesmo assim (a tela mostrou o aviso na confirmação)
+        if (!asOrganizer
+            && tx.Type is nameof(TransactionType.Rebuy) or nameof(TransactionType.Addon) or nameof(TransactionType.BuyIn))
             await _entryService.EnsureMoneyUndoAllowedAsync(tournamentId, ct);
 
         // Estorno pelo histórico = estorno de payments/*: sem Payments no plano do dono → 402
@@ -368,6 +406,34 @@ public class TournamentHistoryService
     // ---------- textos ----------
 
     private static string Money(decimal value) => $"R$ {value.ToString("N2", PtBrNumber)}";
+
+    /// <summary>
+    /// Texto da atividade PlayerRemoved quando o organizador EXCLUI a inscrição (SPEC-20261023-1217, L5):
+    /// "Inscrição excluída: Ana (buy-in, 2 rebuys e add-on · R$ 350,00 · pagou R$ 100,00)". O resumo vai na própria
+    /// descrição porque a exclusão apaga de vez as transações do jogador (e, com elas, as linhas dele no histórico).
+    /// Montar ANTES de apagar (usa os contadores da inscrição e as transações carregadas). Exige Person carregado.
+    /// </summary>
+    public static string DeletedEntryDescription(TournamentEntry entry)
+    {
+        var parts = new List<string> { "buy-in" };
+        if (entry.RebuyCount > 0)
+            parts.Add(entry.RebuyCount == 1 ? "1 rebuy" : $"{entry.RebuyCount} rebuys");
+        if (entry.AddonPurchased)
+            parts.Add(entry.AddonDouble ? "add-on duplo" : "add-on");
+        var what = parts.Count == 1
+            ? parts[0]
+            : string.Join(", ", parts.Take(parts.Count - 1)) + " e " + parts[^1];
+
+        var paid = (entry.Transactions ?? new List<Transaction>())
+            .Where(t => t.ReversedAt == null
+                     && (t.Type == nameof(TransactionType.Payment) || t.Type == nameof(TransactionType.Settlement)))
+            .Sum(t => t.Amount);
+
+        var summary = $"{what} · {Money(entry.TotalDue)}";
+        if (paid > 0)
+            summary += $" · pagou {Money(paid)}";
+        return $"Inscrição excluída: {EntryService.PlayerDisplayName(entry.Person)} ({summary})";
+    }
 
     private static string DescribeTransaction(Transaction t)
     {

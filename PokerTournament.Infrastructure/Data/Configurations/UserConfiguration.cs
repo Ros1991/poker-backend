@@ -83,6 +83,15 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.HasIndex(u => u.Plan)
             .HasDatabaseName("ix_users_plan");
 
+        // Boas-vindas (SPEC-20261023-1212): primeiro acesso concluído e plano pago pedido (só a intenção)
+        builder.Property(u => u.OnboardedAt).HasColumnName("onboarded_at");
+
+        builder.Property(u => u.RequestedPlan)
+            .HasColumnName("requested_plan")
+            .HasMaxLength(20);
+
+        builder.Property(u => u.RequestedPlanAt).HasColumnName("requested_plan_at");
+
         // Unique email
         builder.HasIndex(u => u.Email)
             .IsUnique()

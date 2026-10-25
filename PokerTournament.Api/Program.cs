@@ -343,6 +343,7 @@ builder.Services.AddScoped<TimerService>();
 builder.Services.AddScoped<TournamentHistoryService>();
 builder.Services.AddScoped<RankingLeaderboardService>();
 builder.Services.AddScoped<RankingSlugService>();
+builder.Services.AddScoped<PixKeyBackfillService>();
 // Fotos de pessoa e logo do clube no disco (SPEC-20261023-1213): pasta única de uploads para gravar e servir
 var uploadsOptions = new UploadsOptions(UploadsOptions.ResolveRoot(builder.Environment.ContentRootPath));
 builder.Services.AddSingleton(uploadsOptions);
@@ -413,6 +414,24 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex)
     {
         Log.Error(ex, "Erro ao gerar endereço público dos rankings");
+    }
+}
+
+// Chaves PIX já gravadas no formato do DICT (SPEC-20261023-1218): idempotente, original em audit_logs
+// (PixKeyNormalized); chave fora de formato fica intacta e vira Warning sem o valor. Bloco separado pelo mesmo motivo
+// do anterior: não pode depender do Migrate().
+using (var scope = app.Services.CreateScope())
+{
+    try
+    {
+        var pixKeys = scope.ServiceProvider.GetRequiredService<PixKeyBackfillService>();
+        var (changed, invalid) = await pixKeys.NormalizeExistingAsync();
+        if (changed > 0 || invalid > 0)
+            Log.Information("Chaves PIX: {Changed} normalizada(s), {Invalid} fora de formato (mantidas)", changed, invalid);
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Erro ao normalizar as chaves PIX gravadas");
     }
 }
 

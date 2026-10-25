@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 
@@ -16,6 +17,9 @@ namespace PokerTournament.Api.Controllers;
 /// Plano (SPEC-20261023-1205): criar home game e adicionar membro conferem o limite do plano (402
 /// home_games_limit / members_limit; Admin do sistema ignora); as respostas levam ownerPlan e
 /// planFeatures (plano efetivo do dono). Editar, excluir e mexer em membro existente não conferem plano.
+/// Chave PIX (SPEC-20261023-1218): criar/editar gravam a chave no formato do DICT (PixKeyNormalizer; fora de formato →
+/// 400 com a mensagem) e o beneficiário com Trim (vazio → null), sem checagem de plano. O PUT copia o pedido inteiro:
+/// o frontend manda chave, beneficiário e os três valores padrão para não apagá-los.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -89,6 +93,8 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         var homeGame = _mapper.Map<HomeGame>(request);
         homeGame.OwnerId = userId;
+        homeGame.PixKey = PixKeyNormalizer.NormalizeForWrite(request.PixKey, request.PixKeyType);
+        homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
 
         _db.HomeGames.Add(homeGame);
         await _db.SaveChangesAsync(ct);
@@ -113,7 +119,11 @@ public class HomeGamesController : HomeGameScopedControllerBase
         if (homeGame.OwnerId != userId)
             return Forbid();
 
+        var currentPixKey = homeGame.PixKey;
         _mapper.Map(request, homeGame);
+        // Chave nova no formato do DICT; a MESMA chave antiga que não normaliza fica como está (seção escondida no Mesa)
+        homeGame.PixKey = PixKeyNormalizer.NormalizeForUpdate(request.PixKey, request.PixKeyType, currentPixKey);
+        homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
         await _db.SaveChangesAsync(ct);
 
         return Ok(await ToResponseAsync(homeGame, ct));
@@ -334,6 +344,9 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         return NoContent();
     }
+
+    private static string? NullIfEmpty(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
 public class AddHomeGameMemberRequest

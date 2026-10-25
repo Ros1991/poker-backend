@@ -47,13 +47,14 @@ public class TournamentDirectController : ControllerBase
         return Ok(result);
     }
 
-    // PIX do dia é financeiro (D3): 402 feature_locked no Mesa
+    // PIX do dia é financeiro (D3): 402 feature_locked no Mesa. A chave é gravada no formato do DICT
+    // (SPEC-20261023-1218): fora de formato → 400 com a mensagem; pixKeyType desempata CPF × celular.
     [RequirePlanFeature(PlanFeature.Payments)]
     [HttpPut("{tournamentId:guid}/pix-key")]
     public async Task<ActionResult<TournamentResponse>> UpdatePixKey(
         Guid tournamentId, [FromBody] UpdatePixKeyRequest request, CancellationToken ct)
     {
-        var result = await _tournamentService.UpdatePixKeyAsync(tournamentId, request.PixKey, ct);
+        var result = await _tournamentService.UpdatePixKeyAsync(tournamentId, request.PixKey, request.PixKeyType, ct);
         return Ok(result);
     }
 }

@@ -29,7 +29,7 @@ public class TournamentHistoryController : ControllerBase
     public async Task<ActionResult<List<HistoryItemResponse>>> Get(
         Guid tournamentId, [FromQuery] Guid? entryId, CancellationToken ct)
     {
-        var result = await _historyService.GetHistoryAsync(tournamentId, entryId, ct);
+        var result = await _historyService.GetHistoryAsync(tournamentId, entryId, IsOrganizer(), ct);
         return Ok(result);
     }
 
@@ -41,8 +41,9 @@ public class TournamentHistoryController : ControllerBase
         // Estorno de pagamento/abatimento exige Payments no plano do dono (402); só o Admin do sistema pula — o token
         // de dealer (escopo de torneio) nunca
         var systemAdmin = User.IsInRole("Admin") && string.IsNullOrEmpty(User.FindFirst(TokenKinds.ClaimType)?.Value);
+        // Organizador desfaz rebuy/add-on/inscrição mesmo com torneio encerrado ou prêmio pago (SPEC-20261023-1217, L4)
         var message = await _historyService.UndoTransactionAsync(
-            tournamentId, transactionId, GetUserId(), bypassPlanLimits: systemAdmin, ct: ct);
+            tournamentId, transactionId, GetUserId(), bypassPlanLimits: systemAdmin, asOrganizer: IsOrganizer(), ct: ct);
         return Ok(new UndoResultResponse { Message = message });
     }
 
@@ -54,6 +55,14 @@ public class TournamentHistoryController : ControllerBase
         var message = await _historyService.UndoEliminationAsync(tournamentId, eliminationId, GetUserId(), ct);
         return Ok(new UndoResultResponse { Message = message });
     }
+
+    /// <summary>
+    /// Token de usuário (sem o claim "kind"; mesma regra do IsScopedToken de EntriesController): quem chega aqui com
+    /// ele já passou no TenantAccessFilter (dono, membro ou Admin). Token de dealer (QR) → false. A regra é pelo tipo
+    /// de token, não pela tela: o organizador logado no terminal tem as mesmas permissões do painel.
+    /// </summary>
+    private bool IsOrganizer() =>
+        string.IsNullOrEmpty(User.FindFirst(TokenKinds.ClaimType)?.Value);
 
     private Guid GetUserId()
     {

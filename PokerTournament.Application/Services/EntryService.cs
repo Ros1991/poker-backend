@@ -42,8 +42,13 @@ public class EntryService
         return _mapper.Map<List<EntryResponse>>(entries);
     }
 
+    /// <summary>
+    /// "Excluir inscrição" do painel (só organizador). Deixa rastro no histórico (SPEC-20261023-1217, L5): atividade
+    /// PlayerRemoved "Inscrição excluída: Fulano (buy-in, 2 rebuys e add-on · R$ 350,00)" com quem excluiu, gravada
+    /// junto com a exclusão. O resumo é montado antes de apagar, porque as transações do jogador somem com ela.
+    /// </summary>
     public async Task DeleteEntryAsync(
-        Guid tournamentId, Guid entryId, CancellationToken ct = default)
+        Guid tournamentId, Guid entryId, Guid? deletedBy = null, CancellationToken ct = default)
     {
         // Tira alguém da ocupação das mesas: mesma trava da inscrição (SPEC-20261023-1214, MA14)
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
@@ -51,10 +56,22 @@ public class EntryService
 
         var entry = await _db.TournamentEntries
             .Include(e => e.Transactions)
+            .Include(e => e.Person)
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
 
+        var description = TournamentHistoryService.DeletedEntryDescription(entry);
+
         await RemoveEntryAndAdjustTotalsAsync(tournamentId, entry, ct);
+
+        _db.TournamentActivities.Add(new TournamentActivity
+        {
+            TournamentId = tournamentId,
+            EntryId = entryId, // sem FK: a inscrição some, o registro fica
+            Type = nameof(TournamentActivityType.PlayerRemoved),
+            Description = description.Length > 1000 ? description[..997] + "..." : description,
+            CreatedBy = deletedBy
+        });
 
         await _db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);

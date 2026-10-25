@@ -19,6 +19,8 @@ public class CreateTournamentRequest
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;
     public string? ResponsiblePixKey { get; set; }
+    // SPEC-20261023-1218: tipo escolhido da chave do dia (null = detectar); a chave é normalizada no TournamentService
+    public string? ResponsiblePixKeyType { get; set; }
     public decimal? StaffAmount { get; set; }
     public string? RankingContribMode { get; set; }
     public decimal? RankingContribValue { get; set; }

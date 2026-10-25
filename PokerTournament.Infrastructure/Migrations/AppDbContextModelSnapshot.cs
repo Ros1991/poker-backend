@@ -2434,6 +2434,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("character varying(100)")
                         .HasColumnName("nickname");
 
+                    b.Property<DateTimeOffset?>("OnboardedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("onboarded_at");
+
                     b.Property<string>("PasswordHash")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)")
@@ -2484,6 +2488,15 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<DateTimeOffset?>("RefreshTokenExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("refresh_token_expires_at");
+
+                    b.Property<string>("RequestedPlan")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("requested_plan");
+
+                    b.Property<DateTimeOffset?>("RequestedPlanAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_plan_at");
 
                     b.Property<string>("Role")
                         .IsRequired()

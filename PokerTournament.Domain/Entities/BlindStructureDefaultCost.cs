@@ -15,7 +15,7 @@ public class BlindStructureDefaultCost : BaseEntity
     /// <summary>"Para quem" (opcional).</summary>
     public string? Beneficiary { get; set; }
     public string? PixKey { get; set; }
-    /// <summary>Sem campo na tela (o sistema não pede tipo de chave em lugar nenhum); só repassado.</summary>
+    /// <summary>Tipo da chave normalizada (nome do PixKeyType; SPEC-20261023-1218) — derivado da chave, nunca do pedido.</summary>
     public string? PixKeyType { get; set; }
     /// <summary>Posição na lista da estrutura (0, 1, 2…).</summary>
     public int SortOrder { get; set; }

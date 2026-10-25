@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Pix;
 using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
@@ -122,9 +123,11 @@ public class TournamentService
     /// Atualiza a chave PIX do dia. Editável em qualquer status exceto Cancelled —
     /// ajuste operacional (a chave pode mudar durante o torneio), não config de Draft.
     /// PIX é financeiro: o PUT pix-key exige o recurso Payments (402 no Mesa, via [RequirePlanFeature]).
+    /// SPEC-20261023-1218: grava a chave no formato do DICT (PixKeyNormalizer); fora de formato → 400 com a mensagem
+    /// da tabela; 11 dígitos que podem ser CPF ou celular exigem <paramref name="pixKeyType"/>; vazio remove.
     /// </summary>
     public async Task<TournamentResponse> UpdatePixKeyAsync(
-        Guid id, string? pixKey, CancellationToken ct = default)
+        Guid id, string? pixKey, string? pixKeyType = null, CancellationToken ct = default)
     {
         var tournament = await _db.Tournaments
             .Include(t => t.HomeGame)
@@ -135,7 +138,7 @@ public class TournamentService
         if (tournament.Status == nameof(TournamentStatus.Cancelled))
             throw new DomainException("Torneio cancelado não pode ser alterado.");
 
-        tournament.ResponsiblePixKey = string.IsNullOrWhiteSpace(pixKey) ? null : pixKey.Trim();
+        tournament.ResponsiblePixKey = PixKeyNormalizer.NormalizeForWrite(pixKey, pixKeyType);
         await _db.SaveChangesAsync(ct);
 
         return await ToResponseAsync(tournament, ct);
@@ -183,6 +186,11 @@ public class TournamentService
         tournament.CurrentLevel = 1;
         if (!await _plans.HasFeatureForHomeGameAsync(homeGameId, PlanFeature.Payments, ct))
             StripPaidFields(tournament);
+        else
+            // PIX do dia no formato do DICT (SPEC-20261023-1218). Só com Payments: no Mesa a chave já foi zerada e
+            // não é validada (campo escondido não pode dar 400).
+            tournament.ResponsiblePixKey = PixKeyNormalizer.NormalizeForWrite(
+                request.ResponsiblePixKey, request.ResponsiblePixKeyType);
         // Custos padrão da estrutura (CP6/CP19): só com o recurso CostExtras do DONO (Mesa não recebe; com
         // Plans:Enforce = false, recebe). No catálogo CostExtras e Payments andam juntos.
         var copyDefaultCosts = await _plans.HasFeatureForHomeGameAsync(homeGameId, PlanFeature.CostExtras, ct);
@@ -235,6 +243,7 @@ public class TournamentService
                 CostType = "Staff",
                 Beneficiary = homeGame.PixBeneficiary ?? homeGame.Name,
                 PixKey = homeGame.PixKey,
+                PixKeyType = PixKeyNormalizer.TypeOf(homeGame.PixKey),
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             });
         }
@@ -304,6 +313,12 @@ public class TournamentService
             tournament.RankingContribMode = kept.RankingContribMode;
             tournament.RankingContribValue = kept.RankingContribValue;
             tournament.ResponsiblePixKey = kept.ResponsiblePixKey;
+        }
+        else
+        {
+            // SPEC-20261023-1218: chave nova no formato do DICT; a MESMA chave antiga que não normaliza fica como está
+            tournament.ResponsiblePixKey = PixKeyNormalizer.NormalizeForUpdate(
+                request.ResponsiblePixKey, request.ResponsiblePixKeyType, kept.ResponsiblePixKey);
         }
 
         // If the blind structure changed (or was set when previously null), copy levels
@@ -394,6 +409,7 @@ public class TournamentService
                 CostType = "Staff",
                 Beneficiary = homeGame?.PixBeneficiary ?? homeGame?.Name,
                 PixKey = homeGame?.PixKey,
+                PixKeyType = PixKeyNormalizer.TypeOf(homeGame?.PixKey),
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             });
         }
@@ -436,7 +452,9 @@ public class TournamentService
                 Amount = c.Amount,
                 Beneficiary = c.Beneficiary,
                 PixKey = c.PixKey,
-                PixKeyType = c.PixKeyType,
+                // Tipo derivado da chave (SPEC-20261023-1218): a chave já foi normalizada ao salvar a estrutura (ou
+                // no boot); uma chave antiga fora de formato é copiada como está, sem tipo
+                PixKeyType = PixKeyNormalizer.TypeOf(c.PixKey),
                 CostType = nameof(CostType.Default),
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
                 CreatedBy = createdBy,

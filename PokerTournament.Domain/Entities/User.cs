@@ -22,6 +22,12 @@ public class User : BaseEntity
     public string? PlanNote { get; set; }
     public DateTimeOffset? PlanUpdatedAt { get; set; }
     public Guid? PlanUpdatedBy { get; set; }
+    // Boas-vindas (SPEC-20261023-1212): null = a conta ainda não passou pelas boas-vindas (o site leva a /boas-vindas).
+    // Contas anteriores às boas-vindas (inclusive as fundadoras) foram marcadas pela migration.
+    public DateTimeOffset? OnboardedAt { get; set; }
+    /// <summary>Plano pago pedido nas boas-vindas (Clube|Liga). Só registra a intenção: o plano muda pelo Admin.</summary>
+    public string? RequestedPlan { get; set; }
+    public DateTimeOffset? RequestedPlanAt { get; set; }
     public string? RefreshToken { get; set; }
     public DateTimeOffset? RefreshTokenExpiresAt { get; set; }
 

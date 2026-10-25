@@ -142,7 +142,8 @@ public class EntriesController : ControllerBase
     public async Task<ActionResult> Delete(
         Guid tournamentId, Guid entryId, CancellationToken ct)
     {
-        await _entryService.DeleteEntryAsync(tournamentId, entryId, ct);
+        // Quem excluiu vai na atividade "Inscrição excluída" do histórico (SPEC-20261023-1217, L5)
+        await _entryService.DeleteEntryAsync(tournamentId, entryId, GetUserId(), ct);
         return NoContent();
     }
 

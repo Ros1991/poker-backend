@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Pix;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Api.Filters;
@@ -77,6 +78,10 @@ public class CostExtrasController : ControllerBase
     {
         var userId = GetUserId();
         var costExtra = _mapper.Map<CostExtra>(request);
+        // Chave no formato do DICT (SPEC-20261023-1218): pixKeyType do pedido é a ESCOLHA da tela; o gravado é o tipo
+        // da chave normalizada (o pedido nunca grava o tipo direto)
+        costExtra.PixKey = PixKeyNormalizer.NormalizeForWrite(request.PixKey, request.PixKeyType);
+        costExtra.PixKeyType = PixKeyNormalizer.TypeOf(costExtra.PixKey);
         costExtra.TournamentId = tournamentId;
         costExtra.PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending);
         costExtra.CreatedBy = userId;
@@ -108,9 +113,14 @@ public class CostExtrasController : ControllerBase
         // manda todos os campos do custo (SPEC-20261023-1215, CP9).
         var preservedCostType = costExtra.CostType;
         var preservedIsCashBox = costExtra.IsCashBox;
+        var currentPixKey = costExtra.PixKey;
         _mapper.Map(request, costExtra);
         costExtra.CostType = preservedCostType;
         costExtra.IsCashBox = preservedIsCashBox;
+        // SPEC-20261023-1218: chave nova no formato do DICT (a MESMA chave antiga que não normaliza fica como está);
+        // tipo = o da chave gravada
+        costExtra.PixKey = PixKeyNormalizer.NormalizeForUpdate(request.PixKey, request.PixKeyType, currentPixKey);
+        costExtra.PixKeyType = PixKeyNormalizer.TypeOf(costExtra.PixKey);
         await _db.SaveChangesAsync(ct);
 
         await RecomputeTournamentFinancials(tournamentId, ct);

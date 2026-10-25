@@ -66,7 +66,8 @@ public class MeController : ControllerBase
     // ---------------------------------------------------------------- dados e foto
 
     /// <summary>Perfil da conta: nome, apelido, WhatsApp (55 + DDD + número), foto, e-mail (só leitura), tem senha?,
-    /// quantos home games é dona (bloqueia excluir) e o plano efetivo.</summary>
+    /// quantos home games é dona (bloqueia excluir), o plano efetivo e — boas-vindas (SPEC-20261023-1212) —
+    /// <c>needsOnboarding</c>, a foto veio do Google? e o plano pago pedido.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(ProfileResponse), StatusCodes.Status200OK)]
     public async Task<ActionResult<ProfileResponse>> GetProfile(CancellationToken ct)
@@ -117,6 +118,25 @@ public class MeController : ControllerBase
         var (profile, previous) = await _auth.RemovePhotoAsync(userId, Ip, UserAgent, ct);
         DeleteLocalPhoto(previous);
         return Ok(profile);
+    }
+
+    // ---------------------------------------------------------------- boas-vindas (SPEC-20261023-1212)
+
+    /// <summary>
+    /// Conclui as boas-vindas do primeiro acesso: <c>{ nickname?, whatsapp?, useProviderPhoto?, plan }</c>. Campo
+    /// ausente = não mexe ("Fazer depois" manda só o plano). <c>plan</c> Mesa começa na hora; Clube/Liga só gravam o
+    /// pedido (o plano muda pelo Admin) e o site abre o WhatsApp do suporte. Devolve o perfil com
+    /// <c>needsOnboarding = false</c>. Validação → 400 com a mensagem.
+    /// </summary>
+    [HttpPost("onboarding")]
+    [ProducesResponseType(typeof(ProfileResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ProfileResponse>> CompleteOnboarding(
+        [FromBody] OnboardingRequest request, CancellationToken ct)
+    {
+        if (UserId is not { } userId)
+            return NotFound(new { message = NotFoundMessage });
+        return Ok(await _auth.CompleteOnboardingAsync(userId, request, Ip, UserAgent, ct));
     }
 
     // ---------------------------------------------------------------- senha

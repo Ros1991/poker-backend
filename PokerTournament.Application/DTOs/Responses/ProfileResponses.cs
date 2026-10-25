@@ -25,6 +25,16 @@ public class ProfileResponse
     public int OwnedHomeGames { get; set; }
     /// <summary>Plano efetivo (atalho para "Meu plano").</summary>
     public string EffectivePlan { get; set; } = "Mesa";
+
+    // Boas-vindas (SPEC-20261023-1212)
+    /// <summary>Verdadeiro = a conta ainda não passou pelas boas-vindas: o site leva a <c>/boas-vindas</c>.</summary>
+    public bool NeedsOnboarding { get; set; }
+    public DateTimeOffset? OnboardedAt { get; set; }
+    /// <summary>A foto atual veio do Google (URL externa), não de um envio pelo site: as boas-vindas perguntam se fica.</summary>
+    public bool PhotoFromProvider { get; set; }
+    /// <summary>Plano pago pedido (Clube|Liga) e quando — o plano em si só muda pelo Admin.</summary>
+    public string? RequestedPlan { get; set; }
+    public DateTimeOffset? RequestedPlanAt { get; set; }
 }
 
 /// <summary><c>GET/POST/DELETE me/logins</c>: formas de entrar na conta.</summary>
