@@ -44,8 +44,9 @@ public class PixKeyBackfillService
             .ToListAsync(ct);
         foreach (var t in tournaments)
         {
+            // Texto em branco (registros antigos) = sem chave: vira null, igual à gravação de hoje
             var result = PixKeyNormalizer.Normalize(t.ResponsiblePixKey);
-            if (!result.Ok || result.Key is null)
+            if (!result.Ok)
             {
                 invalid++;
                 Warn("Tournament", t.Id);
@@ -66,7 +67,7 @@ public class PixKeyBackfillService
         foreach (var h in homeGames)
         {
             var result = PixKeyNormalizer.Normalize(h.PixKey);
-            if (!result.Ok || result.Key is null)
+            if (!result.Ok)
             {
                 invalid++;
                 Warn("HomeGame", h.Id);
@@ -140,9 +141,10 @@ public class PixKeyBackfillService
         var result = PixKeyNormalizer.Normalize(key, chosen);
         if (!result.Ok && chosen is not null)
             result = PixKeyNormalizer.Normalize(key);
-        if (!result.Ok || result.Key is null)
+        if (!result.Ok)
             return (false, null, null);
-        return (true, result.Key, result.Type?.ToString());
+        // Em branco = sem chave (null) e sem tipo
+        return (true, result.Key, result.Key is null ? null : result.Type?.ToString());
     }
 
     private void Warn(string entity, Guid id) =>
