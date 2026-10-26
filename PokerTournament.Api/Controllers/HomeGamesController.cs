@@ -17,8 +17,8 @@ namespace PokerTournament.Api.Controllers;
 /// A rota é só {id} (sem {homeGameId}), então o TenantAccessFilter não age aqui: as leituras
 /// por id conferem dono/membro/Admin via <see cref="HomeGameScopedControllerBase"/>.
 /// Plano (SPEC-20261023-1205): criar home game e adicionar membro conferem o limite do plano (402
-/// home_games_limit / members_limit; Admin do sistema ignora); as respostas levam ownerPlan e
-/// planFeatures (plano efetivo do dono). Editar, excluir e mexer em membro existente não conferem plano.
+/// home_games_limit / members_limit — o Admin do sistema também segue, SPEC-20261026-1126); as respostas levam
+/// ownerPlan e planFeatures (plano efetivo do dono). Editar, excluir e mexer em membro existente não conferem plano.
 /// Chave PIX (SPEC-20261023-1218): criar/editar gravam a chave no formato do DICT (PixKeyNormalizer; fora de formato →
 /// 400 com a mensagem) e o beneficiário com Trim (vazio → null), sem checagem de plano. O PUT copia o pedido inteiro:
 /// o frontend manda chave, beneficiário e os três valores padrão para não apagá-los.
@@ -91,7 +91,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         // Limite de home games como dono (trava por dono na transação: dois cliques não passam juntos)
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        await _plans.EnsureCanCreateHomeGameAsync(userId, bypass: IsAdmin, ct: ct);
+        await _plans.EnsureCanCreateHomeGameAsync(userId, ct);
 
         var homeGame = _mapper.Map<HomeGame>(request);
         homeGame.OwnerId = userId;
@@ -155,26 +155,67 @@ public class HomeGamesController : HomeGameScopedControllerBase
         }
     }
 
-    [HttpDelete("{id:guid}")]
-    public async Task<ActionResult> Delete(Guid id, CancellationToken ct)
+    /// <summary>
+    /// O que some junto com o home game (SPEC-20261026-1126) — torneios, jogadores, rankings, membros — e o torneio em
+    /// andamento que impede a exclusão. Só o dono e o Admin do sistema (membro administrador não exclui).
+    /// </summary>
+    [HttpGet("{id:guid}/deletion-summary")]
+    public async Task<ActionResult<HomeGameDeletionSummaryResponse>> GetDeletionSummary(
+        Guid id, [FromServices] HomeGameDeletionService deletion, CancellationToken ct)
     {
-        var userId = GetUserId();
+        var access = await CanDeleteAsync(id, ct);
+        if (access is not null)
+            return access;
 
-        var homeGame = await _db.HomeGames
-            .FirstOrDefaultAsync(h => h.Id == id, ct);
-
-        if (homeGame is null)
-            return NotFound(new { message = "Home game não encontrado." });
-
-        if (homeGame.OwnerId != userId)
-            return Forbid();
-
-        homeGame.IsActive = false;
-        homeGame.DeletedAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
-        return NoContent();
+        var summary = await deletion.GetSummaryAsync(id, ct);
+        return summary is null ? HomeGameNotFound() : Ok(summary);
     }
+
+    /// <summary>
+    /// Exclui o home game (SPEC-20261026-1126): dono ou Admin do sistema, com o nome digitado no corpo
+    /// ({ "confirmName": "..." }, sem diferenciar maiúsculas e ignorando espaços nas pontas). Exclusão lógica em cascata
+    /// (torneios, jogadores, rankings; membros saem; TVs e dealers desconectados; AuditLog HomeGameDeleted) — ver
+    /// <see cref="HomeGameDeletionService"/>. 404 inexistente/já excluído; 403 quem não é dono nem Admin (membro,
+    /// outro grupo; o token de dealer nem chega aqui); 400 nome vazio/diferente ou torneio em andamento; 204 excluído.
+    /// </summary>
+    [HttpDelete("{id:guid}")]
+    public async Task<ActionResult> Delete(
+        Guid id,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] DeleteHomeGameRequest? request,
+        [FromServices] HomeGameDeletionService deletion,
+        CancellationToken ct)
+    {
+        var access = await CanDeleteAsync(id, ct);
+        if (access is not null)
+            return access;
+
+        var deleted = await deletion.DeleteAsync(
+            id, request?.ConfirmName, GetUserId(), IsAdmin,
+            PokerTournament.Api.Http.ClientIp.Resolve(HttpContext),
+            Request.Headers.UserAgent.ToString() is { Length: > 0 } ua ? ua : null,
+            ct);
+        return deleted is null ? HomeGameNotFound() : NoContent();
+    }
+
+    // Excluir: 404 se não existe (ou já foi excluído); 403 se quem chama não é o dono nem o Admin do sistema
+    private async Task<ActionResult?> CanDeleteAsync(Guid id, CancellationToken ct)
+    {
+        var owner = await _db.HomeGames.AsNoTracking()
+            .Where(h => h.Id == id)
+            .Select(h => (Guid?)h.OwnerId)
+            .FirstOrDefaultAsync(ct);
+        if (owner is null)
+            return HomeGameNotFound();
+        var userId = GetUserId();
+        if (owner == userId || IsAdmin)
+            return null;
+        // Membro (mesmo administrador) vê o motivo; quem é de outro grupo recebe o 403 de sempre
+        return await _db.HomeGameMembers.AnyAsync(m => m.HomeGameId == id && m.UserId == userId, ct)
+            ? new ObjectResult(new { message = "Só o dono do home game pode excluí-lo." }) { StatusCode = 403 }
+            : Forbidden();
+    }
+
+    private NotFoundObjectResult HomeGameNotFound() => NotFound(new { message = "Home game não encontrado." });
 
     /// <summary>
     /// Logo do clube (SPEC-20261023-1213, ajuste do orquestrador): aparece no telão e no ranking público no plano
@@ -269,7 +310,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
         if (exists)
             return Conflict(new { message = "Usuário já é membro deste home game." });
 
-        await _plans.EnsureCanAddMemberAsync(id, bypass: IsAdmin, ct: ct);
+        await _plans.EnsureCanAddMemberAsync(id, ct);
 
         // Vínculo só com jogador/dealer DESTE home game (pessoa apagada não conta: filtro de soft delete)
         if (request.PersonId is { } personId

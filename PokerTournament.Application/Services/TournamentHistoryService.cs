@@ -330,14 +330,14 @@ public class TournamentHistoryService
     /// (estorno) ou inscrição (só sem nada valendo). Rebuy/add-on/inscrição ficam bloqueados com o
     /// torneio encerrado ou prêmio pago (EnsureMoneyUndoAllowedAsync). Prêmio e reembolso não se
     /// desfazem por aqui. Pagamento/abatimento é estorno (financeiro): exige o recurso Payments no plano do dono
-    /// → 402 feature_locked, igual ao POST payments/entries/{id}/{paymentId}/reverse (o token de dealer nunca
-    /// pula; o Admin do sistema passa <paramref name="bypassPlanLimits"/>). Rebuy/add-on/inscrição continuam sem
+    /// → 402 feature_locked, igual ao POST payments/entries/{id}/{paymentId}/reverse (ninguém pula: nem o token de
+    /// dealer nem o Admin do sistema — SPEC-20261026-1126). Rebuy/add-on/inscrição continuam sem
     /// checagem de plano (invariante da SPEC-20261023-1205). <paramref name="asOrganizer"/> (token de usuário —
     /// SPEC-20261023-1217, L4) pula o bloqueio de torneio encerrado/prêmio pago em rebuy/add-on/inscrição; a regra
     /// "inscrição só sem nada valendo" (UndoRegistrationAsync) continua valendo para todos.
     /// </summary>
     public async Task<string> UndoTransactionAsync(
-        Guid tournamentId, Guid transactionId, Guid? undoneBy = null, bool bypassPlanLimits = false,
+        Guid tournamentId, Guid transactionId, Guid? undoneBy = null,
         bool asOrganizer = false, CancellationToken ct = default)
     {
         var tx = await _db.Transactions
@@ -363,7 +363,7 @@ public class TournamentHistoryService
 
         // Estorno pelo histórico = estorno de payments/*: sem Payments no plano do dono → 402
         if (tx.Type is nameof(TransactionType.Payment) or nameof(TransactionType.Settlement))
-            await _plans.EnsureFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, bypassPlanLimits, ct: ct);
+            await _plans.EnsureFeatureForTournamentAsync(tournamentId, PlanFeature.Payments, ct: ct);
 
         switch (tx.Type)
         {

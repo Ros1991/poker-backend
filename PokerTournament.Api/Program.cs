@@ -346,6 +346,7 @@ builder.Services.AddScoped<PasswordResetService>();
 // Administração geral (SPEC-20261023-1206): api/v1/admin/users
 builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<DealerAccessService>();
+builder.Services.AddScoped<HomeGameDeletionService>(); // SPEC-20261026-1126: excluir home game em cascata
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
 builder.Services.AddScoped<EntryService>();

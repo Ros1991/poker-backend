@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc.Filters;
-using PokerTournament.Application.Common;
 using PokerTournament.Application.Plans;
 using PokerTournament.Application.Services;
 
@@ -28,8 +27,9 @@ public sealed class RequirePlanFeatureAttribute : Attribute
 /// "seu plano permite?"). Resolve o {tournamentId}/{homeGameId} da rota como o TenantAccessFilter —
 /// inclusive torneio/home game excluído (IgnoreQueryFilters no PlanService: ele continua tendo dono);
 /// id que nunca existiu passa e o controller responde 404.
-/// Admin do sistema pula; token de dealer (QR) NUNCA pula — é assim que pagamentos/mesas pelo
-/// terminal caem no 402 num torneio cujo dono está no Mesa. Desligado com Plans:Enforce = false.
+/// Ninguém pula (SPEC-20261026-1126): nem o Admin do sistema (segue o plano do dono do home game como qualquer
+/// conta) nem o token de dealer (QR) — é assim que pagamentos/mesas pelo terminal caem no 402 num torneio cujo dono
+/// está no Mesa. Desligado só com Plans:Enforce = false.
 /// </summary>
 public class PlanFeatureFilter : IAsyncActionFilter
 {
@@ -48,13 +48,6 @@ public class PlanFeatureFilter : IAsyncActionFilter
         var user = context.HttpContext.User;
         // Anônimo: deixa o pipeline de autenticação decidir (os endpoints com o atributo são [Authorize])
         if (!plans.Enforce || user.Identity?.IsAuthenticated != true)
-        {
-            await next();
-            return;
-        }
-
-        var scopedToken = !string.IsNullOrEmpty(user.FindFirst(TokenKinds.ClaimType)?.Value);
-        if (!scopedToken && user.IsInRole("Admin"))
         {
             await next();
             return;

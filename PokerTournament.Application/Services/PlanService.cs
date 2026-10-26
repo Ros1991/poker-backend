@@ -21,9 +21,11 @@ namespace PokerTournament.Application.Services;
 /// rebuy, add-on, eliminação, desfazer, timer, status, edição, exclusão, histórico) passa por aqui.
 /// Queda de plano nunca apaga nada.
 ///
-/// Toda recusa é <see cref="PlanLimitException"/> (HTTP 402). Todas as checagens retornam cedo com
-/// <c>Plans:Enforce = false</c> (chave de emergência; <c>Plans__Enforce=false</c> no ambiente) ou com
-/// <c>bypass: true</c> (Admin do sistema — nunca o token de dealer).
+/// Toda recusa é <see cref="PlanLimitException"/> (HTTP 402). Todas as checagens retornam cedo só com
+/// <c>Plans:Enforce = false</c> (chave de emergência; <c>Plans__Enforce=false</c> no ambiente).
+/// SPEC-20261026-1126: o Admin do sistema segue o plano como qualquer conta — não existe mais exceção de plano
+/// (no clube dele vale o plano dele; no clube de outra pessoa, o plano do dono). Para criar mais home games, o
+/// Admin muda o próprio plano na Administração.
 /// </summary>
 public class PlanService
 {
@@ -173,9 +175,9 @@ public class PlanService
     /// (o controller responde 404). <paramref name="message"/> troca a mensagem padrão.
     /// </summary>
     public async Task EnsureFeatureForHomeGameAsync(
-        Guid homeGameId, PlanFeature feature, bool bypass = false, string? message = null, CancellationToken ct = default)
+        Guid homeGameId, PlanFeature feature, string? message = null, CancellationToken ct = default)
     {
-        if (bypass || !Enforce)
+        if (!Enforce)
             return;
         var plan = await GetOwnerPlanForHomeGameAsync(homeGameId, ct);
         if (plan is not null && !PlanCatalog.Get(plan).Has(feature))
@@ -184,9 +186,9 @@ public class PlanService
 
     /// <summary>Recurso exclusivo no torneio (plano do dono do home game dele): sem ele → 402 feature_locked.</summary>
     public async Task EnsureFeatureForTournamentAsync(
-        Guid tournamentId, PlanFeature feature, bool bypass = false, string? message = null, CancellationToken ct = default)
+        Guid tournamentId, PlanFeature feature, string? message = null, CancellationToken ct = default)
     {
-        if (bypass || !Enforce)
+        if (!Enforce)
             return;
         var plan = await GetOwnerPlanForTournamentAsync(tournamentId, ct);
         if (plan is not null && !PlanCatalog.Get(plan).Has(feature))
@@ -207,9 +209,9 @@ public class PlanService
     /// contra MaxOwnedHomeGames → 402 home_games_limit. Dentro de uma transação, trava por dono
     /// (dois cliques simultâneos não passam juntos).
     /// </summary>
-    public async Task EnsureCanCreateHomeGameAsync(Guid userId, bool bypass = false, CancellationToken ct = default)
+    public async Task EnsureCanCreateHomeGameAsync(Guid userId, CancellationToken ct = default)
     {
-        if (bypass || !Enforce)
+        if (!Enforce)
             return;
 
         await LockAsync($"owner:{userId}", ct);
@@ -239,9 +241,9 @@ public class PlanService
     /// (o detalhe fica no GET me/plan do dono).
     /// </summary>
     public async Task EnsureCanCreateTournamentAsync(
-        Guid homeGameId, bool bypass = false, Guid? callerId = null, CancellationToken ct = default)
+        Guid homeGameId, Guid? callerId = null, CancellationToken ct = default)
     {
-        if (bypass || !Enforce)
+        if (!Enforce)
             return;
 
         var owner = await GetHomeGameOwnerAsync(homeGameId, ct);
@@ -281,9 +283,9 @@ public class PlanService
     /// Novo membro no home game (plano do dono): conta os membros (além do dono) contra
     /// MaxMembersPerHomeGame → 402 members_limit. Dentro de uma transação, trava por home game.
     /// </summary>
-    public async Task EnsureCanAddMemberAsync(Guid homeGameId, bool bypass = false, CancellationToken ct = default)
+    public async Task EnsureCanAddMemberAsync(Guid homeGameId, CancellationToken ct = default)
     {
-        if (bypass || !Enforce)
+        if (!Enforce)
             return;
 
         var owner = await GetHomeGameOwnerAsync(homeGameId, ct);
@@ -318,8 +320,8 @@ public class PlanService
     /// <summary>
     /// Plano da conta logada: gravado, efetivo, vencimento, origem, nota, limites e recursos do plano
     /// efetivo, uso (home games, torneios nos últimos 7 dias + quando libera o próximo, membros por
-    /// home game) e o catálogo. Null = conta inexistente. Para Admin (que ignora limites) e com
-    /// Plans:Enforce = false, nextAllowedAt sai nulo: nada vai bloquear a criação.
+    /// home game) e o catálogo. Null = conta inexistente. Com Plans:Enforce = false, nextAllowedAt sai nulo:
+    /// nada vai bloquear a criação. O Admin do sistema recebe os mesmos limites de qualquer conta (SPEC-20261026-1126).
     /// </summary>
     public async Task<MyPlanResponse?> GetMyPlanAsync(Guid userId, CancellationToken ct = default)
     {
@@ -329,7 +331,7 @@ public class PlanService
 
         var effective = PlanCatalog.EffectivePlan(user);
         var definition = PlanCatalog.Get(effective);
-        var limitsApply = Enforce && user.Role != nameof(UserRole.Admin);
+        var limitsApply = Enforce;
 
         var homeGames = await _db.HomeGames.AsNoTracking()
             .Where(h => h.OwnerId == userId)

@@ -68,9 +68,9 @@ public class DealerAccessService
         "O terminal do dealer por QR não está liberado neste torneio: é um recurso a partir do plano " +
         $"{PlanCatalog.MinimumPlanFor(PlanFeature.DealerQr)}. Avise o organizador.";
 
-    // D5 nos caminhos anônimos do aparelho (pedido e emissão do token): sem bypass de Admin
+    // D5 nos caminhos anônimos do aparelho (pedido e emissão do token); ninguém tem exceção de plano (SPEC-20261026-1126)
     private Task EnsureDealerQrAsync(Guid tournamentId, CancellationToken ct) =>
-        _plans.EnsureFeatureForTournamentAsync(tournamentId, PlanFeature.DealerQr, bypass: false, message: PlanLockedMessage, ct: ct);
+        _plans.EnsureFeatureForTournamentAsync(tournamentId, PlanFeature.DealerQr, message: PlanLockedMessage, ct: ct);
 
     // ------------------------------------------------------------ QR (organizador)
 
@@ -150,6 +150,51 @@ public class DealerAccessService
         await _db.SaveChangesAsync(ct);
         MarkRevoked(dropped);
     }
+
+    /// <summary>
+    /// Exclusão do home game (SPEC-20261026-1126): revoga os QRs de todos os <paramref name="tournamentIds"/> e
+    /// encerra os pedidos (aprovados viram Revoked, pendentes viram Rejected) — mesma regra do <see cref="RevokeAsync"/>,
+    /// mas em UPDATE direto (sem disputa de xmin com o "último acesso" que o terminal grava) e SEM gravar o cache:
+    /// roda dentro da transação de quem chama, que depois do commit passa <c>DroppedRequestIds</c> para
+    /// <see cref="ForgetRevokedRequests"/>.
+    /// </summary>
+    public async Task<(int Accesses, int Requests, List<Guid> DroppedRequestIds)> RevokeForTournamentsAsync(
+        IReadOnlyCollection<Guid> tournamentIds, Guid? userId, CancellationToken ct = default)
+    {
+        if (tournamentIds.Count == 0)
+            return (0, 0, []);
+
+        var now = DateTimeOffset.UtcNow;
+        var accesses = await _db.DealerAccesses
+            .Where(a => tournamentIds.Contains(a.TournamentId) && a.RevokedAt == null)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(a => a.RevokedAt, now)
+                .SetProperty(a => a.UpdatedAt, now), ct);
+
+        var dropped = await _db.DealerRequests
+            .Where(r => tournamentIds.Contains(r.TournamentId) && r.Status == Approved)
+            .Select(r => r.Id)
+            .ToListAsync(ct);
+        var revoked = await _db.DealerRequests
+            .Where(r => tournamentIds.Contains(r.TournamentId) && r.Status == Approved)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(r => r.Status, Revoked)
+                .SetProperty(r => r.DecidedAt, now)
+                .SetProperty(r => r.DecidedBy, userId)
+                .SetProperty(r => r.UpdatedAt, now), ct);
+        var rejected = await _db.DealerRequests
+            .Where(r => tournamentIds.Contains(r.TournamentId) && r.Status == Pending)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(r => r.Status, Rejected)
+                .SetProperty(r => r.DecidedAt, now)
+                .SetProperty(r => r.DecidedBy, userId)
+                .SetProperty(r => r.UpdatedAt, now), ct);
+
+        return (accesses, revoked + rejected, dropped);
+    }
+
+    /// <summary>Depois do commit da revogação em lote: o terminal desses pedidos cai na próxima requisição.</summary>
+    public void ForgetRevokedRequests(IEnumerable<Guid> requestIds) => MarkRevoked(requestIds);
 
     // ------------------------------------------------------ pedido (aparelho, anônimo)
 

@@ -36,7 +36,7 @@ public class PublicRankingsController : ControllerBase
         if (key.Length == 0 || key.Length > MaxSlugLength)
             return NotFound(new { message = "Ranking não encontrado." });
 
-        var cacheKey = $"public-ranking:{key}";
+        var cacheKey = RankingLeaderboardService.PublicCacheKey(key);
         if (!_cache.TryGetValue(cacheKey, out PublicRankingResponse? response))
         {
             response = await _leaderboard.GetPublicBySlugAsync(key, ct);

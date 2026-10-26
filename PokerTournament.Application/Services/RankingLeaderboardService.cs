@@ -16,6 +16,12 @@ namespace PokerTournament.Application.Services;
 /// </summary>
 public class RankingLeaderboardService
 {
+    /// <summary>
+    /// Chave do cache (30 s) da página pública /r/{slug} no PublicRankingsController. A exclusão do home game
+    /// (SPEC-20261026-1126) tira as entradas dos rankings excluídos na hora: o link público passa a dar 404 já.
+    /// </summary>
+    public static string PublicCacheKey(string slug) => $"public-ranking:{slug.Trim().ToLowerInvariant()}";
+
     // PaidOut também pontua: pagar o prêmio pelo endpoint de pagamento não pode
     // tirar o jogador da etapa (antes ele sumia e o nº de jogadores da etapa caía).
     private static readonly string[] ScoredStatuses =

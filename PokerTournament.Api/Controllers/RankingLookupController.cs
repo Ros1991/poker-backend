@@ -13,7 +13,7 @@ namespace PokerTournament.Api.Controllers;
 /// Sem tenant na rota o TenantAccessFilter não age: cada ação confere o home game do ranking
 /// (dono/membro/Admin). A página pública continua por slug em PublicRankingsController.
 /// Ranking de temporada é recurso do plano pago (SPEC-20261023-1205): depois do acesso, o plano do
-/// dono do home game do ranking precisa ter Rankings (402 feature_locked; Admin passa) — como o
+/// dono do home game do ranking precisa ter Rankings (402 feature_locked; o Admin também — SPEC-20261026-1126) — como o
 /// [RequirePlanFeature] de rankings/* aninhado, que aqui não acha home game na rota.
 /// </summary>
 [ApiController]
@@ -46,7 +46,7 @@ public class RankingsController : HomeGameScopedControllerBase
         // Antes da geração de slug: quem não tem acesso não dispara escrita
         if (!await CanAccessAsync(ranking.HomeGameId, ct))
             return Forbidden();
-        await _plans.EnsureFeatureForHomeGameAsync(ranking.HomeGameId, PlanFeature.Rankings, bypass: IsAdmin, ct: ct);
+        await _plans.EnsureFeatureForHomeGameAsync(ranking.HomeGameId, PlanFeature.Rankings, ct: ct);
 
         // Rede de segurança: se o backfill do boot falhou (ou o ranking veio de uma
         // instância antiga durante o deploy), gera o endereço público ao abrir a tela.
@@ -93,7 +93,7 @@ public class RankingsController : HomeGameScopedControllerBase
 
         if (!await CanAccessAsync(ranking.HomeGameId, ct))
             return Forbidden();
-        await _plans.EnsureFeatureForHomeGameAsync(ranking.HomeGameId, PlanFeature.Rankings, bypass: IsAdmin, ct: ct);
+        await _plans.EnsureFeatureForHomeGameAsync(ranking.HomeGameId, PlanFeature.Rankings, ct: ct);
 
         return Ok(await _leaderboard.GetLeaderboardAsync(ranking, ct));
     }

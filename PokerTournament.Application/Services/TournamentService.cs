@@ -166,8 +166,8 @@ public class TournamentService
 
     /// <summary>
     /// Cria o torneio. Limite do plano do dono (SPEC-20261023-1205): no Mesa, 1 torneio criado a cada
-    /// 7 dias (402 tournaments_per_week com nextAllowedAt); o Admin do sistema passa
-    /// <paramref name="bypassPlanLimits"/> = true. Sem o recurso Payments (Mesa) o torneio nasce sem
+    /// 7 dias (402 tournaments_per_week com nextAllowedAt) — vale também para o Admin do sistema (SPEC-20261026-1126).
+    /// Sem o recurso Payments (Mesa) o torneio nasce sem
     /// custos automáticos de staff/ranking, sem ranking e sem PIX do dia (ver StripPaidFields).
     /// Tudo numa transação com trava por dono: dois cliques simultâneos não criam dois torneios no Mesa.
     /// SPEC-20261023-1215: com a estrutura escolhida, o torneio já nasce com os custos padrão dela (CostType
@@ -175,8 +175,7 @@ public class TournamentService
     /// dono tem o recurso CostExtras (no Mesa nada é copiado); TotalCosts/NetPrizePool na mesma gravação.
     /// </summary>
     public async Task<TournamentResponse> CreateAsync(
-        Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null,
-        bool bypassPlanLimits = false, CancellationToken ct = default)
+        Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null, CancellationToken ct = default)
     {
         var homeGame = await _db.HomeGames
             .FirstOrDefaultAsync(h => h.Id == homeGameId, ct)
@@ -185,7 +184,7 @@ public class TournamentService
 
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         // Quem cria: o 402 de quem não é o dono sai sem o uso/horário dos home games do dono
-        await _plans.EnsureCanCreateTournamentAsync(homeGameId, bypassPlanLimits, createdBy, ct);
+        await _plans.EnsureCanCreateTournamentAsync(homeGameId, createdBy, ct);
 
         var tournament = _mapper.Map<Tournament>(request);
         tournament.HomeGameId = homeGameId;
