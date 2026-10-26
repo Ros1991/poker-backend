@@ -28,6 +28,10 @@ public class PrizeService
         _db = db;
     }
 
+    /// <summary>
+    /// Sugestão de premiação sobre o prize pool líquido (arrecadado − custos). Líquido ≤ 0 devolve 200 com os totais
+    /// e sem distribuição (SPEC-20261026-1907); com líquido positivo, a regra de sempre (múltiplos de R$ 50, sobra no 1º).
+    /// </summary>
     public async Task<PrizeCalculationResponse> CalculatePrizesAsync(
         Guid tournamentId, int? prizeCount = null, CancellationToken ct = default)
     {
@@ -41,11 +45,23 @@ public class PrizeService
 
         var grossPrizePool = tournament.TotalPrizePool;
         var netPrizePool = grossPrizePool - totalCosts;
-
-        if (netPrizePool <= 0)
-            throw new DomainException("Prize pool líquido deve ser positivo.");
-
         var suggestedCount = prizeCount ?? SuggestPrizeCount(tournament.TotalEntries);
+
+        // SPEC-20261026-1907: prize pool zero ou negativo (custos maiores que a arrecadação até agora — torneio
+        // recém-criado com custos padrão) é estado normal, não erro: devolve os totais sem distribuição (Prizes vazio)
+        // e a aba Premiação mostra o estado neutro até a arrecadação passar dos custos.
+        if (netPrizePool <= 0)
+        {
+            return new PrizeCalculationResponse
+            {
+                GrossPrizePool = grossPrizePool,
+                TotalCosts = totalCosts,
+                NetPrizePool = netPrizePool,
+                SuggestedPrizeCount = suggestedCount,
+                Prizes = [],
+                Remainder = 0
+            };
+        }
 
         if (suggestedCount < 2)
             throw new DomainException("Mínimo de 2 premiados.");

@@ -27,6 +27,16 @@ public class EntryResponse
     public int? FinalPosition { get; set; }
     public DateTimeOffset? EliminatedAt { get; set; }
 
+    /// <summary>Inscrição de quem eliminou este jogador (null = não informado, ainda jogando ou eliminação desfeita).</summary>
+    public Guid? EliminatedById { get; set; }
+
+    /// <summary>
+    /// Quantas pessoas este jogador eliminou neste torneio (SPEC-20261026-1908): inscrições eliminadas que apontam esta
+    /// como quem eliminou, eliminação desfeita não conta. Só a lista (GET entries) preenche — contada a partir das
+    /// próprias inscrições carregadas, sem consulta extra por jogador; as respostas de uma inscrição só vêm com 0.
+    /// </summary>
+    public int EliminationsCount { get; set; }
+
     public bool IsReentry { get; set; }
     public int EntryNumber { get; set; }
 

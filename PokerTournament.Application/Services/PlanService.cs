@@ -233,8 +233,8 @@ public class PlanService
 
     /// <summary>
     /// Novo torneio no home game (plano do dono): com TournamentsPer7Days definido (Mesa: 1), conta os
-    /// torneios criados pelos home games do dono nos últimos 7 dias — cancelados e excluídos contam; só o
-    /// rascunho excluído que NUNCA teve inscrição (Tournament.HadEntries) libera a vaga — e lança 402
+    /// torneios criados pelos home games do dono nos últimos 7 dias — cancelado e excluído não contam, o finalizado
+    /// conta sempre (SPEC-20261026-1907, ver TournamentsInWindowAsync) — e lança 402
     /// tournaments_per_week. Para o dono (<paramref name="callerId"/> = dono ou não informado) o 402 traz usage e
     /// nextAllowedAt; para quem não é o dono (membro administrador) sai sem usage/nextAllowedAt e com uma mensagem
     /// genérica — a contagem e o horário são dos home games do dono, inclusive os que o membro não enxerga
@@ -459,18 +459,20 @@ public class PlanService
     // ------------------------------------------------------------------ apoio
 
     /// <summary>
-    /// CreatedAt (crescente) dos torneios que contam na janela de 7 dias dos home games do dono:
-    /// inclusive cancelados, excluídos e de home game excluído; fora só o rascunho excluído que nunca teve
-    /// inscrição. HadEntries é gravado na primeira inscrição e nunca limpo: apagar as inscrições (delete físico)
-    /// antes de excluir o rascunho não devolve a vaga.
+    /// CreatedAt (crescente) dos torneios que contam na janela de 7 dias dos home games do dono (SPEC-20261026-1907):
+    /// cancelado NÃO conta e excluído NÃO conta — salvo o torneio FINALIZADO, que conta sempre (inclusive excluído ou
+    /// de home game excluído): torneio jogado até o fim não devolve a vaga, assim como não pode mais ser cancelado
+    /// (TournamentService). Antes (SPEC-20261023-1205) cancelados e excluídos contavam.
     /// </summary>
     private async Task<List<DateTimeOffset>> TournamentsInWindowAsync(Guid ownerId, CancellationToken ct)
     {
         var since = DateTimeOffset.UtcNow - PlanCatalog.TournamentWindow;
-        var draft = nameof(TournamentStatus.Draft);
+        var cancelled = nameof(TournamentStatus.Cancelled);
+        var finished = nameof(TournamentStatus.Finished);
         return await _db.Tournaments.IgnoreQueryFilters().AsNoTracking()
             .Where(t => t.HomeGame.OwnerId == ownerId && t.CreatedAt >= since
-                && !(t.DeletedAt != null && t.Status == draft && !t.HadEntries))
+                && t.Status != cancelled
+                && (t.DeletedAt == null || t.Status == finished))
             .OrderBy(t => t.CreatedAt)
             .Select(t => t.CreatedAt)
             .ToListAsync(ct);

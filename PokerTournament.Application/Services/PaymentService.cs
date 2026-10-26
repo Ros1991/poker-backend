@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
@@ -11,12 +12,36 @@ namespace PokerTournament.Application.Services;
 
 public class PaymentService
 {
+    // Meio centavo: tolerância das comparações de dinheiro (valores gravados com 2 casas)
+    private const decimal HalfCent = 0.005m;
+
+    // Valores em pt-BR sem depender de ICU/cultura do servidor: R$ 1.234,56 (mesmo formato do TournamentHistoryService)
+    private static readonly NumberFormatInfo PtBrNumber = new()
+    {
+        NumberDecimalSeparator = ",",
+        NumberGroupSeparator = ".",
+        NumberDecimalDigits = 2
+    };
+
     private readonly IAppDbContext _db;
 
     public PaymentService(IAppDbContext db)
     {
         _db = db;
     }
+
+    private static string Money(decimal value) => $"R$ {value.ToString("N2", PtBrNumber)}";
+
+    /// <summary>
+    /// Recusa do pagamento acima do que o destino ainda tem a receber (SPEC-20261026-1906). A tela mostra o mesmo
+    /// "&lt;destino&gt; só recebe mais R$ X" e oferece lançar o restante no caixa ou em outro destino.
+    /// </summary>
+    public static string DestinationLimitMessage(string description, decimal remaining) =>
+        remaining <= HalfCent
+            ? $"{description} já recebeu tudo o que tinha a receber. Lance no caixa ou em outro destino."
+            : $"{description} só recebe mais {Money(remaining)}. Lance o restante no caixa ou em outro destino.";
+
+    private static bool IsMixedMethod(string? method) => method is "Mixed" or "Misto";
 
     public async Task<EntryResponse> RegisterPaymentAsync(
         Guid tournamentId, Guid entryId, CreatePaymentRequest request, Guid? createdBy = null, CancellationToken ct = default)
@@ -32,6 +57,15 @@ public class PaymentService
         if (request.Amount <= 0)
             throw new DomainException("Valor do pagamento deve ser positivo.");
 
+        // Partes do pagamento coerentes com o total: o detalhamento por forma e por destino soma exatamente o pago
+        if (request.PixAmount < 0 || request.CashAmount < 0)
+            throw new DomainException("Os valores de PIX e de dinheiro não podem ser negativos.");
+        if (request.PixAmount > request.Amount + HalfCent)
+            throw new DomainException("O valor do PIX não pode passar do valor do pagamento.");
+        if (IsMixedMethod(request.Method) && (request.PixAmount.HasValue || request.CashAmount.HasValue)
+            && Math.Abs((request.PixAmount ?? 0m) + (request.CashAmount ?? 0m) - request.Amount) > 0.01m)
+            throw new DomainException("No pagamento misto, PIX + dinheiro tem que dar o valor total.");
+
         // Destino do PIX tem que ser um custo deste torneio (o dealer só enxerga o torneio dele)
         CostExtra? pixDestination = null;
         if (request.PixDestinationCostExtraId.HasValue)
@@ -40,6 +74,19 @@ public class PaymentService
                 .FirstOrDefaultAsync(c => c.Id == request.PixDestinationCostExtraId
                                        && c.TournamentId == tournamentId, ct)
                 ?? throw new DomainException("Destino do PIX não pertence a este torneio.");
+        }
+
+        // Limite por destino (SPEC-20261026-1906): um destino que não é o caixa nunca recebe mais do que ainda tem a
+        // receber — senão o excedente "some" das contas (nem no custo, nem no caixa). A tela limita e oferece lançar o
+        // restante no caixa; aqui o servidor recusa (400) o que passar. O crédito no custo segue a regra de sempre:
+        // PIX puro = o valor todo; misto = só a parte PIX (o dinheiro fica no caixa). Concorrência: o xmin do custo
+        // faz o segundo pagamento simultâneo cair em 409.
+        if (pixDestination is { IsCashBox: false } limited)
+        {
+            var credit = request.PixAmount ?? request.Amount;
+            var remaining = limited.Amount - limited.PaidAmount;
+            if (credit > remaining + HalfCent)
+                throw new DomainException(DestinationLimitMessage(limited.Description, Math.Max(0m, remaining)));
         }
 
         var transaction = new Transaction
@@ -318,6 +365,12 @@ public class PaymentService
         return summary;
     }
 
+    /// <summary>
+    /// Destinos do PIX na tela de registrar pagamento (SPEC-20261026-1906): o Caixa (custo marcado como caixa, se
+    /// houver) PRIMEIRO; depois os custos que ainda têm a receber, na ordem de sempre (mais parecido com o que o
+    /// jogador deve; empate = ordem da aba Custos). Custo quitado ou sem nada a receber não aparece — não pode
+    /// receber mais nada. A tela também põe o "Caixa (gestor financeiro)" (sem custo) primeiro.
+    /// </summary>
     public async Task<List<PixSuggestionResponse>> GetPixSuggestionsAsync(
         Guid tournamentId, decimal playerDueAmount, CancellationToken ct = default)
     {
@@ -326,6 +379,7 @@ public class PaymentService
                      && c.PaymentStatus != nameof(Domain.Enums.PaymentStatus.Paid)
                      && !c.IsCashBox)
             .OrderBy(c => c.CreatedAt)
+            .ThenBy(c => c.Description)
             .ToListAsync(ct);
 
         var suggestions = new List<PixSuggestionResponse>();
@@ -333,8 +387,13 @@ public class PaymentService
         foreach (var cost in pendingCosts)
         {
             var pendingAmount = cost.Amount - cost.PaidAmount;
-            var matchScore = 1.0m - Math.Abs(pendingAmount - playerDueAmount)
-                             / Math.Max(pendingAmount, playerDueAmount);
+            if (pendingAmount <= HalfCent) continue;
+
+            // Sem valor do jogador (a tela não manda) o denominador ainda é positivo: pendingAmount > 0
+            var denominator = Math.Max(pendingAmount, playerDueAmount);
+            var matchScore = denominator > 0
+                ? 1.0m - Math.Abs(pendingAmount - playerDueAmount) / denominator
+                : 0m;
 
             suggestions.Add(new PixSuggestionResponse
             {
@@ -344,19 +403,20 @@ public class PaymentService
                 PixKey = cost.PixKey,
                 Beneficiary = cost.Beneficiary,
                 MatchScore = Math.Max(0, matchScore),
-                SuggestedPixAmount = Math.Min(pendingAmount, playerDueAmount)
+                SuggestedPixAmount = Math.Max(0m, Math.Min(pendingAmount, playerDueAmount))
             });
         }
 
+        // OrderByDescending é estável: no empate fica a ordem da aba Custos
         suggestions = suggestions.OrderByDescending(s => s.MatchScore).ToList();
 
-        // Incluir caixa como última opção
+        // Caixa em primeiro (antes era a última opção)
         var cashBox = await _db.CostExtras
             .FirstOrDefaultAsync(c => c.TournamentId == tournamentId && c.IsCashBox, ct);
 
         if (cashBox is not null)
         {
-            suggestions.Add(new PixSuggestionResponse
+            suggestions.Insert(0, new PixSuggestionResponse
             {
                 CostExtraId = cashBox.Id,
                 Description = "Caixa",
@@ -364,10 +424,242 @@ public class PaymentService
                 PixKey = cashBox.PixKey,
                 Beneficiary = cashBox.Beneficiary,
                 MatchScore = 0,
-                SuggestedPixAmount = playerDueAmount - suggestions.Sum(s => s.SuggestedPixAmount)
+                SuggestedPixAmount = Math.Max(0m, playerDueAmount - suggestions.Sum(s => s.SuggestedPixAmount)),
+                IsCashBox = true
             });
         }
 
         return suggestions;
+    }
+
+    // ------------------------------------------------------------------------------------------------------------
+    // Detalhamento financeiro (SPEC-20261026-1906): por forma de pagamento e quem pagou para quem
+    // ------------------------------------------------------------------------------------------------------------
+
+    private const string KindCashBox = "CashBox";
+    private const string KindCost = "Cost";
+    private const string KindRemoved = "Removed";
+
+    private const string MethodPix = "Pix";
+    private const string MethodCash = "Dinheiro";
+    private const string MethodMixed = "Misto";
+    private const string MethodTransfer = "Transferencia";
+    private const string MethodSettlement = "Abatimento";
+    private const string MethodOther = "Outros";
+
+    /// <summary>Forma gravada no lançamento → forma do detalhamento ("Cash" e "Mixed" são nomes antigos/do modal)</summary>
+    private static string NormalizeMethod(string? method) => method switch
+    {
+        "Pix" or "PIX" or "pix" => MethodPix,
+        "Dinheiro" or "Cash" or "dinheiro" => MethodCash,
+        "Mixed" or "Misto" => MethodMixed,
+        "Transferencia" or "Transferência" => MethodTransfer,
+        _ => MethodOther
+    };
+
+    private static string MethodTotalLabel(string method) => method switch
+    {
+        MethodPix => "PIX",
+        MethodCash => "Dinheiro",
+        MethodTransfer => "Transferência",
+        MethodSettlement => "Abatimento",
+        _ => "Outras formas"
+    };
+
+    private static string LineMethodLabel(string method) => method switch
+    {
+        MethodPix => "PIX",
+        MethodCash => "Dinheiro",
+        MethodMixed => "PIX + dinheiro",
+        MethodTransfer => "Transferência",
+        MethodSettlement => "Abatimento",
+        _ => "Outra forma"
+    };
+
+    private sealed record PayerInfo(string PlayerName, string FullName, string? PhotoUrl);
+
+    /// <summary>
+    /// Por forma de pagamento (PIX, dinheiro, transferência, abatimento e outras) e por destino (caixa, cada custo e
+    /// cada abatimento), com a lista de quem pagou (jogador, valor, forma, hora). Mesma regra de crédito do registro:
+    /// abatimento → o valor todo no custo; pagamento com destino custo → PixAmount ?? Amount no custo e o resto (o
+    /// dinheiro do misto) no caixa; sem destino ou destino Caixa → tudo no caixa. Estornados não entram.
+    /// </summary>
+    public async Task<PaymentBreakdownResponse> GetPaymentBreakdownAsync(Guid tournamentId, CancellationToken ct = default)
+        => (await BuildBreakdownAsync(tournamentId, ct)).Breakdown;
+
+    /// <summary>Cards da aba Pagamentos, pela mesma conta do detalhamento (o misto credita o custo só com a parte PIX)</summary>
+    public async Task<PaymentTotalsByMethodResponse> GetTotalsByMethodAsync(Guid tournamentId, CancellationToken ct = default)
+    {
+        var (b, totalDue) = await BuildBreakdownAsync(tournamentId, ct);
+        return new PaymentTotalsByMethodResponse
+        {
+            TotalPix = b.ByMethod.Where(m => m.Method == MethodPix).Sum(m => m.Amount),
+            TotalCash = b.ByMethod.Where(m => m.Method == MethodCash).Sum(m => m.Amount),
+            // Inclui abatimentos: não entram em PIX/Dinheiro, mas creditam um custo
+            TotalToCosts = b.Destinations.Where(d => d.Kind != KindCashBox).Sum(d => d.ReceivedFromPlayers),
+            TotalPending = totalDue - b.TotalPaidByEntries
+        };
+    }
+
+    private async Task<(PaymentBreakdownResponse Breakdown, decimal TotalDue)> BuildBreakdownAsync(
+        Guid tournamentId, CancellationToken ct)
+    {
+        var transactions = await _db.Transactions
+            .AsNoTracking()
+            .Where(t => t.TournamentId == tournamentId
+                     && (t.Type == nameof(TransactionType.Payment)
+                         || t.Type == nameof(TransactionType.Settlement))
+                     && t.ReversedAt == null)
+            .OrderBy(t => t.CreatedAt)
+            .ToListAsync(ct);
+
+        // Pessoa removida do cadastro continua com o nome (EntriesWithPerson ignora o filtro de soft delete)
+        var entries = await _db.EntriesWithPerson()
+            .AsNoTracking()
+            .Where(e => e.TournamentId == tournamentId)
+            .Select(e => new
+            {
+                e.Id,
+                e.TotalDue,
+                e.TotalPaid,
+                e.Person.FullName,
+                e.Person.Nickname,
+                e.Person.PhotoUrl
+            })
+            .ToListAsync(ct);
+        var payers = entries.ToDictionary(
+            e => e.Id,
+            e => new PayerInfo(
+                string.IsNullOrWhiteSpace(e.Nickname) ? e.FullName : e.Nickname!,
+                e.FullName,
+                e.PhotoUrl));
+
+        // Mesma ordem da aba Custos
+        var costs = await _db.CostExtras
+            .AsNoTracking()
+            .Where(c => c.TournamentId == tournamentId)
+            .OrderBy(c => c.CreatedAt)
+            .ThenBy(c => c.Description)
+            .ToListAsync(ct);
+
+        var cashBox = new PaymentDestinationDetail
+        {
+            Kind = KindCashBox,
+            Description = "Caixa (gestor financeiro)"
+        };
+        var costDetails = costs
+            .Where(c => !c.IsCashBox)
+            .Select(c => new PaymentDestinationDetail
+            {
+                Kind = KindCost,
+                CostExtraId = c.Id,
+                Description = c.Description,
+                Beneficiary = c.Beneficiary,
+                CostType = c.CostType,
+                Amount = c.Amount,
+                PaidAmount = c.PaidAmount,
+                Remaining = Math.Max(0m, c.Amount - c.PaidAmount),
+                PaymentStatus = c.PaymentStatus
+            })
+            .ToList();
+        var costById = costDetails.ToDictionary(d => d.CostExtraId!.Value);
+        PaymentDestinationDetail? removed = null;
+
+        var methods = new Dictionary<string, PaymentMethodTotal>();
+        void AddMethod(string method, decimal amount)
+        {
+            if (amount <= 0) return;
+            if (!methods.TryGetValue(method, out var total))
+                methods[method] = total = new PaymentMethodTotal { Method = method, Label = MethodTotalLabel(method) };
+            total.Amount += amount;
+            total.Count++;
+        }
+
+        foreach (var t in transactions)
+        {
+            var payer = t.EntryId is { } entryId && payers.TryGetValue(entryId, out var p) ? p : null;
+            PaymentDestinationLine Line(decimal amount, string method) => new()
+            {
+                TransactionId = t.Id,
+                EntryId = t.EntryId,
+                PlayerName = payer?.PlayerName ?? "Jogador removido",
+                FullName = payer?.FullName,
+                PhotoUrl = payer?.PhotoUrl,
+                Amount = amount,
+                Method = method,
+                MethodLabel = LineMethodLabel(method),
+                IsSettlement = t.Type == nameof(TransactionType.Settlement),
+                CreatedAt = t.CreatedAt
+            };
+
+            if (t.Type == nameof(TransactionType.Settlement))
+            {
+                // Abatimento: sem dinheiro trocar de mãos, o valor todo é do custo abatido
+                AddMethod(MethodSettlement, t.Amount);
+                var target = t.PixDestinationId is { } settled && costById.TryGetValue(settled, out var sd)
+                    ? sd
+                    : removed ??= new PaymentDestinationDetail { Kind = KindRemoved, Description = "Custo excluído" };
+                target.Lines.Add(Line(t.Amount, MethodSettlement));
+                target.SettledAmount += t.Amount;
+                continue;
+            }
+
+            var method = NormalizeMethod(t.PaymentMethod);
+            if (method == MethodMixed)
+            {
+                // A parte PIX nunca passa do total; o resto é o dinheiro (o total sempre bate)
+                var pixPart = Math.Clamp(t.PixAmount ?? 0m, 0m, t.Amount);
+                AddMethod(MethodPix, pixPart);
+                AddMethod(MethodCash, t.Amount - pixPart);
+            }
+            else
+            {
+                AddMethod(method, t.Amount);
+            }
+
+            // Destino custo (que não é o Caixa): PixAmount ?? Amount no custo; o resto (dinheiro do misto) no caixa
+            if (t.PixDestinationId is { } dest && costById.TryGetValue(dest, out var cost))
+            {
+                var credited = Math.Clamp(t.PixAmount ?? t.Amount, 0m, t.Amount);
+                if (credited > 0)
+                    cost.Lines.Add(Line(credited, method == MethodMixed ? MethodPix : method));
+                var rest = t.Amount - credited;
+                if (rest > 0)
+                    cashBox.Lines.Add(Line(rest, method == MethodMixed ? MethodCash : method));
+            }
+            else
+            {
+                cashBox.Lines.Add(Line(t.Amount, method));
+            }
+        }
+
+        var destinations = new List<PaymentDestinationDetail> { cashBox };
+        destinations.AddRange(costDetails);
+        if (removed is not null) destinations.Add(removed);
+        foreach (var d in destinations)
+        {
+            d.ReceivedFromPlayers = d.Lines.Sum(l => l.Amount);
+            if (d.Kind == KindCost)
+                d.PaidByCashBox = Math.Max(0m, (d.PaidAmount ?? 0m) - d.ReceivedFromPlayers);
+        }
+
+        // PIX e Dinheiro sempre; as demais só quando houver
+        var byMethod = new List<PaymentMethodTotal>();
+        foreach (var m in new[] { MethodPix, MethodCash, MethodTransfer, MethodSettlement, MethodOther })
+        {
+            if (methods.TryGetValue(m, out var total))
+                byMethod.Add(total);
+            else if (m is MethodPix or MethodCash)
+                byMethod.Add(new PaymentMethodTotal { Method = m, Label = MethodTotalLabel(m) });
+        }
+
+        var breakdown = new PaymentBreakdownResponse
+        {
+            TotalReceived = transactions.Sum(t => t.Amount),
+            TotalPaidByEntries = entries.Sum(e => e.TotalPaid),
+            ByMethod = byMethod,
+            Destinations = destinations
+        };
+        return (breakdown, entries.Sum(e => e.TotalDue));
     }
 }

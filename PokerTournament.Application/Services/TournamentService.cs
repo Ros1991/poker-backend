@@ -634,7 +634,8 @@ public class TournamentService
             case TournamentStatus.Cancelled:
                 tournament.IsTimerRunning = false;
                 tournament.IsActive = false;
-                // Se estava finalizado e já tinha acumulado no ranking, reverte (cancelar desfaz o aporte).
+                // Finalizado não cancela mais (SPEC-20261026-1907); a reversão fica como defesa para um aporte que
+                // tenha sobrado gravado (o "desfazer" que reabre o torneio já devolve o acumulado).
                 if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is > 0)
                 {
                     var ranking = await _db.Rankings.FirstOrDefaultAsync(
@@ -663,6 +664,14 @@ public class TournamentService
         return await ToResponseAsync(tournament, ct);
     }
 
+    public const string FinishedCannotBeCancelledMessage = "Torneio finalizado não pode ser cancelado.";
+
+    /// <summary>
+    /// Transições permitidas. SPEC-20261026-1907: torneio finalizado NÃO pode ser cancelado (400 com
+    /// <see cref="FinishedCannotBeCancelledMessage"/>) — cancelado não conta no limite semanal do plano, e cancelar um
+    /// torneio já jogado liberaria a vaga. Antes de finalizar dá para cancelar em qualquer status, inclusive durante o
+    /// acerto (BreakSettlement), que é o mesmo torneio ainda em jogo.
+    /// </summary>
     private static void ValidateStatusTransition(string currentStatus, string newStatus)
     {
         var validTransitions = new Dictionary<string, string[]>
@@ -670,11 +679,13 @@ public class TournamentService
             [nameof(TournamentStatus.Draft)] = [nameof(TournamentStatus.OpenForRegistration), nameof(TournamentStatus.InProgress), nameof(TournamentStatus.Cancelled)],
             [nameof(TournamentStatus.OpenForRegistration)] = [nameof(TournamentStatus.InProgress), nameof(TournamentStatus.Cancelled)],
             [nameof(TournamentStatus.InProgress)] = [nameof(TournamentStatus.BreakSettlement), nameof(TournamentStatus.Finished), nameof(TournamentStatus.Cancelled)],
-            [nameof(TournamentStatus.BreakSettlement)] = [nameof(TournamentStatus.InProgress), nameof(TournamentStatus.Finished)],
-            // Finalizado pode ser cancelado (reverte o aporte no ranking — ver case Cancelled).
-            [nameof(TournamentStatus.Finished)] = [nameof(TournamentStatus.Cancelled)],
+            [nameof(TournamentStatus.BreakSettlement)] = [nameof(TournamentStatus.InProgress), nameof(TournamentStatus.Finished), nameof(TournamentStatus.Cancelled)],
+            [nameof(TournamentStatus.Finished)] = [],
             [nameof(TournamentStatus.Cancelled)] = []
         };
+
+        if (currentStatus == nameof(TournamentStatus.Finished) && newStatus == nameof(TournamentStatus.Cancelled))
+            throw new DomainException(FinishedCannotBeCancelledMessage);
 
         if (!validTransitions.TryGetValue(currentStatus, out var allowed) || !allowed.Contains(newStatus))
             throw new DomainException($"Transição de status inválida: {currentStatus} → {newStatus}");

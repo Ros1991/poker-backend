@@ -89,63 +89,25 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpGet("totals-by-method")]
-    public async Task<ActionResult> GetTotalsByMethod(
+    public async Task<ActionResult<PaymentTotalsByMethodResponse>> GetTotalsByMethod(
         Guid tournamentId, CancellationToken ct)
     {
-        // Inclui abatimentos (Settlement): não entram em PIX/Dinheiro, mas creditam
-        // um custo (PixDestinationId), então devem aparecer em "Pago para Custos".
-        var transactions = await _db.Transactions
-            .Where(t => t.TournamentId == tournamentId
-                     && (t.Type == nameof(TransactionType.Payment)
-                         || t.Type == nameof(TransactionType.Settlement))
-                     && t.ReversedAt == null)
-            .ToListAsync(ct);
+        // Mesma conta do detalhamento (SPEC-20261026-1906): o misto credita o custo só com a parte PIX e os
+        // abatimentos entram em "Pago para Custos"
+        var result = await _paymentService.GetTotalsByMethodAsync(tournamentId, ct);
+        return Ok(result);
+    }
 
-        decimal totalPix = 0;
-        decimal totalCash = 0;
-        decimal totalToCosts = 0;
-
-        foreach (var t in transactions)
-        {
-            if (t.PaymentMethod == "Mixed")
-            {
-                totalPix += t.PixAmount ?? 0;
-                totalCash += t.CashAmount ?? 0;
-            }
-            else if (t.PaymentMethod == "Pix")
-            {
-                totalPix += t.Amount;
-            }
-            else if (t.PaymentMethod == "Dinheiro")
-            {
-                totalCash += t.Amount;
-            }
-
-            if (t.PixDestinationId.HasValue)
-            {
-                // Pagamento para um custo extra (que nao seja Caixa)
-                var cost = await _db.CostExtras
-                    .FirstOrDefaultAsync(c => c.Id == t.PixDestinationId, ct);
-                if (cost != null && !cost.IsCashBox)
-                    totalToCosts += t.Amount;
-            }
-        }
-
-        var totalDue = await _db.TournamentEntries
-            .Where(e => e.TournamentId == tournamentId)
-            .SumAsync(e => (decimal?)e.TotalDue, ct) ?? 0;
-        var totalPaid = await _db.TournamentEntries
-            .Where(e => e.TournamentId == tournamentId)
-            .SumAsync(e => (decimal?)e.TotalPaid, ct) ?? 0;
-        var totalPending = totalDue - totalPaid;
-
-        return Ok(new
-        {
-            totalPix,
-            totalCash,
-            totalToCosts,
-            totalPending,
-        });
+    /// <summary>
+    /// Detalhamento financeiro (SPEC-20261026-1906): resumo por forma de pagamento e, para o caixa e cada custo, quem
+    /// pagou (jogador, valor, forma, hora). Só o organizador (aba Financeiro); o token de dealer não chega aqui.
+    /// </summary>
+    [HttpGet("breakdown")]
+    public async Task<ActionResult<PaymentBreakdownResponse>> GetBreakdown(
+        Guid tournamentId, CancellationToken ct)
+    {
+        var result = await _paymentService.GetPaymentBreakdownAsync(tournamentId, ct);
+        return Ok(result);
     }
 
     [HttpGet("summary")]

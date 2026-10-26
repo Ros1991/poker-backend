@@ -9,6 +9,7 @@ using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
+using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
 
 namespace PokerTournament.Api.Controllers;
@@ -37,12 +38,42 @@ public class HomeGamesController : HomeGameScopedControllerBase
         _plans = plans;
     }
 
-    // Map + plano efetivo do dono (ownerPlan/planFeatures)
+    // Map + contagens + plano efetivo do dono (ownerPlan/planFeatures)
     private async Task<HomeGameResponse> ToResponseAsync(HomeGame homeGame, CancellationToken ct)
     {
         var response = _mapper.Map<HomeGameResponse>(homeGame);
+        await ApplyCountsAsync([response], ct);
         await _plans.ApplyOwnerPlanAsync([response], ct);
         return response;
+    }
+
+    /// <summary>
+    /// Contagens do cabeçalho e dos cards (SPEC-20261026-1907): as MESMAS listas que a tela mostra — torneios da aba
+    /// Torneios (GET tournaments: sem cancelados; excluídos já saem pelo filtro global) e membros da aba Membros
+    /// (GET members). Uma consulta agrupada por contagem para todos os home games da resposta, em todo endpoint que
+    /// devolve HomeGameResponse (antes o editar respondia 0/0 por não carregar as coleções).
+    /// </summary>
+    private async Task ApplyCountsAsync(IReadOnlyList<HomeGameResponse> responses, CancellationToken ct)
+    {
+        if (responses.Count == 0)
+            return;
+        var ids = responses.Select(r => r.Id).Distinct().ToList();
+        var cancelled = nameof(TournamentStatus.Cancelled);
+        var tournaments = await _db.Tournaments.AsNoTracking()
+            .Where(t => ids.Contains(t.HomeGameId) && t.Status != cancelled)
+            .GroupBy(t => t.HomeGameId)
+            .Select(g => new { HomeGameId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.HomeGameId, x => x.Count, ct);
+        var members = await _db.HomeGameMembers.AsNoTracking()
+            .Where(m => ids.Contains(m.HomeGameId))
+            .GroupBy(m => m.HomeGameId)
+            .Select(g => new { HomeGameId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.HomeGameId, x => x.Count, ct);
+        foreach (var response in responses)
+        {
+            response.TournamentCount = tournaments.GetValueOrDefault(response.Id);
+            response.MemberCount = members.GetValueOrDefault(response.Id);
+        }
     }
 
     [HttpGet]
@@ -51,8 +82,6 @@ public class HomeGamesController : HomeGameScopedControllerBase
         var userId = GetUserId();
 
         var homeGames = await _db.HomeGames
-            .Include(h => h.Members)
-            .Include(h => h.Tournaments)
             .Where(h => h.IsActive && (
                 h.OwnerId == userId ||
                 h.Members.Any(m => m.UserId == userId )
@@ -61,6 +90,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
             .ToListAsync(ct);
 
         var responses = _mapper.Map<List<HomeGameResponse>>(homeGames);
+        await ApplyCountsAsync(responses, ct);
         await _plans.ApplyOwnerPlanAsync(responses, ct);
         return Ok(responses);
     }
@@ -69,8 +99,6 @@ public class HomeGamesController : HomeGameScopedControllerBase
     public async Task<ActionResult<HomeGameResponse>> GetById(Guid id, CancellationToken ct)
     {
         var homeGame = await _db.HomeGames
-            .Include(h => h.Members)
-            .Include(h => h.Tournaments)
             .FirstOrDefaultAsync(h => h.Id == id, ct);
 
         if (homeGame is null)
@@ -229,8 +257,6 @@ public class HomeGamesController : HomeGameScopedControllerBase
         Guid id, IFormFile? file, [FromServices] PhotoService photos, CancellationToken ct)
     {
         var homeGame = await _db.HomeGames
-            .Include(h => h.Members)
-            .Include(h => h.Tournaments)
             .FirstOrDefaultAsync(h => h.Id == id, ct);
         if (homeGame is null)
             return NotFound(new { message = "Home game não encontrado." });
@@ -251,8 +277,6 @@ public class HomeGamesController : HomeGameScopedControllerBase
         Guid id, [FromServices] PhotoService photos, CancellationToken ct)
     {
         var homeGame = await _db.HomeGames
-            .Include(h => h.Members)
-            .Include(h => h.Tournaments)
             .FirstOrDefaultAsync(h => h.Id == id, ct);
         if (homeGame is null)
             return NotFound(new { message = "Home game não encontrado." });

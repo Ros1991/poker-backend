@@ -20,8 +20,10 @@ public class MappingProfile : Profile
         // OwnerPlan/PlanFeatures: plano EFETIVO do dono, preenchido via PlanService depois do Map
         // (o flattening do AutoMapper levaria Owner.Plan cru, sem o vencimento)
         CreateMap<HomeGame, HomeGameResponse>()
-            .ForMember(d => d.MemberCount, o => o.MapFrom(s => s.Members.Count))
-            .ForMember(d => d.TournamentCount, o => o.MapFrom(s => s.Tournaments.Count))
+            // Contagens: preenchidas pelo HomeGamesController com as mesmas regras das listas (sem torneio
+            // cancelado — SPEC-20261026-1907); o Map não carrega as coleções só para contar.
+            .ForMember(d => d.MemberCount, o => o.Ignore())
+            .ForMember(d => d.TournamentCount, o => o.Ignore())
             .ForMember(d => d.OwnerPlan, o => o.Ignore())
             .ForMember(d => d.PlanFeatures, o => o.Ignore());
         CreateMap<CreateHomeGameRequest, HomeGame>();

@@ -39,7 +39,18 @@ public class EntryService
             .OrderBy(e => e.RegisteredAt)
             .ToListAsync(ct);
 
-        return _mapper.Map<List<EntryResponse>>(entries);
+        var response = _mapper.Map<List<EntryResponse>>(entries);
+
+        // Eliminações por jogador (SPEC-20261026-1908): EliminatedById é gravado ao eliminar e zerado ao desfazer (e
+        // quando a inscrição de quem eliminou é excluída), então contar nas inscrições já carregadas basta.
+        var eliminationsBy = entries
+            .Where(e => e.EliminatedById.HasValue && e.EliminatedById != e.Id && e.EliminatedAt != null)
+            .GroupBy(e => e.EliminatedById!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
+        foreach (var r in response)
+            r.EliminationsCount = eliminationsBy.GetValueOrDefault(r.Id);
+
+        return response;
     }
 
     /// <summary>
