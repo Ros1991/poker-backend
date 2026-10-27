@@ -5,6 +5,7 @@ using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
@@ -173,6 +174,8 @@ public class TournamentService
     /// SPEC-20261023-1215: com a estrutura escolhida, o torneio já nasce com os custos padrão dela (CostType
     /// Default, Pending) e, se ela tem dealer pago, com "Dealers (N × R$ X)" (N = DealerCount, null = 1) — só se o
     /// dono tem o recurso CostExtras (no Mesa nada é copiado); TotalCosts/NetPrizePool na mesma gravação.
+    /// SPEC-20261026-1909: formato knockout e bounty do pedido; sem formato no pedido, herda o padrão da estrutura
+    /// (sem estrutura: Normal). Knockout vale em todos os planos (o Mesa não perde o formato).
     /// </summary>
     public async Task<TournamentResponse> CreateAsync(
         Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null, CancellationToken ct = default)
@@ -203,9 +206,10 @@ public class TournamentService
         var copyDefaultCosts = await _plans.HasFeatureForHomeGameAsync(homeGameId, PlanFeature.CostExtras, ct);
 
         // Copy blind levels from template if specified
+        BlindStructure? structure = null;
         if (request.BlindStructureId.HasValue)
         {
-            var structure = await _db.BlindStructures
+            structure = await _db.BlindStructures
                 .Include(bs => bs.Levels)
                 .Include(bs => bs.DefaultCosts)
                 .AsSplitQuery()
@@ -240,6 +244,15 @@ public class TournamentService
             }
         }
 
+        // Knockout (SPEC-20261026-1909): pedido > padrão da estrutura > Normal; bounty validado contra buy-in e rebuy
+        var structureKnockout = KnockoutRules.IsKnockout(structure?.DefaultKnockoutType);
+        var koType = KnockoutRules.Parse(request.KnockoutType)
+            ?? (structureKnockout ? structure!.DefaultKnockoutType : nameof(KnockoutType.None));
+        var koBounty = request.BountyAmount ?? (structureKnockout ? structure!.DefaultBountyAmount : null);
+        (tournament.KnockoutType, tournament.BountyAmount) =
+            KnockoutRules.Resolve(koType, koBounty, tournament.BuyInAmount, tournament.RebuyAmount);
+        tournament.TotalBounties = 0m;
+
         // Feature staff/ranking: cria os custos automáticos (Amount inicia em 0; cresce por entrada)
         if (tournament.StaffAmount is > 0)
         {
@@ -269,7 +282,7 @@ public class TournamentService
         // Torneio novo: receita 0, staff e ranking 0 → só os custos padrão contam (líquido começa negativo
         // com custo fixo; o telão mostra 0 — DisplayService)
         tournament.TotalCosts = tournament.CostExtras.Sum(c => c.Amount);
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        KnockoutRules.ApplyNet(tournament);
 
         _db.Tournaments.Add(tournament);
         await _db.SaveChangesAsync(ct);
@@ -311,6 +324,7 @@ public class TournamentService
         // requisição. Torneio criado no Mesa tem tudo nulo e continua nulo.
         var kept = (tournament.StaffAmount, tournament.RankingId, tournament.RankingContribMode,
             tournament.RankingContribValue, tournament.ResponsiblePixKey);
+        var keptKnockout = (tournament.KnockoutType, tournament.BountyAmount);
         _mapper.Map(request, tournament);
         var hasPayments = await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.Payments, ct);
         if (!hasPayments)
@@ -382,13 +396,42 @@ public class TournamentService
         // Garante custos automáticos caso staff/ranking tenham sido definidos só na edição.
         await EnsureAutoCostsAsync(tournament, hasPayments, ct);
 
+        // Knockout (SPEC-20261026-1909): null no pedido = manter; o bounty é conferido contra o buy-in/rebuy novos. Mudar
+        // formato ou valor num rascunho que já tem inscrições refaz as cabeças e o total — só sem eliminação valendo
+        // (a transferência já feita ficaria com o valor velho).
+        var changedKnockout = await ApplyKnockoutOnUpdateAsync(tournament, request, keptKnockout, ct);
+
         // Custos padrão entraram num rascunho (que pode já ter inscrições): totais e ranking % na mesma gravação
-        if (addedDefaultCosts)
+        if (addedDefaultCosts || changedKnockout)
             await RecalcTotalsWithPendingAsync(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
 
         return await ToResponseAsync(tournament, ct);
+    }
+
+    /// <summary>
+    /// Formato/bounty na edição do rascunho (SPEC-20261026-1909). Devolve true quando mudou (cabeças e total refeitos).
+    /// </summary>
+    private async Task<bool> ApplyKnockoutOnUpdateAsync(
+        Tournament tournament, CreateTournamentRequest request, (string Type, decimal? Bounty) kept, CancellationToken ct)
+    {
+        var type = KnockoutRules.Parse(request.KnockoutType) ?? kept.Type;
+        var bounty = request.BountyAmount ?? kept.Bounty;
+        (tournament.KnockoutType, tournament.BountyAmount) =
+            KnockoutRules.Resolve(type, bounty, tournament.BuyInAmount, tournament.RebuyAmount);
+
+        if (tournament.KnockoutType == kept.Type && tournament.BountyAmount == kept.Bounty)
+            return false;
+
+        if (await _db.Eliminations.AnyAsync(e => e.TournamentId == tournament.Id && !e.Corrected, ct))
+            throw new DomainException(KnockoutRules.ChangeWithEliminationsMessage);
+
+        var entries = await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournament.Id)
+            .ToListAsync(ct);
+        KnockoutRules.RecomputeFromScratch(tournament, entries);
+        return true;
     }
 
     /// <summary>
@@ -488,7 +531,8 @@ public class TournamentService
 
     /// <summary>
     /// Totais do torneio com os custos gravados + os recém-adicionados (ainda não salvos): ranking % = múltiplo
-    /// de 10 de % × (receita − staff − custos comuns), TotalCosts = soma, NetPrizePool = receita − custos.
+    /// de 10 de % × (receita − staff − custos comuns − bounties), TotalCosts = soma, NetPrizePool = receita − custos −
+    /// bounties (SPEC-20261026-1909: bounty não é prize pool).
     /// GOTCHA: a mesma fórmula está em EntryService.RecalcAutoCostsAndTotals e em
     /// CostExtrasController.RecomputeTournamentFinancials — mudar nos três.
     /// </summary>
@@ -507,14 +551,14 @@ public class TournamentService
                 var common = costs
                     .Where(c => c.CostType != "Staff" && c.CostType != "RankingAccumulated")
                     .Sum(c => c.Amount);
-                var baseForPct = tournament.TotalPrizePool - staff - common;
+                var baseForPct = tournament.TotalPrizePool - staff - common - tournament.TotalBounties;
                 var raw = (tournament.RankingContribValue!.Value / 100m) * baseForPct;
                 rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
             }
         }
 
         tournament.TotalCosts = costs.Sum(c => c.Amount);
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        KnockoutRules.ApplyNet(tournament);
     }
 
     public async Task<List<TournamentBlindLevelResponse>> GetBlindLevelsAsync(

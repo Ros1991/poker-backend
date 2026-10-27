@@ -259,6 +259,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("default_addon_stack");
 
+                    b.Property<decimal?>("DefaultBountyAmount")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("default_bounty_amount");
+
                     b.Property<decimal?>("DefaultBuyIn")
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("default_buy_in");
@@ -272,6 +276,14 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false)
                         .HasColumnName("default_has_dealer");
+
+                    b.Property<string>("DefaultKnockoutType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("None")
+                        .HasColumnName("default_knockout_type");
 
                     b.Property<int?>("DefaultLateRegistrationLevel")
                         .HasColumnType("integer")
@@ -764,6 +776,18 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<int?>("BlindLevel")
                         .HasColumnType("integer")
                         .HasColumnName("blind_level");
+
+                    b.Property<decimal?>("BountyAmount")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("bounty_amount");
+
+                    b.Property<decimal?>("BountyCash")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("bounty_cash");
+
+                    b.Property<decimal?>("BountyToHead")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("bounty_to_head");
 
                     b.Property<bool>("Corrected")
                         .HasColumnType("boolean")
@@ -1598,6 +1622,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("blind_structure_id");
 
+                    b.Property<decimal?>("BountyAmount")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("bounty_amount");
+
                     b.Property<decimal>("BuyInAmount")
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("buy_in_amount");
@@ -1643,6 +1671,14 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<bool>("IsTimerRunning")
                         .HasColumnType("boolean")
                         .HasColumnName("is_timer_running");
+
+                    b.Property<string>("KnockoutType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("None")
+                        .HasColumnName("knockout_type");
 
                     b.Property<int?>("LateRegistrationLevel")
                         .HasColumnType("integer")
@@ -1776,6 +1812,12 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("total_addons");
 
+                    b.Property<decimal>("TotalBounties")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("total_bounties");
+
                     b.Property<decimal>("TotalCosts")
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("total_costs");
@@ -1824,6 +1866,8 @@ namespace PokerTournament.Infrastructure.Migrations
 
                     b.ToTable("tournaments", "public", t =>
                         {
+                            t.HasCheckConstraint("ck_tournaments_knockout_type", "knockout_type IN ('None','Simple','Progressive')");
+
                             t.HasCheckConstraint("ck_tournaments_status", "status IN ('Draft','OpenForRegistration','InProgress','BreakSettlement','Finished','Cancelled')");
                         });
                 });
@@ -2024,6 +2068,18 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<decimal>("Balance")
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("balance");
+
+                    b.Property<decimal>("BountyHead")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("bounty_head");
+
+                    b.Property<decimal>("BountyWon")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("bounty_won");
 
                     b.Property<decimal>("BuyInAmount")
                         .HasColumnType("decimal(10,2)")

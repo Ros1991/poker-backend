@@ -34,6 +34,12 @@ public class TournamentEntry : BaseEntity
     public Guid? EliminationTableId { get; set; }
     public int? EliminationSeatNumber { get; set; }
 
+    // Knockout (SPEC-20261026-1909). BountyHead = o que está na cabeça do jogador agora (bounty da inscrição + um por
+    // rebuy + no PKO as metades que ganhou); zera quando ele é eliminado (vai para quem eliminou) e volta ao desfazer.
+    // BountyWon = dinheiro de bounty que ele já ganhou eliminando os outros. 0 e 0 no torneio Normal.
+    public decimal BountyHead { get; set; }
+    public decimal BountyWon { get; set; }
+
     // Re-entry
     public bool IsReentry { get; set; }
     public Guid? OriginalEntryId { get; set; }

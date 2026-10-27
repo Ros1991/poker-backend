@@ -29,4 +29,10 @@ public class CreateTournamentRequest
     // null = 1 (cliente que não conhece o campo); 0 = sem custo de dealer; fora de 0–20 → 400. Não é gravado
     // no torneio: vira o custo "Dealers (N × R$ X)" na criação (e na primeira estrutura de um rascunho).
     public int? DealerCount { get; set; }
+
+    // SPEC-20261026-1909 — formato knockout: "None" (Normal), "Simple" ou "Progressive" ("Normal" também vale None).
+    // Na criação, null = herdar o padrão da estrutura escolhida (sem estrutura: Normal); na edição, null = manter.
+    // BountyAmount: parte fixa do buy-in (e de cada rebuy) que vira bounty; null no knockout = herdar/manter.
+    public string? KnockoutType { get; set; }
+    public decimal? BountyAmount { get; set; }
 }

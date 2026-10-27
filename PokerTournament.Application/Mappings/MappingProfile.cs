@@ -43,7 +43,11 @@ public class MappingProfile : Profile
             .ForMember(d => d.RankingName, o => o.MapFrom(s => s.Ranking != null ? s.Ranking.Name : null))
             .ForMember(d => d.OwnerPlan, o => o.Ignore())
             .ForMember(d => d.PlanFeatures, o => o.Ignore());
-        CreateMap<CreateTournamentRequest, Tournament>();
+        // Knockout (SPEC-20261026-1909): formato e bounty resolvidos no TournamentService (herdar da estrutura, manter na
+        // edição, validar contra o buy-in) — o Map não pode gravar null no formato
+        CreateMap<CreateTournamentRequest, Tournament>()
+            .ForMember(d => d.KnockoutType, o => o.Ignore())
+            .ForMember(d => d.BountyAmount, o => o.Ignore());
 
         // TournamentEntry
         CreateMap<TournamentEntry, EntryResponse>()
@@ -61,7 +65,9 @@ public class MappingProfile : Profile
         CreateMap<TournamentBlindLevel, TournamentBlindLevelResponse>();
 
         // BlindStructure
-        CreateMap<CreateBlindStructureRequest, BlindStructure>();
+        CreateMap<CreateBlindStructureRequest, BlindStructure>()
+            .ForMember(d => d.DefaultKnockoutType, o => o.Ignore())
+            .ForMember(d => d.DefaultBountyAmount, o => o.Ignore());
         CreateMap<CreateBlindStructureRequest.BlindLevelItem, BlindLevel>();
 
         // Ranking

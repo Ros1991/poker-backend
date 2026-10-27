@@ -92,6 +92,17 @@ public class BlindStructureConfiguration : IEntityTypeConfiguration<BlindStructu
             .HasColumnName("default_dealer_fee")
             .HasColumnType("decimal(10,2)");
 
+        // Knockout padrão (SPEC-20261026-1909)
+        builder.Property(b => b.DefaultKnockoutType)
+            .HasColumnName("default_knockout_type")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue("None");
+
+        builder.Property(b => b.DefaultBountyAmount)
+            .HasColumnName("default_bounty_amount")
+            .HasColumnType("decimal(10,2)");
+
         builder.HasOne(b => b.HomeGame)
             .WithMany()
             .HasForeignKey(b => b.HomeGameId)

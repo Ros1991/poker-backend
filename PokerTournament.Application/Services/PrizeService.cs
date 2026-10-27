@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Knockout;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -29,8 +30,9 @@ public class PrizeService
     }
 
     /// <summary>
-    /// Sugestão de premiação sobre o prize pool líquido (arrecadado − custos). Líquido ≤ 0 devolve 200 com os totais
-    /// e sem distribuição (SPEC-20261026-1907); com líquido positivo, a regra de sempre (múltiplos de R$ 50, sobra no 1º).
+    /// Sugestão de premiação sobre o prize pool líquido (arrecadado − custos − bounties). Líquido ≤ 0 devolve 200 com os
+    /// totais e sem distribuição (SPEC-20261026-1907); com líquido positivo, a regra de sempre (múltiplos de R$ 50, sobra
+    /// no 1º). Knockout (SPEC-20261026-1909): os bounties ficam fora do prize pool (TotalBounties na resposta).
     /// </summary>
     public async Task<PrizeCalculationResponse> CalculatePrizesAsync(
         Guid tournamentId, int? prizeCount = null, CancellationToken ct = default)
@@ -44,7 +46,8 @@ public class PrizeService
             .SumAsync(c => c.Amount, ct);
 
         var grossPrizePool = tournament.TotalPrizePool;
-        var netPrizePool = grossPrizePool - totalCosts;
+        var totalBounties = tournament.TotalBounties;
+        var netPrizePool = KnockoutRules.Net(grossPrizePool, totalCosts, totalBounties);
         var suggestedCount = prizeCount ?? SuggestPrizeCount(tournament.TotalEntries);
 
         // SPEC-20261026-1907: prize pool zero ou negativo (custos maiores que a arrecadação até agora — torneio
@@ -57,6 +60,7 @@ public class PrizeService
                 GrossPrizePool = grossPrizePool,
                 TotalCosts = totalCosts,
                 NetPrizePool = netPrizePool,
+                TotalBounties = totalBounties,
                 SuggestedPrizeCount = suggestedCount,
                 Prizes = [],
                 Remainder = 0
@@ -98,6 +102,7 @@ public class PrizeService
             GrossPrizePool = grossPrizePool,
             TotalCosts = totalCosts,
             NetPrizePool = netPrizePool,
+            TotalBounties = totalBounties,
             SuggestedPrizeCount = suggestedCount,
             Prizes = prizes,
             Remainder = remainder
@@ -130,6 +135,9 @@ public class PrizeService
             .Where(e => e.TournamentId == tournamentId && e.FinalPosition != null)
             .ToListAsync(ct);
 
+        // Percentual sobre o líquido sem os bounties (SPEC-20261026-1909)
+        var net = KnockoutRules.Net(tournament.TotalPrizePool, totalCosts, tournament.TotalBounties);
+
         // Salvar novos prêmios
         var result = new List<PrizeAllocation>();
         foreach (var prize in request.Prizes)
@@ -148,8 +156,8 @@ public class PrizeService
                 EntryId = winner?.Id,
                 Position = prize.Position,
                 Amount = prize.Amount,
-                Percentage = tournament.TotalPrizePool - totalCosts > 0
-                    ? (prize.Amount / (tournament.TotalPrizePool - totalCosts)) * 100
+                Percentage = net > 0
+                    ? (prize.Amount / net) * 100
                     : 0
             });
 
@@ -157,8 +165,8 @@ public class PrizeService
             {
                 Position = prize.Position,
                 Amount = prize.Amount,
-                Percentage = tournament.TotalPrizePool - totalCosts > 0
-                    ? Math.Round((prize.Amount / (tournament.TotalPrizePool - totalCosts)) * 100, 1)
+                Percentage = net > 0
+                    ? Math.Round((prize.Amount / net) * 100, 1)
                     : 0
             });
         }
@@ -166,7 +174,7 @@ public class PrizeService
         tournament.PrizeConfirmed = true;
         tournament.PrizeConfirmedAt = DateTimeOffset.UtcNow;
         tournament.TotalCosts = totalCosts;
-        tournament.NetPrizePool = tournament.TotalPrizePool - totalCosts;
+        KnockoutRules.ApplyNet(tournament);
 
         await _db.SaveChangesAsync(ct);
         return result;

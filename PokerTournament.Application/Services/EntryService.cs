@@ -4,6 +4,7 @@ using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Plans;
 using PokerTournament.Application.Seating;
 using PokerTournament.Domain.Entities;
@@ -98,6 +99,18 @@ public class EntryService
     private async Task RemoveEntryAndAdjustTotalsAsync(
         Guid tournamentId, TournamentEntry entry, CancellationToken ct)
     {
+        // Knockout (SPEC-20261026-1909): o bounty que ele ganhou ou que saiu da cabeça dele já está com outro jogador —
+        // apagar a inscrição sumiria com esse dinheiro. Só sai sem eliminação com bounty valendo (dele ou feita por ele).
+        var knockoutTournament = await _db.Tournaments.AsNoTracking()
+            .Where(t => t.Id == tournamentId)
+            .Select(t => new { t.KnockoutType, t.BountyAmount })
+            .FirstOrDefaultAsync(ct);
+        if (knockoutTournament is not null && KnockoutRules.IsKnockout(knockoutTournament.KnockoutType)
+            && (entry.BountyWon > 0
+                || await _db.Eliminations.AnyAsync(e => !e.Corrected && e.BountyAmount != null
+                    && (e.EntryId == entry.Id || e.EliminatedByEntryId == entry.Id), ct)))
+            throw new DomainException(KnockoutRules.RemoveEntryWithBountyMessage);
+
         var creditedTransactions = entry.Transactions
             .Where(t => t.ReversedAt == null
                      && t.PixDestinationId.HasValue
@@ -144,6 +157,8 @@ public class EntryService
             tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - entry.RebuyCount);
             if (entry.AddonPurchased)
                 tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
+            // Knockout: sem eliminação com bounty (conferido acima), a cabeça dele = os bounties que ele comprou
+            tournament.TotalBounties = Math.Max(0m, tournament.TotalBounties - entry.BountyHead);
 
             // Feature staff/ranking: decrementa os custos automáticos por entrada
             await BumpAutoCostAsync(tournamentId, "Staff", -(tournament.StaffAmount ?? 0m), ct);
@@ -416,6 +431,9 @@ public class EntryService
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
 
+        // Knockout (SPEC-20261026-1909): parte do buy-in vira o bounty da cabeça dele (o devido não muda)
+        var bounty = KnockoutRules.BountyPerEntry(tournament);
+
         // Sempre Pendente (F15): o pagamento é registrado depois, pela tela de pagamentos
         var entry = new TournamentEntry
         {
@@ -435,11 +453,13 @@ public class EntryService
             PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             EntryNumber = entryNumber,
             IsReentry = entryNumber > 1,
+            BountyHead = bounty,
             RegisteredAt = DateTimeOffset.UtcNow,
             RegisteredBy = registeredBy
         };
 
         _db.TournamentEntries.Add(entry);
+        tournament.TotalBounties += bounty;
         // Nunca volta a false: o rascunho que já teve inscrição não devolve a vaga do limite semanal ao ser excluído
         tournament.HadEntries = true;
 
@@ -528,6 +548,8 @@ public class EntryService
             ? (tournament.RankingContribValue ?? 0m)
             : 0m;
         var entryCost = tournament.BuyInAmount + staffPart + rankingFixedPart;
+        // Knockout (SPEC-20261026-1909): cada inscrição compra um bounty (parte do buy-in)
+        var bounty = KnockoutRules.BountyPerEntry(tournament);
         // Nunca volta a false (limite semanal do Mesa: rascunho que já teve inscrição não devolve a vaga)
         tournament.HadEntries = true;
 
@@ -553,10 +575,12 @@ public class EntryService
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
                 EntryNumber = 1,
                 IsReentry = false,
+                BountyHead = bounty,
                 RegisteredAt = DateTimeOffset.UtcNow,
                 RegisteredBy = registeredBy
             };
             _db.TournamentEntries.Add(entry);
+            tournament.TotalBounties += bounty;
 
             _db.Transactions.Add(new Transaction
             {
@@ -865,6 +889,10 @@ public class EntryService
 
         tournament.TotalRebuys += request.Quantity;
         tournament.TotalPrizePool += (tournament.RebuyAmount ?? 0) * request.Quantity;
+        // Knockout (SPEC-20261026-1909): cada rebuy compra um bounty novo, do mesmo valor, que entra na cabeça dele
+        var rebuyBounty = KnockoutRules.BountyPerEntry(tournament) * request.Quantity;
+        entry.BountyHead += rebuyBounty;
+        tournament.TotalBounties += rebuyBounty;
         await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
@@ -975,6 +1003,12 @@ public class EntryService
         if (entry.RebuyCount <= 0)
             throw new DomainException("Jogador não tem rebuys para remover.");
 
+        // Knockout (SPEC-20261026-1909): o bounty do rebuy está na cabeça dele enquanto não é eliminado (o campeão também);
+        // eliminado, já foi para quem o eliminou (desfazer a eliminação antes)
+        var rebuyBounty = KnockoutRules.BountyPerEntry(tournament);
+        if (rebuyBounty > 0 && entry.EliminatedAt is not null)
+            throw new DomainException(KnockoutRules.UndoRebuyEliminatedMessage);
+
         rebuyTx.ReversedAt = DateTimeOffset.UtcNow;
         rebuyTx.ReversedBy = undoneBy;
         rebuyTx.ReversalReason = "Desfeito";
@@ -985,6 +1019,8 @@ public class EntryService
 
         tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - 1);
         tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - rebuyTx.Amount);
+        entry.BountyHead = Math.Max(0m, entry.BountyHead - rebuyBounty);
+        tournament.TotalBounties = Math.Max(0m, tournament.TotalBounties - rebuyBounty);
         await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
@@ -1085,6 +1121,20 @@ public class EntryService
                                                               && e.TournamentId == tournamentId, ct)))
                 throw new DomainException("Quem eliminou não é um jogador deste torneio.");
 
+            // Knockout (SPEC-20261026-1909): sem "pular" — o bounty precisa de dono, e quem eliminou ainda está jogando
+            var knockout = KnockoutRules.IsKnockout(tournament);
+            TournamentEntry? killer = null;
+            if (knockout)
+            {
+                if (!request.EliminatedByEntryId.HasValue)
+                    throw new DomainException(KnockoutRules.KillerRequiredMessage);
+                killer = await _db.EntriesWithPerson()
+                    .FirstOrDefaultAsync(e => e.Id == request.EliminatedByEntryId && e.TournamentId == tournamentId, ct);
+                if (killer is null
+                    || (killer.Status != nameof(EntryStatus.Active) && killer.Status != nameof(EntryStatus.Registered)))
+                    throw new DomainException(KnockoutRules.KillerNotPlayingMessage);
+            }
+
             // Calcular posição
             var activePlayers = await _db.TournamentEntries
                 .CountAsync(e => e.TournamentId == tournamentId
@@ -1115,6 +1165,20 @@ public class EntryService
                 CreatedBy = createdBy
             };
             _db.Eliminations.Add(elimination);
+
+            // Bounty: a cabeça inteira sai do eliminado — simples: tudo em dinheiro para quem eliminou; PKO: metade em
+            // dinheiro e metade na cabeça dele. Fica gravado na eliminação para o desfazer devolver o mesmo valor.
+            if (killer is not null)
+            {
+                var head = entry.BountyHead;
+                var (cash, toHead) = KnockoutRules.Split(tournament, head);
+                elimination.BountyAmount = head;
+                elimination.BountyCash = cash;
+                elimination.BountyToHead = toHead;
+                killer.BountyWon += cash;
+                killer.BountyHead += toHead;
+                entry.BountyHead = 0m;
+            }
 
             // Atualizar entry — jogador ITM vira Awarded (premiado), não apenas Eliminated
             entry.Status = isItm ? nameof(EntryStatus.Awarded) : nameof(EntryStatus.Eliminated);
@@ -1244,7 +1308,10 @@ public class EntryService
                 EliminatedBy = eliminatedByName,
                 PlayersRemaining = tournament.PlayersRemaining,
                 IsInTheMoney = isItm,
-                WhatsAppLink = whatsAppLink
+                WhatsAppLink = whatsAppLink,
+                BountyAmount = elimination.BountyAmount,
+                BountyCash = elimination.BountyCash,
+                BountyToHead = elimination.BountyToHead
             };
         }
         catch
@@ -1294,6 +1361,26 @@ public class EntryService
             .OrderByDescending(e => e.EliminatedAt)
             .FirstOrDefaultAsync(ct)
             ?? throw new DomainException("Eliminação não encontrada.");
+
+        // Knockout (SPEC-20261026-1909): devolve o bounty desta eliminação — tira de quem eliminou o que ele recebeu e
+        // volta a cabeça do jogador. No PKO, se quem eliminou já saiu, a cabeça dele (com a metade deste bounty) já foi
+        // para outro: desfazer a eliminação dele primeiro, senão o dinheiro não fecha.
+        if (elimination.BountyAmount is > 0)
+        {
+            var killer = elimination.EliminatedByEntryId is { } killerId
+                ? allEntries.FirstOrDefault(e => e.Id == killerId)
+                : null;
+            var toHead = elimination.BountyToHead ?? 0m;
+            if (killer is not null && toHead > 0 && killer.EliminatedAt is not null)
+                throw new DomainException(
+                    $"Desfaça antes a eliminação de {PlayerDisplayName(killer.Person)}: a cabeça dele, com parte deste bounty, já foi para quem o eliminou.");
+            if (killer is not null)
+            {
+                killer.BountyWon = Math.Max(0m, killer.BountyWon - (elimination.BountyCash ?? 0m));
+                killer.BountyHead = Math.Max(0m, killer.BountyHead - toHead);
+            }
+            entry.BountyHead = elimination.BountyAmount.Value;
+        }
 
         elimination.Corrected = true;
         elimination.CorrectedAt = DateTimeOffset.UtcNow;
@@ -1508,7 +1595,8 @@ public class EntryService
                 var manual = costs
                     .Where(c => c.CostType != "Staff" && c.CostType != "RankingAccumulated")
                     .Sum(c => c.Amount);
-                var baseForPct = tournament.TotalPrizePool - staff - manual;
+                // Bounty não é prize pool (SPEC-20261026-1909): fica fora da base do ranking %
+                var baseForPct = tournament.TotalPrizePool - staff - manual - tournament.TotalBounties;
                 var raw = (tournament.RankingContribValue!.Value / 100m) * baseForPct;
                 // arredonda ao múltiplo de 10 mais próximo (>= 0)
                 rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
@@ -1516,6 +1604,6 @@ public class EntryService
         }
 
         tournament.TotalCosts = costs.Sum(c => c.Amount);
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        KnockoutRules.ApplyNet(tournament);
     }
 }

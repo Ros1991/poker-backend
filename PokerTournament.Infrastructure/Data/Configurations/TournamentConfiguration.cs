@@ -12,6 +12,9 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         {
             t.HasCheckConstraint("ck_tournaments_status",
                 "status IN ('Draft','OpenForRegistration','InProgress','BreakSettlement','Finished','Cancelled')");
+            // Knockout (SPEC-20261026-1909): nomes do enum KnockoutType
+            t.HasCheckConstraint("ck_tournaments_knockout_type",
+                "knockout_type IN ('None','Simple','Progressive')");
         });
 
         builder.HasKey(t => t.Id);
@@ -58,6 +61,14 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         builder.Property(t => t.RebuyUntilLevel).HasColumnName("rebuy_until_level");
         builder.Property(t => t.SeatsPerTable).HasColumnName("seats_per_table").HasDefaultValue(9);
 
+        // Knockout (SPEC-20261026-1909)
+        builder.Property(t => t.KnockoutType)
+            .HasColumnName("knockout_type")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue("None");
+        builder.Property(t => t.BountyAmount).HasColumnName("bounty_amount").HasColumnType("decimal(10,2)");
+
         // Timer state
         builder.Property(t => t.CurrentLevel).HasColumnName("current_level");
         builder.Property(t => t.TimerStartedAt).HasColumnName("timer_started_at");
@@ -69,6 +80,7 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         builder.Property(t => t.TotalPrizePool).HasColumnName("total_prize_pool").HasColumnType("decimal(10,2)");
         builder.Property(t => t.TotalCosts).HasColumnName("total_costs").HasColumnType("decimal(10,2)");
         builder.Property(t => t.NetPrizePool).HasColumnName("net_prize_pool").HasColumnType("decimal(10,2)");
+        builder.Property(t => t.TotalBounties).HasColumnName("total_bounties").HasColumnType("decimal(10,2)").HasDefaultValue(0m);
         builder.Property(t => t.PrizeConfirmed).HasColumnName("prize_confirmed");
         builder.Property(t => t.PrizeConfirmedAt).HasColumnName("prize_confirmed_at");
 

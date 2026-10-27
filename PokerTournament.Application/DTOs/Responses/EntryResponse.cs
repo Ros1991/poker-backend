@@ -37,6 +37,12 @@ public class EntryResponse
     /// </summary>
     public int EliminationsCount { get; set; }
 
+    /// <summary>Knockout (SPEC-20261026-1909): o que está na cabeça do jogador agora (0 depois de eliminado e no Normal).</summary>
+    public decimal BountyHead { get; set; }
+
+    /// <summary>Knockout: dinheiro de bounty que o jogador já ganhou eliminando os outros.</summary>
+    public decimal BountyWon { get; set; }
+
     public bool IsReentry { get; set; }
     public int EntryNumber { get; set; }
 

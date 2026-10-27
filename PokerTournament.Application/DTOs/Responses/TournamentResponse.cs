@@ -29,12 +29,18 @@ public class TournamentResponse
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;
 
+    // Knockout (SPEC-20261026-1909): None | Simple | Progressive; BountyAmount null no Normal
+    public string KnockoutType { get; set; } = "None";
+    public decimal? BountyAmount { get; set; }
+
     public int? CurrentLevel { get; set; }
     public bool IsTimerRunning { get; set; }
 
     public decimal TotalPrizePool { get; set; }
     public decimal TotalCosts { get; set; }
     public decimal NetPrizePool { get; set; }
+    /// <summary>Bounties comprados (inscrições + rebuys), à parte do prize pool: NetPrizePool já vem sem eles.</summary>
+    public decimal TotalBounties { get; set; }
     public bool PrizeConfirmed { get; set; }
 
     public bool SettlementClosed { get; set; }

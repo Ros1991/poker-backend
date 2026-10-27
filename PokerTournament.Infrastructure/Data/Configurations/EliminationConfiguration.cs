@@ -31,6 +31,11 @@ public class EliminationConfiguration : IEntityTypeConfiguration<Elimination>
         builder.Property(e => e.CorrectedBy).HasColumnName("corrected_by");
         builder.Property(e => e.CorrectionReason).HasColumnName("correction_reason");
 
+        // Bounty transferido (SPEC-20261026-1909)
+        builder.Property(e => e.BountyAmount).HasColumnName("bounty_amount").HasColumnType("decimal(10,2)");
+        builder.Property(e => e.BountyCash).HasColumnName("bounty_cash").HasColumnType("decimal(10,2)");
+        builder.Property(e => e.BountyToHead).HasColumnName("bounty_to_head").HasColumnType("decimal(10,2)");
+
         builder.HasOne(e => e.Tournament)
             .WithMany(t => t.Eliminations)
             .HasForeignKey(e => e.TournamentId)

@@ -323,6 +323,9 @@ public class DisplayService
                 Balance = e.Balance,
                 TotalDue = e.TotalDue,
                 PrizeAmount = e.PrizeAmount,
+                // Knockout (SPEC-20261026-1909): todos os planos (é o formato do jogo, não o financeiro)
+                BountyHead = e.BountyHead,
+                BountyWon = e.BountyWon,
             })
             .ToListAsync(ct);
 
@@ -399,7 +402,8 @@ public class DisplayService
             var costs = await _db.CostExtras.Where(c => c.TournamentId == tournamentId).SumAsync(c => c.Amount, ct);
             // Telão nunca mostra prêmio negativo (SPEC-20261023-1215, CP10): com custo fixo (ex.: churrasqueiro)
             // o líquido começa negativo até a receita cobrir os custos. Financeiro e Premiação mostram o valor real.
-            prizePool = Math.Max(0m, collected - costs);
+            // Knockout (SPEC-20261026-1909): os bounties ficam fora da premiação
+            prizePool = Math.Max(0m, collected - costs - t.TotalBounties);
         }
 
         return new TvSnapshotResponse
@@ -419,6 +423,9 @@ public class DisplayService
                 TotalRebuys = t.TotalRebuys,
                 TotalAddons = t.TotalAddons,
                 ResponsiblePixKey = showPix ? t.ResponsiblePixKey : null,
+                KnockoutType = t.KnockoutType,
+                BountyAmount = t.BountyAmount,
+                TotalBounties = t.TotalBounties,
                 Plan = plan,
                 ShowBadge = planDefinition.ShowBadge,
                 // O telão decide o conteúdo por aqui (com a chave de emergência desligada, todos os recursos)

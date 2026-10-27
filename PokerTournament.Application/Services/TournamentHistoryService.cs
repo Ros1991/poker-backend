@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Plans;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
@@ -72,11 +73,14 @@ public class TournamentHistoryService
     public async Task<List<HistoryItemResponse>> GetHistoryAsync(
         Guid tournamentId, Guid? entryId = null, bool asOrganizer = false, CancellationToken ct = default)
     {
-        var tournamentStatus = await _db.Tournaments
+        var tournamentInfo = await _db.Tournaments
             .Where(t => t.Id == tournamentId)
-            .Select(t => t.Status)
+            .Select(t => new { t.Status, t.KnockoutType, t.BountyAmount })
             .FirstOrDefaultAsync(ct)
             ?? throw new DomainException("Torneio não encontrado.");
+        var tournamentStatus = tournamentInfo.Status;
+        // Knockout (SPEC-20261026-1909): o desfazer segue as mesmas travas do EntryService (bounty já passado adiante)
+        var knockout = KnockoutRules.IsKnockout(tournamentInfo.KnockoutType) && tournamentInfo.BountyAmount is > 0;
 
         // 1) inscrições do torneio (nomes de jogadores e eliminadores, status para o desfazer)
         // Com a pessoa removida do cadastro também (EntryQueries): o histórico continua com o nome dela
@@ -171,6 +175,14 @@ public class TournamentHistoryService
             .Where(e => !e.Corrected)
             .Select(e => e.EntryId)
             .ToHashSet();
+        // Knockout: quem tem eliminação com bounty valendo FEITA por ele (a lista acima pode estar filtrada por jogador)
+        var liveBountyKillers = !knockout
+            ? new HashSet<Guid>()
+            : (await _db.Eliminations.AsNoTracking()
+                .Where(e => e.TournamentId == tournamentId && !e.Corrected && e.BountyAmount != null
+                         && e.EliminatedByEntryId != null)
+                .Select(e => e.EliminatedByEntryId!.Value)
+                .ToListAsync(ct)).ToHashSet();
 
         // Prêmios pagos: bloqueiam o desfazer de eliminação (posições de quem já recebeu) e de
         // rebuy/add-on/inscrição (o bolo cairia abaixo do pago) — mesmas regras do EntryService.
@@ -215,6 +227,13 @@ public class TournamentHistoryService
                     item.CanUndo = !undone && t.EntryId.HasValue && moneyUndoBlocked is null;
                     if (!undone && moneyUndoBlocked is not null)
                         item.UndoBlockedReason = moneyUndoBlocked;
+                    // Knockout: o bounty do rebuy de quem já foi eliminado está com quem o eliminou
+                    if (item.CanUndo && knockout && t.Type == nameof(TransactionType.Rebuy)
+                        && entryMap.TryGetValue(t.EntryId!.Value, out var rebuyEntry) && rebuyEntry.EliminatedAt is not null)
+                    {
+                        item.CanUndo = false;
+                        item.UndoBlockedReason = KnockoutRules.UndoRebuyEliminatedMessage;
+                    }
                     if (item.CanUndo)
                         item.UndoWarning = moneyUndoWarning;
                     break;
@@ -243,6 +262,12 @@ public class TournamentHistoryService
                             && !liveEliminationByEntry.Contains(entry.Id);
                         if (!item.CanUndo)
                             item.UndoBlockedReason = EntryService.UndoRegistrationBlockedMessage;
+                        else if (knockout && (entry!.BountyWon > 0 || liveBountyKillers.Contains(entry.Id)))
+                        {
+                            // Knockout: o bounty que ele ganhou está na conta dele (desfazer as eliminações antes)
+                            item.CanUndo = false;
+                            item.UndoBlockedReason = KnockoutRules.RemoveEntryWithBountyMessage;
+                        }
                         else
                             item.UndoWarning = moneyUndoWarning;
                     }
@@ -295,6 +320,15 @@ public class TournamentHistoryService
                         && entry.EliminatedAt != null;
                     if (!item.CanUndo)
                         item.UndoBlockedReason = "Esta eliminação não pode mais ser desfeita.";
+                    // PKO: quem eliminou já saiu e a cabeça dele (com parte deste bounty) foi adiante — mesma trava do
+                    // EntryService.UndoEliminationAsync
+                    else if (e.BountyToHead is > 0 && e.EliminatedByEntryId is { } killerId
+                             && entryMap.TryGetValue(killerId, out var killer) && killer.EliminatedAt is not null)
+                    {
+                        item.CanUndo = false;
+                        item.UndoBlockedReason =
+                            $"Desfaça antes a eliminação de {EntryService.PlayerDisplayName(killer.Person)}: a cabeça dele, com parte deste bounty, já foi para quem o eliminou.";
+                    }
                 }
             }
 
@@ -507,6 +541,10 @@ public class TournamentHistoryService
         var text = e.Position.HasValue ? $"Saiu em {e.Position}º lugar" : "Saiu do torneio";
         if (!string.IsNullOrWhiteSpace(eliminatorName))
             text += $" · quem eliminou: {eliminatorName}";
+        // Knockout (SPEC-20261026-1909): o bounty que saiu da cabeça dele e para onde foi
+        var bounty = KnockoutRules.DescribeTransfer(e, eliminatorName);
+        if (bounty is not null)
+            text += $" · {bounty}";
         return text;
     }
 }

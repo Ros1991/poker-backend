@@ -31,6 +31,11 @@ public class BlindStructure : BaseEntity
     public bool DefaultHasDealer { get; set; }
     public decimal? DefaultDealerFee { get; set; }
 
+    // Knockout padrão (SPEC-20261026-1909): o torneio criado com a estrutura herda o formato e o valor do bounty
+    // (editáveis no torneio). None = Normal. Em qualquer plano.
+    public string DefaultKnockoutType { get; set; } = nameof(Enums.KnockoutType.None);
+    public decimal? DefaultBountyAmount { get; set; }
+
     // Navigation
     public HomeGame? HomeGame { get; set; }
     public ICollection<BlindLevel> Levels { get; set; } = [];

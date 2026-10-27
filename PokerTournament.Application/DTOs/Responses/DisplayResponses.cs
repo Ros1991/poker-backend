@@ -76,6 +76,11 @@ public class TvTournamentInfo
     public int TotalAddons { get; set; }
     public string? ResponsiblePixKey { get; set; } // PIX do dia, já exibido em QR no telão (null no Mesa)
 
+    // Knockout (SPEC-20261026-1909, todos os planos): selo do formato no telão e, no PKO, a cabeça de cada jogador
+    public string KnockoutType { get; set; } = "None";
+    public decimal? BountyAmount { get; set; }
+    public decimal TotalBounties { get; set; }
+
     // SPEC-20261023-1205: plano efetivo do dono e o selo. Mesa = selo + QR da landing; Clube = selo
     // discreto; Liga = sem selo, com a logo do clube (HomeGame.LogoUrl). No Mesa o snapshot já vem sem
     // prêmios, mesas, PIX e saldos — o backend é a fonte, não o CSS.
@@ -112,6 +117,9 @@ public class TvEntry
     public decimal Balance { get; set; }
     public decimal TotalDue { get; set; }
     public decimal? PrizeAmount { get; set; }
+    // Knockout: cabeça atual (0 depois de eliminado) e bounties ganhos
+    public decimal BountyHead { get; set; }
+    public decimal BountyWon { get; set; }
 }
 
 public class TvTable

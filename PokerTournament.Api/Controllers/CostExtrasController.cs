@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Pix;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
@@ -215,14 +216,15 @@ public class CostExtrasController : ControllerBase
             {
                 var staff = costs.Where(c => c.CostType == "Staff").Sum(c => c.Amount);
                 var manual = costs.Where(c => c.CostType != "Staff" && c.CostType != "RankingAccumulated").Sum(c => c.Amount);
-                var baseForPct = tournament.TotalPrizePool - staff - manual;
+                // Bounty não é prize pool (SPEC-20261026-1909): fica fora da base do ranking %
+                var baseForPct = tournament.TotalPrizePool - staff - manual - tournament.TotalBounties;
                 var raw = (tournament.RankingContribValue!.Value / 100m) * baseForPct;
                 rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
             }
         }
 
         tournament.TotalCosts = costs.Sum(c => c.Amount);
-        tournament.NetPrizePool = tournament.TotalPrizePool - tournament.TotalCosts;
+        KnockoutRules.ApplyNet(tournament);
     }
 
     private Guid GetUserId()

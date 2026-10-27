@@ -31,6 +31,11 @@ public class Tournament : SoftDeletableEntity
     // Mesa
     public int SeatsPerTable { get; set; } = 9;
 
+    // Knockout (SPEC-20261026-1909): None | Simple | Progressive (nome do enum KnockoutType). BountyAmount = parte
+    // fixa do buy-in (e de cada rebuy) que vira o bounty do jogador; o resto vai para o prize pool. Add-on sem bounty.
+    public string KnockoutType { get; set; } = nameof(Enums.KnockoutType.None);
+    public decimal? BountyAmount { get; set; }
+
     // Timer state
     public int? CurrentLevel { get; set; }
     public DateTimeOffset? TimerStartedAt { get; set; }
@@ -42,6 +47,9 @@ public class Tournament : SoftDeletableEntity
     public decimal TotalPrizePool { get; set; }
     public decimal TotalCosts { get; set; }
     public decimal NetPrizePool { get; set; }
+    // Bounties comprados nas inscrições e rebuys valendo (BountyAmount × (inscrições + rebuys)) — dinheiro à parte do
+    // prize pool: NetPrizePool = TotalPrizePool − TotalCosts − TotalBounties (KnockoutRules.ApplyNet). 0 no Normal.
+    public decimal TotalBounties { get; set; }
     public bool PrizeConfirmed { get; set; }
     public DateTimeOffset? PrizeConfirmedAt { get; set; }
 

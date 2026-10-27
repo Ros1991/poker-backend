@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
+using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
@@ -19,6 +20,8 @@ namespace PokerTournament.Api.Controllers;
 /// SPEC-20261023-1215: a estrutura guarda também os custos padrão de valor fixo por torneio (defaultCosts) e o
 /// custo de dealer (defaultHasDealer/defaultDealerFee), em QUALQUER plano (sem 402: salvar estrutura é livre no
 /// Mesa e queda de plano nunca apaga nada). Quem decide se o torneio recebe os custos é o TournamentService.
+/// SPEC-20261026-1909: também o knockout padrão (defaultKnockoutType None|Simple|Progressive + defaultBountyAmount), em
+/// qualquer plano; o torneio criado com a estrutura herda e pode trocar.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -84,6 +87,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             bs.DefaultRankingContribValue,
             bs.DefaultHasDealer,
             bs.DefaultDealerFee,
+            bs.DefaultKnockoutType,
+            bs.DefaultBountyAmount,
             DefaultCosts = ProjectDefaultCosts(bs),
             LevelCount = bs.Levels.Count,
             Levels = bs.Levels.Select(l => new
@@ -140,6 +145,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             structure.DefaultRankingContribValue,
             structure.DefaultHasDealer,
             structure.DefaultDealerFee,
+            structure.DefaultKnockoutType,
+            structure.DefaultBountyAmount,
             DefaultCosts = ProjectDefaultCosts(structure),
             Levels = structure.Levels.Select(l => new
             {
@@ -166,6 +173,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         // Custos padrão e dealer (SPEC-20261023-1215): valida antes de gravar (DomainException → 400)
         var defaultCosts = request.DefaultCosts is null ? [] : BuildDefaultCosts(request.DefaultCosts);
         var (hasDealer, dealerFee) = ResolveDealer(request.DefaultHasDealer ?? false, request.DefaultDealerFee);
+        // Knockout padrão (SPEC-20261026-1909): null = Normal
+        var (koType, koBounty) = KnockoutRules.ResolveStructureDefault(
+            KnockoutRules.Parse(request.DefaultKnockoutType) ?? nameof(Domain.Enums.KnockoutType.None), request.DefaultBountyAmount);
 
         var structure = new BlindStructure
         {
@@ -190,6 +200,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             DefaultRankingContribValue = request.DefaultRankingContribValue,
             DefaultHasDealer = hasDealer,
             DefaultDealerFee = dealerFee,
+            DefaultKnockoutType = koType,
+            DefaultBountyAmount = koBounty,
         };
 
         foreach (var levelRequest in request.Levels)
@@ -248,6 +260,11 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         var (keepHasDealer, keepDealerFee) = request.DefaultHasDealer is null
             ? (structure.DefaultHasDealer, structure.DefaultDealerFee)
             : ResolveDealer(request.DefaultHasDealer.Value, request.DefaultDealerFee);
+        // Knockout padrão (SPEC-20261026-1909): formato null = manter formato e valor (cliente que não conhece o campo)
+        var requestedKo = KnockoutRules.Parse(request.DefaultKnockoutType);
+        var (keepKoType, keepKoBounty) = requestedKo is null
+            ? (structure.DefaultKnockoutType, structure.DefaultBountyAmount)
+            : KnockoutRules.ResolveStructureDefault(requestedKo, request.DefaultBountyAmount);
 
         structure.Name = request.Name;
         structure.Description = request.Description;
@@ -269,6 +286,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         structure.DefaultRankingContribValue = request.DefaultRankingContribValue;
         structure.DefaultHasDealer = keepHasDealer;
         structure.DefaultDealerFee = keepDealerFee;
+        structure.DefaultKnockoutType = keepKoType;
+        structure.DefaultBountyAmount = keepKoBounty;
 
         // Remover levels existentes e recriar
         foreach (var level in structure.Levels.ToList())

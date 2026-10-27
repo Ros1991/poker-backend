@@ -57,6 +57,10 @@ public class TournamentEntryConfiguration : IEntityTypeConfiguration<TournamentE
         builder.Property(e => e.EliminationTableId).HasColumnName("elimination_table_id");
         builder.Property(e => e.EliminationSeatNumber).HasColumnName("elimination_seat_number");
 
+        // Knockout (SPEC-20261026-1909)
+        builder.Property(e => e.BountyHead).HasColumnName("bounty_head").HasColumnType("decimal(10,2)").HasDefaultValue(0m);
+        builder.Property(e => e.BountyWon).HasColumnName("bounty_won").HasColumnType("decimal(10,2)").HasDefaultValue(0m);
+
         // Re-entry
         builder.Property(e => e.IsReentry).HasColumnName("is_reentry");
         builder.Property(e => e.OriginalEntryId).HasColumnName("original_entry_id");

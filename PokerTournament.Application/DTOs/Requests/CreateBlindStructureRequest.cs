@@ -33,6 +33,11 @@ public class CreateBlindStructureRequest
     public bool? DefaultHasDealer { get; set; }
     public decimal? DefaultDealerFee { get; set; }
 
+    // Knockout padrão (SPEC-20261026-1909): "None" | "Simple" | "Progressive". No PUT, null = manter os dois campos;
+    // no POST, null = Normal. Knockout exige DefaultBountyAmount > 0.
+    public string? DefaultKnockoutType { get; set; }
+    public decimal? DefaultBountyAmount { get; set; }
+
     public class DefaultCostItem
     {
         public string Description { get; set; } = string.Empty;
