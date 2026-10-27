@@ -40,14 +40,19 @@ public class PaymentDestinationDetail
     public string? CostType { get; set; }
     /// <summary>O que o custo deveria receber (null no caixa e no custo excluído)</summary>
     public decimal? Amount { get; set; }
-    /// <summary>Quanto o custo já tem pago, por jogadores e pelo caixa (null no caixa)</summary>
+    /// <summary>Quanto o custo já tem pago, por jogadores e pelo caixa, limitado ao valor (null no caixa)</summary>
     public decimal? PaidAmount { get; set; }
     /// <summary>Soma das linhas: o que os jogadores pagaram direto para este destino (inclui abatimentos)</summary>
     public decimal ReceivedFromPlayers { get; set; }
     /// <summary>Parte de <see cref="ReceivedFromPlayers"/> que veio por abatimento</summary>
     public decimal SettledAmount { get; set; }
-    /// <summary>Pago pelo caixa ao custo (botão "Pagar" da aba Custos): PaidAmount − o que veio dos jogadores</summary>
+    /// <summary>Pago pelo caixa ao custo (botão "Pagar" da aba Custos), guardado à parte no custo (revisão geral 2)</summary>
     public decimal PaidByCashBox { get; set; }
+    /// <summary>
+    /// Recebido (dos jogadores e/ou do caixa) ACIMA do que o custo deveria receber: custo que encolheu depois de pago —
+    /// revisão geral 2. Fica fora do devido; a tela mostra "R$ X recebidos a mais — acertar com o caixa". 0 se não houver.
+    /// </summary>
+    public decimal OverReceived { get; set; }
     /// <summary>Quanto o custo ainda tem a receber (null no caixa)</summary>
     public decimal? Remaining { get; set; }
     public string? PaymentStatus { get; set; }

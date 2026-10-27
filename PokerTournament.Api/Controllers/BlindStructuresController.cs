@@ -175,7 +175,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         var (hasDealer, dealerFee) = ResolveDealer(request.DefaultHasDealer ?? false, request.DefaultDealerFee);
         // Knockout padrão (SPEC-20261026-1909): null = Normal
         var (koType, koBounty) = KnockoutRules.ResolveStructureDefault(
-            KnockoutRules.Parse(request.DefaultKnockoutType) ?? nameof(Domain.Enums.KnockoutType.None), request.DefaultBountyAmount);
+            KnockoutRules.Parse(request.DefaultKnockoutType) ?? nameof(Domain.Enums.KnockoutType.None), request.DefaultBountyAmount,
+            request.DefaultBuyIn);
 
         var structure = new BlindStructure
         {
@@ -264,7 +265,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         var requestedKo = KnockoutRules.Parse(request.DefaultKnockoutType);
         var (keepKoType, keepKoBounty) = requestedKo is null
             ? (structure.DefaultKnockoutType, structure.DefaultBountyAmount)
-            : KnockoutRules.ResolveStructureDefault(requestedKo, request.DefaultBountyAmount);
+            : KnockoutRules.ResolveStructureDefault(requestedKo, request.DefaultBountyAmount, request.DefaultBuyIn);
+        // Formato mantido com um buy-in padrão novo: o bounty guardado também precisa ficar abaixo dele (revisão geral 2)
+        KnockoutRules.EnsureBelowDefaultBuyIn(keepKoType, keepKoBounty, request.DefaultBuyIn);
 
         structure.Name = request.Name;
         structure.Description = request.Description;

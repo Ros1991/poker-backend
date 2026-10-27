@@ -480,6 +480,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("paid_at");
 
+                    b.Property<decimal>("PaidByCashBox")
+                        .HasColumnType("decimal(10,2)")
+                        .HasColumnName("paid_by_cash_box");
+
                     b.Property<string>("PaymentMethod")
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)")
@@ -1653,6 +1657,10 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("FirstFinishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_finished_at");
 
                     b.Property<bool>("HadEntries")
                         .HasColumnType("boolean")

@@ -95,6 +95,7 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         builder.Property(t => t.TotalAddons).HasColumnName("total_addons");
         builder.Property(t => t.PlayersRemaining).HasColumnName("players_remaining");
         builder.Property(t => t.HadEntries).HasColumnName("had_entries");
+        builder.Property(t => t.FirstFinishedAt).HasColumnName("first_finished_at");
 
         builder.Property(t => t.Notes).HasColumnName("notes");
         builder.Property(t => t.ResponsiblePixKey).HasColumnName("responsible_pix_key").HasMaxLength(200);

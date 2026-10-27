@@ -557,6 +557,10 @@ public class TournamentService
             }
         }
 
+        // Mesma regra do EntryService: custo que encolheu abaixo do que já recebeu de jogadores fica Pago, com o pago
+        // limitado ao valor (o excedente aparece no detalhamento)
+        await CostCredits.FitAllAsync(_db, tournament.Id, costs, ct);
+
         tournament.TotalCosts = costs.Sum(c => c.Amount);
         KnockoutRules.ApplyNet(tournament);
     }
@@ -644,6 +648,11 @@ public class TournamentService
 
         ValidateStatusTransition(tournament.Status, newStatus);
 
+        // Já foi finalizado uma vez (e reaberto pelo desfazer eliminação): não cancela — senão o torneio jogado até o
+        // fim devolveria a vaga do limite semanal (revisão geral 2)
+        if (status == TournamentStatus.Cancelled && tournament.FirstFinishedAt is not null)
+            throw new DomainException(FinishedOnceCannotBeCancelledMessage);
+
         var oldStatus = tournament.Status;
         tournament.Status = newStatus;
 
@@ -657,6 +666,7 @@ public class TournamentService
 
             case TournamentStatus.Finished:
                 tournament.IsTimerRunning = false;
+                tournament.FirstFinishedAt ??= DateTimeOffset.UtcNow;
                 // Feature ranking: soma o acumulado final no Ranking.AccumulatedPrize (idempotente via snapshot)
                 if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is null)
                 {
@@ -709,6 +719,8 @@ public class TournamentService
     }
 
     public const string FinishedCannotBeCancelledMessage = "Torneio finalizado não pode ser cancelado.";
+
+    public const string FinishedOnceCannotBeCancelledMessage = "Este torneio já foi finalizado; não pode ser cancelado.";
 
     /// <summary>
     /// Transições permitidas. SPEC-20261026-1907: torneio finalizado NÃO pode ser cancelado (400 com

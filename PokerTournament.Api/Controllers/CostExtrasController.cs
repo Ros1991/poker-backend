@@ -7,6 +7,7 @@ using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Pix;
+using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Api.Filters;
@@ -41,22 +42,35 @@ public class CostExtrasController : ControllerBase
             .ThenBy(c => c.Description)
             .ToListAsync(ct);
 
-        return Ok(costExtras.Select(c => new
+        // Quanto cada custo recebeu direto dos jogadores (revisão geral 2): a aba Custos só oferece "Reverter pagamento"
+        // quando há parte paga pelo caixa — o que os jogadores pagaram se desfaz pelo estorno, no histórico. Pago e status
+        // pela regra única (jogadores + caixa, limitado ao valor), também para dado antigo ainda sem recálculo.
+        var credits = await CostCredits.ByCostAsync(_db, tournamentId, costExtras, ct);
+
+        return Ok(costExtras.Select(c =>
         {
-            c.Id,
-            c.Description,
-            c.Amount,
-            c.CostType,
-            c.Beneficiary,
-            c.PixKey,
-            c.PixKeyType,
-            c.IsCashBox,
-            c.PaidAmount,
-            c.PaymentStatus,
-            c.PaymentMethod,
-            c.PaidAt,
-            c.Notes,
-            c.CreatedAt
+            var byPlayers = credits.GetValueOrDefault(c.Id);
+            var (paid, status) = CostCredits.Fitted(c, byPlayers);
+            return new
+            {
+                c.Id,
+                c.Description,
+                c.Amount,
+                c.CostType,
+                c.Beneficiary,
+                c.PixKey,
+                c.PixKeyType,
+                c.IsCashBox,
+                PaidAmount = paid,
+                PaidByPlayers = byPlayers,
+                PaidByCashBox = Math.Max(0m, c.PaidByCashBox),
+                OverReceived = CostCredits.OverReceived(c, byPlayers),
+                PaymentStatus = status,
+                c.PaymentMethod,
+                c.PaidAt,
+                c.Notes,
+                c.CreatedAt
+            };
         }));
     }
 
@@ -109,6 +123,17 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
+        // Editar para menos do que os jogadores já pagaram direto a este custo: 400 (revisão geral 2) — o excedente ficaria
+        // sem dono. Só quando o valor desce e o pedido é o valor gravado (o ranking em % é sempre recalculado).
+        var recalculated = costExtra.CostType == "RankingAccumulated" && await _db.Tournaments
+            .AnyAsync(t => t.Id == tournamentId && t.RankingContribMode == "Percent" && t.RankingContribValue > 0, ct);
+        if (!recalculated && request.Amount < costExtra.Amount - CostCredits.HalfCent)
+        {
+            var credits = await CostCredits.OfCostAsync(_db, costExtra, ct);
+            if (request.Amount < credits - CostCredits.HalfCent)
+                return BadRequest(new { message = CostCredits.ReduceBelowCreditsMessage(credits) });
+        }
+
         // Preserva o CostType (request manual sempre traz "Manual"/vazio) e o IsCashBox (a tela nunca o edita;
         // o Caixa é único por torneio e tem regra própria). Beneficiário e chave PIX vêm do pedido: a aba Custos
         // manda todos os campos do custo (SPEC-20261023-1215, CP9).
@@ -146,8 +171,12 @@ public class CostExtrasController : ControllerBase
         if (costExtra.CostType == "Staff")
             return BadRequest(new { message = "Custo automático de staff não pode ser removido. Edite o valor se necessário." });
 
-        if (costExtra.CostType == "RankingAccumulated" && costExtra.PaidAmount > 0)
-            return BadRequest(new { message = "Este custo já tem pagamento/abatimento registrado. Estorne antes de excluir." });
+        // Com pagamento ou abatimento valendo (pago pelo caixa ou por jogador), não exclui (revisão geral 2): a FK do
+        // lançamento é ON DELETE SET NULL e o PIX pago a este custo passaria a aparecer como do caixa no detalhamento
+        if (costExtra.PaidAmount > 0 || costExtra.PaidByCashBox > 0
+            || await _db.Transactions.AnyAsync(t => t.TournamentId == tournamentId && t.PixDestinationId == id
+                                                 && t.ReversedAt == null, ct))
+            return BadRequest(new { message = CostCredits.DeleteWithPaymentsMessage });
 
         _db.CostExtras.Remove(costExtra);
         await _db.SaveChangesAsync(ct);
@@ -168,8 +197,9 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
-        costExtra.PaidAmount = costExtra.Amount;
-        costExtra.PaymentStatus = nameof(Domain.Enums.PaymentStatus.Paid);
+        // O caixa entrega o que falta (valor − o que jogadores e caixa já pagaram); a parte do caixa fica guardada à parte
+        // (revisão geral 2): se o custo encolher, o excedente aparece como "recebidos a mais"; se voltar a crescer, conta de novo
+        CostCredits.PayRestFromCashBox(costExtra, await CostCredits.OfCostAsync(_db, costExtra, ct));
         costExtra.PaymentMethod = request?.Method ?? "Dinheiro";
         costExtra.PaidAt = DateTimeOffset.UtcNow;
 
@@ -186,10 +216,22 @@ public class CostExtrasController : ControllerBase
         if (costExtra is null)
             return NotFound(new { message = "Custo extra não encontrado." });
 
-        costExtra.PaidAmount = 0;
-        costExtra.PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending);
-        costExtra.PaymentMethod = null;
-        costExtra.PaidAt = null;
+        // Desfaz SÓ a parte paga pelo caixa (revisão geral 2): o que os jogadores pagaram direto ao custo continua valendo
+        // (pela mesma regra do detalhamento) — senão o limite por destino voltaria a liberar o valor inteiro
+        var credits = await CostCredits.OfCostAsync(_db, costExtra, ct);
+        if (costExtra.PaidByCashBox < CostCredits.HalfCent)
+        {
+            if (credits > CostCredits.HalfCent)
+                return BadRequest(new { message = CostCredits.UnpayOnlyPlayersMessage });
+            // Nada pago (nem pelo caixa, nem por jogador): nada a reverter (pago e status pela regra única)
+            CostCredits.FitPaid(costExtra, credits);
+            await _db.SaveChangesAsync(ct);
+            return Ok(new { message = "Pagamento revertido." });
+        }
+
+        CostCredits.UndoCashBox(costExtra, credits);
+        if (costExtra.PaymentStatus != nameof(Domain.Enums.PaymentStatus.Paid))
+            costExtra.PaymentMethod = null;
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { message = "Pagamento revertido." });
@@ -222,6 +264,9 @@ public class CostExtrasController : ControllerBase
                 rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
             }
         }
+
+        // Mesma regra do EntryService/TournamentService: o pago nunca passa do valor e a parte do caixa não se perde (revisão geral 2)
+        await CostCredits.FitAllAsync(_db, tournamentId, costs, ct);
 
         tournament.TotalCosts = costs.Sum(c => c.Amount);
         KnockoutRules.ApplyNet(tournament);

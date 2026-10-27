@@ -83,6 +83,8 @@ public class PaymentService
         // faz o segundo pagamento simultâneo cair em 409.
         if (pixDestination is { IsCashBox: false } limited)
         {
+            // Pago nunca abaixo do que os jogadores já pagaram a ele (dado antigo do "Reverter pagamento" que zerava)
+            CostCredits.FitPaid(limited, await CostCredits.OfCostAsync(_db, limited, ct));
             var credit = request.PixAmount ?? request.Amount;
             var remaining = limited.Amount - limited.PaidAmount;
             if (credit > remaining + HalfCent)
@@ -184,6 +186,9 @@ public class PaymentService
         if (amount <= 0)
             throw new DomainException("Valor do abatimento deve ser positivo.");
 
+        // Pago nunca abaixo do que os jogadores já pagaram a ele (revisão geral 2), antes do limite
+        CostCredits.FitPaid(cost, await CostCredits.OfCostAsync(_db, cost, ct));
+
         // Triplo-Min: nunca abate além do que o jogador deve nem além do que o custo comporta.
         var settle = Math.Min(amount, Math.Min(entry.Balance, cost.Amount - cost.PaidAmount));
         if (settle <= 0)
@@ -270,6 +275,10 @@ public class PaymentService
             var cost = await _db.CostExtras
                 .FirstOrDefaultAsync(c => c.Id == tx.PixDestinationId && c.TournamentId == tournamentId, ct);
             ReverseCostCredit(tx, cost);
+            // Custo que tinha encolhido abaixo do que os jogadores pagaram (pago limitado ao valor): o estorno de UM dos
+            // pagamentos não pode deixá-lo abaixo do que os outros ainda cobrem (revisão geral 2)
+            if (cost is not null)
+                CostCredits.FitPaid(cost, await CostCredits.OfCostAsync(_db, cost, ct));
         }
 
         await _db.SaveChangesAsync(ct);
@@ -374,19 +383,23 @@ public class PaymentService
     public async Task<List<PixSuggestionResponse>> GetPixSuggestionsAsync(
         Guid tournamentId, decimal playerDueAmount, CancellationToken ct = default)
     {
-        var pendingCosts = await _db.CostExtras
-            .Where(c => c.TournamentId == tournamentId
-                     && c.PaymentStatus != nameof(Domain.Enums.PaymentStatus.Paid)
-                     && !c.IsCashBox)
+        // Pago e status pela regra única (jogadores + caixa, limitado ao valor — revisão geral 2), também para dado antigo
+        // que ainda não passou por um recálculo: o que a tela oferece é o que o servidor aceita
+        var costs = await _db.CostExtras
+            .AsNoTracking()
+            .Where(c => c.TournamentId == tournamentId && !c.IsCashBox)
             .OrderBy(c => c.CreatedAt)
             .ThenBy(c => c.Description)
             .ToListAsync(ct);
+        var credits = await CostCredits.ByCostAsync(_db, tournamentId, costs, ct);
 
         var suggestions = new List<PixSuggestionResponse>();
 
-        foreach (var cost in pendingCosts)
+        foreach (var cost in costs)
         {
-            var pendingAmount = cost.Amount - cost.PaidAmount;
+            var (paid, status) = CostCredits.Fitted(cost, credits.GetValueOrDefault(cost.Id));
+            if (status == nameof(Domain.Enums.PaymentStatus.Paid)) continue;
+            var pendingAmount = cost.Amount - paid;
             if (pendingAmount <= HalfCent) continue;
 
             // Sem valor do jogador (a tela não manda) o denominador ainda é positivo: pendingAmount > 0
@@ -563,7 +576,26 @@ public class PaymentService
             })
             .ToList();
         var costById = costDetails.ToDictionary(d => d.CostExtraId!.Value);
-        PaymentDestinationDetail? removed = null;
+        var costEntityById = costs.Where(c => !c.IsCashBox).ToDictionary(c => c.Id);
+        // Custo excluído (o lançamento perdeu o destino: FK ON DELETE SET NULL). Desde a revisão geral 2 não se exclui custo
+        // com pagamento/abatimento valendo; os dados antigos são agrupados pelo nome que ficou na descrição do lançamento
+        // ("Destino PIX: <nome>" do PaymentModal; "Abatimento de <jogador> no custo <nome>"), senão "Custo excluído".
+        var removedByName = new Dictionary<string, PaymentDestinationDetail>(StringComparer.OrdinalIgnoreCase);
+        var cashBoxNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Caixa", cashBox.Description };
+        foreach (var c in costs.Where(c => c.IsCashBox))
+            cashBoxNames.Add(c.Description.Trim());
+        PaymentDestinationDetail Removed(string? name)
+        {
+            var key = name?.Trim() ?? string.Empty;
+            if (!removedByName.TryGetValue(key, out var d))
+                removedByName[key] = d = new PaymentDestinationDetail
+                {
+                    Kind = KindRemoved,
+                    Description = key.Length == 0 ? "Custo excluído" : $"Custo excluído ({key})"
+                };
+            return d;
+        }
+        const string PixNotePrefix = "Destino PIX: ";
 
         var methods = new Dictionary<string, PaymentMethodTotal>();
         void AddMethod(string method, decimal amount)
@@ -596,9 +628,12 @@ public class PaymentService
             {
                 // Abatimento: sem dinheiro trocar de mãos, o valor todo é do custo abatido
                 AddMethod(MethodSettlement, t.Amount);
+                var settledPrefix = payer is null ? null : $"Abatimento de {payer.FullName} no custo ";
                 var target = t.PixDestinationId is { } settled && costById.TryGetValue(settled, out var sd)
                     ? sd
-                    : removed ??= new PaymentDestinationDetail { Kind = KindRemoved, Description = "Custo excluído" };
+                    : Removed(settledPrefix is not null && t.Description?.StartsWith(settledPrefix, StringComparison.Ordinal) == true
+                        ? t.Description[settledPrefix.Length..]
+                        : null);
                 target.Lines.Add(Line(t.Amount, MethodSettlement));
                 target.SettledAmount += t.Amount;
                 continue;
@@ -617,12 +652,21 @@ public class PaymentService
                 AddMethod(method, t.Amount);
             }
 
-            // Destino custo (que não é o Caixa): PixAmount ?? Amount no custo; o resto (dinheiro do misto) no caixa
-            if (t.PixDestinationId is { } dest && costById.TryGetValue(dest, out var cost))
+            // Destino custo (que não é o Caixa): PixAmount ?? Amount no custo; o resto (dinheiro do misto) no caixa.
+            // PIX sem destino com "Destino PIX: <nome>" de um custo (não o caixa) = pago a um custo que foi excluído.
+            var deletedName = t.PixDestinationId is null && method != MethodCash
+                && t.Description?.StartsWith(PixNotePrefix, StringComparison.Ordinal) == true
+                    ? t.Description[PixNotePrefix.Length..].Trim()
+                    : null;
+            PaymentDestinationDetail? costTarget =
+                t.PixDestinationId is { } dest && costById.TryGetValue(dest, out var cost) ? cost
+                : !string.IsNullOrEmpty(deletedName) && !cashBoxNames.Contains(deletedName) ? Removed(deletedName)
+                : null;
+            if (costTarget is not null)
             {
                 var credited = Math.Clamp(t.PixAmount ?? t.Amount, 0m, t.Amount);
                 if (credited > 0)
-                    cost.Lines.Add(Line(credited, method == MethodMixed ? MethodPix : method));
+                    costTarget.Lines.Add(Line(credited, method == MethodMixed ? MethodPix : method));
                 var rest = t.Amount - credited;
                 if (rest > 0)
                     cashBox.Lines.Add(Line(rest, method == MethodMixed ? MethodCash : method));
@@ -635,12 +679,21 @@ public class PaymentService
 
         var destinations = new List<PaymentDestinationDetail> { cashBox };
         destinations.AddRange(costDetails);
-        if (removed is not null) destinations.Add(removed);
+        destinations.AddRange(removedByName.Values);
         foreach (var d in destinations)
         {
             d.ReceivedFromPlayers = d.Lines.Sum(l => l.Amount);
-            if (d.Kind == KindCost)
-                d.PaidByCashBox = Math.Max(0m, (d.PaidAmount ?? 0m) - d.ReceivedFromPlayers);
+            if (d.Kind == KindCost && d.CostExtraId is { } costId && costEntityById.TryGetValue(costId, out var entity))
+            {
+                // Pela regra única (revisão geral 2): pago = mín(valor, jogadores + caixa); a parte do caixa é a guardada no
+                // custo. Custo que encolheu depois de pago (por jogadores e/ou pelo caixa): o excedente fica fora do devido
+                var (paid, status) = CostCredits.Fitted(entity, d.ReceivedFromPlayers);
+                d.PaidAmount = paid;
+                d.Remaining = Math.Max(0m, entity.Amount - paid);
+                d.PaymentStatus = status;
+                d.PaidByCashBox = Math.Max(0m, entity.PaidByCashBox);
+                d.OverReceived = CostCredits.OverReceived(entity, d.ReceivedFromPlayers);
+            }
         }
 
         // PIX e Dinheiro sempre; as demais só quando houver

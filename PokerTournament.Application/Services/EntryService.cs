@@ -841,9 +841,19 @@ public class EntryService
     // tournament_activities.description: até 1000 caracteres
     private static string Cut(string text) => text.Length > 1000 ? text[..997] + "..." : text;
 
+    /// <summary>Máximo de rebuys num pedido só (painel e token de dealer chamam o mesmo método)</summary>
+    public const int MaxRebuysPerRequest = 10;
+
+    public const string InvalidRebuyQuantityMessage = "Quantidade de rebuys inválida.";
+
     public async Task<EntryResponse> RegisterRebuyAsync(
         Guid tournamentId, Guid entryId, RebuyRequest request, Guid? registeredBy = null, CancellationToken ct = default)
     {
+        // Quantidade de 1 a 10 (revisão geral 2): 0 ou negativa apagava a dívida e o bounty da cabeça sem deixar
+        // lançamento para desfazer; vale para o painel e para o dealer pelo QR, que chamam este mesmo método
+        if (request is null || request.Quantity < 1 || request.Quantity > MaxRebuysPerRequest)
+            throw new DomainException(InvalidRebuyQuantityMessage);
+
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
@@ -1206,6 +1216,7 @@ public class EntryService
             tournament.PlayersRemaining = activePlayers - 1;
 
             // Se restou 1 jogador: ele é o campeão
+            TournamentEntry? autoChampion = null;
             if (tournament.PlayersRemaining == 1)
             {
                 // O status Awarded/Eliminated do vice ainda não foi salvo — no banco ele
@@ -1236,6 +1247,10 @@ public class EntryService
                     // Finalizar torneio automaticamente quando sobra 1 jogador
                     tournament.Status = nameof(TournamentStatus.Finished);
                     tournament.IsTimerRunning = false;
+                    // Nunca limpo (revisão geral 2): reaberto pelo desfazer eliminação, segue sem poder ser cancelado
+                    // e contando no limite semanal do plano
+                    tournament.FirstFinishedAt ??= DateTimeOffset.UtcNow;
+                    autoChampion = champion;
 
                     // O auto-finish NÃO passa pelo UpdateStatusAsync, então o acúmulo do
                     // ranking precisa acontecer aqui (idempotente via RankingPrizeAccrued).
@@ -1301,6 +1316,19 @@ public class EntryService
                 eliminatedByName = eliminator?.Person.FullName;
             }
 
+            // Última eliminação: o torneio se finalizou sozinho — a tela avisa e diz quem é o campeão
+            string? championName = null;
+            if (autoChampion is not null)
+            {
+                var championPerson = await _db.Persons.IgnoreQueryFilters().AsNoTracking()
+                    .Where(p => p.Id == autoChampion.PersonId)
+                    .Select(p => new { p.FullName, p.Nickname })
+                    .FirstOrDefaultAsync(ct);
+                championName = string.IsNullOrWhiteSpace(championPerson?.Nickname)
+                    ? championPerson?.FullName
+                    : championPerson!.Nickname!.Trim();
+            }
+
             return new EliminationResultResponse
             {
                 Position = position,
@@ -1311,7 +1339,9 @@ public class EntryService
                 WhatsAppLink = whatsAppLink,
                 BountyAmount = elimination.BountyAmount,
                 BountyCash = elimination.BountyCash,
-                BountyToHead = elimination.BountyToHead
+                BountyToHead = elimination.BountyToHead,
+                TournamentFinished = autoChampion is not null,
+                ChampionName = championName
             };
         }
         catch
@@ -1602,6 +1632,11 @@ public class EntryService
                 rankingCost.Amount = Math.Max(0m, Math.Round(raw / 10m, MidpointRounding.AwayFromZero) * 10m);
             }
         }
+
+        // Custo automático que encolheu abaixo do que os jogadores já pagaram direto a ele (exclusão de inscrição,
+        // desfazer rebuy/add-on, base do ranking % menor): não bloqueia; o pago fica limitado ao valor (Pago) e o
+        // excedente aparece no detalhamento como "recebidos a mais — acertar com o caixa" (revisão geral 2)
+        await CostCredits.FitAllAsync(_db, tournament.Id, costs, ct);
 
         tournament.TotalCosts = costs.Sum(c => c.Amount);
         KnockoutRules.ApplyNet(tournament);

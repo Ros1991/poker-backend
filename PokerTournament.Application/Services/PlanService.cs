@@ -469,10 +469,12 @@ public class PlanService
         var since = DateTimeOffset.UtcNow - PlanCatalog.TournamentWindow;
         var cancelled = nameof(TournamentStatus.Cancelled);
         var finished = nameof(TournamentStatus.Finished);
+        // "Finalizado" = já foi finalizado alguma vez (FirstFinishedAt, nunca limpo): reaberto pelo desfazer eliminação e
+        // depois cancelado ou excluído continua contando (revisão geral 2)
         return await _db.Tournaments.IgnoreQueryFilters().AsNoTracking()
             .Where(t => t.HomeGame.OwnerId == ownerId && t.CreatedAt >= since
-                && t.Status != cancelled
-                && (t.DeletedAt == null || t.Status == finished))
+                && (t.Status != cancelled || t.FirstFinishedAt != null)
+                && (t.DeletedAt == null || t.Status == finished || t.FirstFinishedAt != null))
             .OrderBy(t => t.CreatedAt)
             .Select(t => t.CreatedAt)
             .ToListAsync(ct);

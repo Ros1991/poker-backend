@@ -14,4 +14,9 @@ public class EliminationResultResponse
     public decimal? BountyAmount { get; set; }
     public decimal? BountyCash { get; set; }
     public decimal? BountyToHead { get; set; }
+
+    // Revisão geral 2: a eliminação que deixou só o campeão finaliza o torneio sozinha — a tela avisa no toast
+    public bool TournamentFinished { get; set; }
+    /// <summary>Apelido (ou o nome completo) do campeão, quando o torneio se finalizou nesta eliminação</summary>
+    public string? ChampionName { get; set; }
 }

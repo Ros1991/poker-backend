@@ -34,6 +34,8 @@ public class CostExtraConfiguration : IEntityTypeConfiguration<CostExtra>
         builder.Property(c => c.PixKeyType).HasColumnName("pix_key_type").HasMaxLength(50);
         builder.Property(c => c.IsCashBox).HasColumnName("is_cash_box");
         builder.Property(c => c.PaidAmount).HasColumnName("paid_amount").HasColumnType("decimal(10,2)");
+        // Parte paga pelo caixa (botão "Pagar"), à parte dos créditos dos jogadores (revisão geral 2)
+        builder.Property(c => c.PaidByCashBox).HasColumnName("paid_by_cash_box").HasColumnType("decimal(10,2)");
 
         builder.Property(c => c.PaymentStatus)
             .HasColumnName("payment_status")

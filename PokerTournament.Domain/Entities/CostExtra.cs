@@ -10,6 +10,12 @@ public class CostExtra : BaseEntity
     public string? PixKeyType { get; set; }
     public bool IsCashBox { get; set; }
     public decimal PaidAmount { get; set; }
+    /// <summary>
+    /// Quanto o CAIXA entregou a este custo (botão "Pagar" da aba Custos), guardado à parte do que os jogadores pagaram
+    /// direto (revisão geral 2): o pago do custo = mín(valor, créditos dos jogadores + isto). Custo que encolhe não perde
+    /// esta parte (o excedente aparece como "recebidos a mais — acertar com o caixa") e volta a valer quando ele cresce.
+    /// </summary>
+    public decimal PaidByCashBox { get; set; }
     public string PaymentStatus { get; set; } = string.Empty;
     public string? PaymentMethod { get; set; } // Pix, Dinheiro, Caixa
     public DateTimeOffset? PaidAt { get; set; }

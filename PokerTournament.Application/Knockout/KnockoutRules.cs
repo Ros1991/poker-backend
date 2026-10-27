@@ -93,14 +93,27 @@ public static class KnockoutRules
         return (type, value);
     }
 
-    /// <summary>Padrão da estrutura: mesmo formato; o valor só é exigido (&gt; 0) no knockout (o buy-in é conferido no torneio).</summary>
-    public static (string Type, decimal? Bounty) ResolveStructureDefault(string type, decimal? bounty)
+    /// <summary>
+    /// Padrão da estrutura: mesmo formato; o valor só é exigido (&gt; 0) no knockout. Com buy-in padrão informado, o bounty
+    /// precisa ser menor que ele (revisão geral 2, a mesma recusa do torneio); sem buy-in padrão, o buy-in é conferido no
+    /// torneio.
+    /// </summary>
+    public static (string Type, decimal? Bounty) ResolveStructureDefault(string type, decimal? bounty, decimal? defaultBuyIn = null)
     {
         if (!IsKnockout(type))
             return (nameof(KnockoutType.None), null);
         if (bounty is not > 0 || bounty > MaxBountyAmount)
             throw new DomainException(BountyRequiredMessage);
-        return (type, Math.Round(bounty.Value, 2, MidpointRounding.AwayFromZero));
+        var value = Math.Round(bounty.Value, 2, MidpointRounding.AwayFromZero);
+        EnsureBelowDefaultBuyIn(type, value, defaultBuyIn);
+        return (type, value);
+    }
+
+    /// <summary>Bounty padrão de knockout ≥ buy-in padrão (&gt; 0) → 400 com a mesma mensagem do torneio.</summary>
+    public static void EnsureBelowDefaultBuyIn(string? type, decimal? bounty, decimal? defaultBuyIn)
+    {
+        if (IsKnockout(type) && bounty is > 0 && defaultBuyIn is > 0 && bounty >= defaultBuyIn)
+            throw new DomainException(BountyNotLessThanBuyInMessage);
     }
 
     /// <summary>

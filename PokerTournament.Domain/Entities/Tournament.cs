@@ -66,6 +66,10 @@ public class Tournament : SoftDeletableEntity
     // Já teve inscrição (gravado na primeira e nunca limpo). Desde a SPEC-20261026-1907 o limite semanal do plano
     // não usa mais este campo (cancelado e excluído não contam; o finalizado conta sempre — PlanService).
     public bool HadEntries { get; set; }
+    // Primeira vez que o torneio foi Finalizado (sozinho, na última eliminação, ou pelo botão). Gravado uma vez e nunca
+    // limpo, nem quando o desfazer eliminação reabre o torneio (revisão geral 2): torneio que já foi finalizado não pode
+    // ser cancelado e conta sempre no limite semanal do plano (PlanService).
+    public DateTimeOffset? FirstFinishedAt { get; set; }
 
     public string? Notes { get; set; }
     // PIX do responsável pelo torneio no dia (opcional) — informado na criação
