@@ -16,7 +16,8 @@ public class BlindStructure : BaseEntity
     public int? DefaultAddonStack { get; set; }
     public int? DefaultMaxRebuys { get; set; }
     public bool DefaultAddonAllowed { get; set; } = true;
-    public bool DefaultAddonDoubleAllowed { get; set; }
+    // Máximo de add-ons por jogador padrão (SPEC-20261027-1311): 0 = ilimitado; padrão 1 (o torneio herda)
+    public int DefaultMaxAddons { get; set; } = 1;
     public int? DefaultLateRegistrationLevel { get; set; }
     public int? DefaultRebuyUntilLevel { get; set; }
     public int? DefaultSeatsPerTable { get; set; }

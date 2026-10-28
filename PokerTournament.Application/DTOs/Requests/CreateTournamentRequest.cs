@@ -14,7 +14,9 @@ public class CreateTournamentRequest
     public int? AddonStack { get; set; }
     public int? MaxRebuys { get; set; }
     public bool AddonAllowed { get; set; }
-    public bool AddonDoubleAllowed { get; set; }
+    // SPEC-20261027-1311: máximo de add-ons por jogador (0 = ilimitado). Na criação, null = herdar da estrutura (sem
+    // estrutura: 1); na edição, null = manter. Negativo → 400.
+    public int? MaxAddons { get; set; }
     public int? LateRegistrationLevel { get; set; }
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;

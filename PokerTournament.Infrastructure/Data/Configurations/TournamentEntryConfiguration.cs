@@ -35,9 +35,8 @@ public class TournamentEntryConfiguration : IEntityTypeConfiguration<TournamentE
         builder.Property(e => e.RebuyCount).HasColumnName("rebuy_count");
         builder.Property(e => e.RebuyTotal).HasColumnName("rebuy_total").HasColumnType("decimal(10,2)");
 
-        // Addon
-        builder.Property(e => e.AddonPurchased).HasColumnName("addon_purchased");
-        builder.Property(e => e.AddonDouble).HasColumnName("addon_double").HasDefaultValue(false);
+        // Add-on (SPEC-20261027-1311): quantidade comprada (o antigo addon_purchased/addon_double) e o total
+        builder.Property(e => e.AddonCount).HasColumnName("addon_count");
         builder.Property(e => e.AddonAmount).HasColumnName("addon_amount").HasColumnType("decimal(10,2)");
 
         // Totals

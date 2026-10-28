@@ -56,7 +56,8 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         // Rebuy / Addon rules
         builder.Property(t => t.MaxRebuys).HasColumnName("max_rebuys");
         builder.Property(t => t.AddonAllowed).HasColumnName("addon_allowed");
-        builder.Property(t => t.AddonDoubleAllowed).HasColumnName("addon_double_allowed").HasDefaultValue(false);
+        // Máximo de add-ons (SPEC-20261027-1311; 0 = ilimitado). Sem HasDefaultValue: o EF deixaria de gravar o 0.
+        builder.Property(t => t.MaxAddons).HasColumnName("max_addons");
         builder.Property(t => t.LateRegistrationLevel).HasColumnName("late_registration_level");
         builder.Property(t => t.RebuyUntilLevel).HasColumnName("rebuy_until_level");
         builder.Property(t => t.SeatsPerTable).HasColumnName("seats_per_table").HasDefaultValue(9);

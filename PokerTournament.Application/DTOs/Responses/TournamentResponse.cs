@@ -24,7 +24,8 @@ public class TournamentResponse
 
     public int? MaxRebuys { get; set; }
     public bool AddonAllowed { get; set; }
-    public bool AddonDoubleAllowed { get; set; }
+    /// <summary>Máximo de add-ons por jogador (SPEC-20261027-1311): 0 = ilimitado.</summary>
+    public int MaxAddons { get; set; } = 1;
     public int? LateRegistrationLevel { get; set; }
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;

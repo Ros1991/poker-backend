@@ -527,7 +527,8 @@ public partial class AuthService
     /// Exclusão = anonimização: nome "Conta excluída", apelido/WhatsApp/foto apagados, e-mail trocado por um marcador
     /// único inválido (o endereço fica livre para um cadastro novo), senha e logins externos removidos, links
     /// pendentes revogados, participação nos home games de outras pessoas removida, todas as sessões revogadas,
-    /// IsActive = false e o nome tirado dos AuditLogs da própria conta; grava <c>AccountDeleted</c>. Os jogadores
+    /// IsActive = false e o nome tirado dos AuditLogs e dos registros de uso de IA (ai_usages.actor_name) da própria
+    /// conta; grava <c>AccountDeleted</c>. Os jogadores
     /// (Person) dos home games ficam (são dos organizadores). Devolve a foto anterior (quem chama apaga o arquivo).
     /// </summary>
     public async Task<string?> DeleteAccountAsync(
@@ -564,6 +565,13 @@ public partial class AuthService
             await _db.AuditLogs
                 .Where(a => a.UserId == user.Id)
                 .ExecuteUpdateAsync(set => set.SetProperty(a => a.UserName, DeletedAccountName), ct);
+            // Nem nos registros de uso de IA (SPEC-20261027-1312): o nome copiado em ai_usages.actor_name no momento do
+            // uso ("Tirar o fundo" no aparelho e as chamadas pagas) aparece na tela de IA da administração
+            await _db.AiUsages
+                .Where(u => u.UserId == user.Id)
+                .ExecuteUpdateAsync(set => set
+                    .SetProperty(u => u.ActorName, DeletedAccountName)
+                    .SetProperty(u => u.UpdatedAt, now), ct);
 
             user.FullName = DeletedAccountName;
             user.Nickname = null;

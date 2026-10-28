@@ -15,8 +15,9 @@ public class EntryResponse
     public int RebuyCount { get; set; }
     public decimal RebuyTotal { get; set; }
 
-    public bool AddonPurchased { get; set; }
-    public bool AddonDouble { get; set; }
+    // Add-on (SPEC-20261027-1311): quantos add-ons comprou (cada um uma unidade) e o total; AddonPurchased = tem algum
+    public int AddonCount { get; set; }
+    public bool AddonPurchased => AddonCount > 0;
     public decimal AddonAmount { get; set; }
 
     public decimal TotalDue { get; set; }

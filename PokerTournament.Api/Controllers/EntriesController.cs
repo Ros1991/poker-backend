@@ -93,8 +93,8 @@ public class EntriesController : ControllerBase
         Guid tournamentId, Guid entryId, [FromBody] AddonRequest? request, CancellationToken ct)
     {
         var userId = GetUserId();
-        var isDouble = request?.IsDouble ?? false;
-        var result = await _entryService.RegisterAddonAsync(tournamentId, entryId, userId, ct, isDouble);
+        // SPEC-20261027-1311: { quantity } (1 a 10, até o máximo do torneio); sem corpo = 1 add-on
+        var result = await _entryService.RegisterAddonAsync(tournamentId, entryId, request, userId, ct);
         return Ok(result);
     }
 

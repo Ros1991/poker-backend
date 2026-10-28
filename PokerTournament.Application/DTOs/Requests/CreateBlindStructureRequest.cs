@@ -16,7 +16,8 @@ public class CreateBlindStructureRequest
     public int? DefaultAddonStack { get; set; }
     public int? DefaultMaxRebuys { get; set; }
     public bool? DefaultAddonAllowed { get; set; }
-    public bool? DefaultAddonDoubleAllowed { get; set; }
+    // SPEC-20261027-1311: máximo de add-ons padrão (0 = ilimitado). POST: null = 1; PUT: null = manter. Negativo → 400.
+    public int? DefaultMaxAddons { get; set; }
     public int? DefaultLateRegistrationLevel { get; set; }
     public int? DefaultRebuyUntilLevel { get; set; }
     public int? DefaultSeatsPerTable { get; set; }

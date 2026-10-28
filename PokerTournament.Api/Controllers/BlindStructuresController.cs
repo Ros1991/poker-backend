@@ -2,6 +2,7 @@ using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Addons;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
@@ -78,7 +79,7 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             bs.DefaultAddonStack,
             bs.DefaultMaxRebuys,
             bs.DefaultAddonAllowed,
-            bs.DefaultAddonDoubleAllowed,
+            bs.DefaultMaxAddons,
             bs.DefaultLateRegistrationLevel,
             bs.DefaultRebuyUntilLevel,
             bs.DefaultSeatsPerTable,
@@ -136,7 +137,7 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             structure.DefaultAddonStack,
             structure.DefaultMaxRebuys,
             structure.DefaultAddonAllowed,
-            structure.DefaultAddonDoubleAllowed,
+            structure.DefaultMaxAddons,
             structure.DefaultLateRegistrationLevel,
             structure.DefaultRebuyUntilLevel,
             structure.DefaultSeatsPerTable,
@@ -192,7 +193,7 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             DefaultAddonStack = request.DefaultAddonStack,
             DefaultMaxRebuys = request.DefaultMaxRebuys,
             DefaultAddonAllowed = request.DefaultAddonAllowed ?? true,
-            DefaultAddonDoubleAllowed = request.DefaultAddonDoubleAllowed ?? false,
+            DefaultMaxAddons = AddonRules.Resolve(request.DefaultMaxAddons, AddonRules.DefaultMax),
             DefaultLateRegistrationLevel = request.DefaultLateRegistrationLevel,
             DefaultRebuyUntilLevel = request.DefaultRebuyUntilLevel,
             DefaultSeatsPerTable = request.DefaultSeatsPerTable,
@@ -268,6 +269,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             : KnockoutRules.ResolveStructureDefault(requestedKo, request.DefaultBountyAmount, request.DefaultBuyIn);
         // Formato mantido com um buy-in padrão novo: o bounty guardado também precisa ficar abaixo dele (revisão geral 2)
         KnockoutRules.EnsureBelowDefaultBuyIn(keepKoType, keepKoBounty, request.DefaultBuyIn);
+        // Máximo de add-ons padrão (SPEC-20261027-1311): null = manter; 0 = ilimitado
+        var keepMaxAddons = AddonRules.Resolve(request.DefaultMaxAddons, structure.DefaultMaxAddons);
 
         structure.Name = request.Name;
         structure.Description = request.Description;
@@ -280,7 +283,7 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         structure.DefaultAddonStack = request.DefaultAddonStack;
         structure.DefaultMaxRebuys = request.DefaultMaxRebuys;
         structure.DefaultAddonAllowed = request.DefaultAddonAllowed ?? true;
-        structure.DefaultAddonDoubleAllowed = request.DefaultAddonDoubleAllowed ?? false;
+        structure.DefaultMaxAddons = keepMaxAddons;
         structure.DefaultLateRegistrationLevel = request.DefaultLateRegistrationLevel;
         structure.DefaultRebuyUntilLevel = request.DefaultRebuyUntilLevel;
         structure.DefaultSeatsPerTable = request.DefaultSeatsPerTable;

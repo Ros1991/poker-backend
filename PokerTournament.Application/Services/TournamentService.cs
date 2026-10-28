@@ -1,6 +1,7 @@
 using System.Globalization;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Addons;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
@@ -244,6 +245,9 @@ public class TournamentService
             }
         }
 
+        // Máximo de add-ons (SPEC-20261027-1311): pedido > padrão da estrutura > 1; 0 = ilimitado
+        tournament.MaxAddons = AddonRules.Resolve(request.MaxAddons, structure?.DefaultMaxAddons ?? AddonRules.DefaultMax);
+
         // Knockout (SPEC-20261026-1909): pedido > padrão da estrutura > Normal; bounty validado contra buy-in e rebuy
         var structureKnockout = KnockoutRules.IsKnockout(structure?.DefaultKnockoutType);
         var koType = KnockoutRules.Parse(request.KnockoutType)
@@ -326,6 +330,8 @@ public class TournamentService
             tournament.RankingContribValue, tournament.ResponsiblePixKey);
         var keptKnockout = (tournament.KnockoutType, tournament.BountyAmount);
         _mapper.Map(request, tournament);
+        // Máximo de add-ons (SPEC-20261027-1311): null = manter; o Map ignora o campo
+        tournament.MaxAddons = AddonRules.Resolve(request.MaxAddons, tournament.MaxAddons);
         var hasPayments = await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.Payments, ct);
         if (!hasPayments)
         {

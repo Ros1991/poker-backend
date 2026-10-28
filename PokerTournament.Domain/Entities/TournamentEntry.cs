@@ -16,9 +16,9 @@ public class TournamentEntry : BaseEntity
     public int RebuyCount { get; set; }
     public decimal RebuyTotal { get; set; }
 
-    // Addon
-    public bool AddonPurchased { get; set; }
-    public bool AddonDouble { get; set; }
+    // Add-on (SPEC-20261027-1311): quantos add-ons o jogador comprou (cada um é uma unidade; até Tournament.MaxAddons,
+    // 0 = ilimitado) e o total em dinheiro deles. O antigo "addon duplo" virou 2 add-ons na migration AddonMaximo.
+    public int AddonCount { get; set; }
     public decimal AddonAmount { get; set; }
 
     // Totals

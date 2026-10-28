@@ -24,7 +24,9 @@ public class Tournament : SoftDeletableEntity
     // Rebuy / Addon rules
     public int? MaxRebuys { get; set; }
     public bool AddonAllowed { get; set; }
-    public bool AddonDoubleAllowed { get; set; }
+    // Máximo de add-ons por jogador (SPEC-20261027-1311): 0 = ilimitado; padrão 1. Cada add-on é uma unidade (valor e
+    // fichas do add-on por unidade). Substituiu o "addon duplo" (duplo permitido virou máximo 2 na migration AddonMaximo).
+    public int MaxAddons { get; set; } = 1;
     public int? LateRegistrationLevel { get; set; }
     public int? RebuyUntilLevel { get; set; }
 

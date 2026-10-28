@@ -37,6 +37,11 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<DealerRequest> DealerRequests => Set<DealerRequest>();
     public DbSet<TournamentActivity> TournamentActivities => Set<TournamentActivity>();
     public DbSet<UserLogin> UserLogins => Set<UserLogin>();
+    // IA na administração (SPEC-20261027-1312)
+    public DbSet<AiSettings> AiSettings => Set<AiSettings>();
+    public DbSet<AiModelPrice> AiModelPrices => Set<AiModelPrice>();
+    public DbSet<AiFeature> AiFeatures => Set<AiFeature>();
+    public DbSet<AiUsage> AiUsages => Set<AiUsage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

@@ -193,6 +193,22 @@ builder.Services.AddRateLimiter(options =>
             Window = TimeSpan.FromMinutes(1),
         });
     });
+
+    // Aviso de uso do "Tirar o fundo" (POST ai/usage, SPEC-20261027-1312): 30/min por conta ou dealer (claim sub),
+    // caindo para o IP. Só freia quem tentasse inflar a contagem da tela de IA.
+    options.AddPolicy("ai-usage", httpContext =>
+    {
+        var sub = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? httpContext.User.FindFirst("sub")?.Value;
+        var partition = !string.IsNullOrWhiteSpace(sub)
+            ? "ai:" + sub
+            : "ai-ip:" + ClientIp.Resolve(httpContext);
+        return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 30,
+            Window = TimeSpan.FromMinutes(1),
+        });
+    });
 });
 
 // SignalR. Dealer por QR: o registro guarda as conexões abertas de cada pedido aprovado
@@ -363,6 +379,30 @@ builder.Services.AddSingleton(uploadsOptions);
 builder.Services.AddScoped<PhotoService>();
 builder.Services.AddScoped<TournamentPlayerService>();
 
+// IA na administração (SPEC-20261027-1312): chave da Anthropic cifrada com a chave mestra AI_SECRETS_KEY (base64 de 32
+// bytes; em Development o valor só de desenvolvimento do appsettings.Development.json), serviço único IAiService com o SDK
+// oficial e URL base configurável (AI_BASE_URL / Ai:BaseUrl; em Development os testes a trocam pelo servidor falso).
+var aiSecretsKey = Environment.GetEnvironmentVariable(PokerTournament.Infrastructure.Ai.AesGcmSecretProtector.EnvironmentVariable)
+    ?? builder.Configuration[PokerTournament.Infrastructure.Ai.AesGcmSecretProtector.ConfigurationKey];
+var aiProtector = new PokerTournament.Infrastructure.Ai.AesGcmSecretProtector(aiSecretsKey);
+if (PokerTournament.Infrastructure.Ai.AesGcmSecretProtector.IsInvalid(aiSecretsKey))
+    Log.Error("AI_SECRETS_KEY inválida (precisa ser base64 de 32 bytes): a chave da API de IA não pode ser guardada nem lida");
+else if (!aiProtector.IsConfigured)
+    Log.Warning("AI_SECRETS_KEY ausente: a tela de Inteligência artificial avisa e não deixa salvar a chave da Anthropic");
+builder.Services.AddSingleton<IAiSecretProtector>(aiProtector);
+builder.Services.AddSingleton(new PokerTournament.Application.Ai.AiRuntimeOptions
+{
+    Development = builder.Environment.IsDevelopment(),
+    BaseUrl = Environment.GetEnvironmentVariable("AI_BASE_URL") ?? builder.Configuration["Ai:BaseUrl"],
+    MaxRetries = builder.Configuration.GetValue<int?>("Ai:MaxRetries") ?? 2,
+});
+// O SDK controla o tempo de cada chamada (AiRuntimeOptions.Timeout); o HttpClient não corta antes
+builder.Services.AddHttpClient(PokerTournament.Infrastructure.Ai.AnthropicAiService.HttpClientName,
+    c => c.Timeout = Timeout.InfiniteTimeSpan);
+builder.Services.AddScoped<IAiService, PokerTournament.Infrastructure.Ai.AnthropicAiService>();
+builder.Services.AddScoped<AiAdminService>();
+builder.Services.AddScoped<AiFeatureService>();
+
 // Cache curto do ranking público (link compartilhado por WhatsApp)
 builder.Services.AddMemoryCache();
 
@@ -448,6 +488,20 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// IA (SPEC-20261027-1312): linha única de configurações, recursos do catálogo e preços de semente (idempotente). Bloco
+// separado pelo mesmo motivo dos anteriores: não pode depender do Migrate().
+using (var scope = app.Services.CreateScope())
+{
+    try
+    {
+        await scope.ServiceProvider.GetRequiredService<AiAdminService>().EnsureCatalogAsync();
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Erro ao preparar as configurações de IA");
+    }
+}
+
 // Log de requisições POR FORA do tratamento de erros (revisão geral do programa, ondas 7–9): registra o status FINAL
 // (400/402/429 de erro de negócio em Information, sem stack). Por dentro, ele via a exceção passar e logava "responded 500"
 // com o stack trace inteiro para toda DomainException. O ErrorHandlingMiddleware loga o erro de negócio como Warning
@@ -503,6 +557,9 @@ app.MapControllers();
 // Emissor de tokens de teste do login social: rotas SÓ em Development (SPEC-20261023-1210)
 if (app.Environment.IsDevelopment())
     app.MapDevelopmentTestTokenEndpoints();
+// Testes do serviço de IA contra o servidor falso da Anthropic: rotas SÓ em Development e só Admin (SPEC-20261027-1312)
+if (app.Environment.IsDevelopment())
+    app.MapDevelopmentAiEndpoints();
 // Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)
 app.MapHub<TournamentHub>("/hubs/tournament", o => o.CloseOnAuthenticationExpiration = true);
 

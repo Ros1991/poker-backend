@@ -1,5 +1,6 @@
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Addons;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
@@ -155,8 +156,7 @@ public class EntryService
                 tournament.PlayersRemaining = Math.Max(0, tournament.PlayersRemaining - 1);
             tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - entry.TotalDue);
             tournament.TotalRebuys = Math.Max(0, tournament.TotalRebuys - entry.RebuyCount);
-            if (entry.AddonPurchased)
-                tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
+            tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - entry.AddonCount);
             // Knockout: sem eliminação com bounty (conferido acima), a cabeça dele = os bounties que ele comprou
             tournament.TotalBounties = Math.Max(0m, tournament.TotalBounties - entry.BountyHead);
 
@@ -295,7 +295,7 @@ public class EntryService
 
         if ((entry.Status != nameof(EntryStatus.Active) && entry.Status != nameof(EntryStatus.Registered))
             || hasLiveMoney || hasLiveElimination
-            || entry.RebuyCount > 0 || entry.AddonPurchased)
+            || entry.RebuyCount > 0 || entry.AddonCount > 0)
             throw new DomainException(UndoRegistrationBlockedMessage);
 
         var playerName = PlayerDisplayName(entry.Person);
@@ -445,7 +445,7 @@ public class EntryService
             BuyInAmount = tournament.BuyInAmount,
             RebuyCount = 0,
             RebuyTotal = 0,
-            AddonPurchased = false,
+            AddonCount = 0,
             AddonAmount = 0,
             TotalDue = entryCost,
             TotalPaid = 0,
@@ -567,7 +567,7 @@ public class EntryService
                 BuyInAmount = tournament.BuyInAmount,
                 RebuyCount = 0,
                 RebuyTotal = 0,
-                AddonPurchased = false,
+                AddonCount = 0,
                 AddonAmount = 0,
                 TotalDue = entryCost,
                 TotalPaid = 0,
@@ -909,9 +909,19 @@ public class EntryService
         return _mapper.Map<EntryResponse>(entry);
     }
 
+    /// <summary>
+    /// Add-on (SPEC-20261027-1311): compra <c>request.Quantity</c> add-ons (1 a 10, como o rebuy) de uma vez, até o máximo do
+    /// torneio (MaxAddons; 0 = ilimitado) — acima dele, 400 "Limite de add-ons atingido (máximo N).". Cada add-on é uma
+    /// unidade: um lançamento "Add-on k - Nome" por unidade, com o valor do add-on (desfazer tira um). Painel e dealer pelo
+    /// QR chamam este mesmo método.
+    /// </summary>
     public async Task<EntryResponse> RegisterAddonAsync(
-        Guid tournamentId, Guid entryId, Guid? registeredBy = null, CancellationToken ct = default, bool isDouble = false)
+        Guid tournamentId, Guid entryId, AddonRequest? request, Guid? registeredBy = null, CancellationToken ct = default)
     {
+        var quantity = request?.Quantity ?? 1;
+        if (quantity < 1 || quantity > AddonRules.MaxPerRequest)
+            throw new DomainException(AddonRules.InvalidQuantityMessage);
+
         var tournament = await _db.Tournaments
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
@@ -924,9 +934,6 @@ public class EntryService
         if (!tournament.AddonAllowed || !tournament.AddonAmount.HasValue || tournament.AddonAmount <= 0)
             throw new DomainException("Addon não está habilitado neste torneio.");
 
-        if (isDouble && !tournament.AddonDoubleAllowed)
-            throw new DomainException("Addon duplo não está habilitado neste torneio.");
-
         var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
             ?? throw new DomainException("Inscrição não encontrada.");
@@ -934,31 +941,31 @@ public class EntryService
         if (entry.Status != nameof(EntryStatus.Active))
             throw new DomainException("Jogador não está ativo no torneio.");
 
-        if (entry.AddonPurchased)
-            throw new DomainException("Jogador já realizou addon.");
+        if (tournament.MaxAddons > 0 && entry.AddonCount + quantity > tournament.MaxAddons)
+            throw new DomainException(AddonRules.LimitReachedMessage(tournament.MaxAddons));
 
-        var multiplier = isDouble ? 2 : 1;
-        var addonValue = tournament.AddonAmount!.Value * multiplier;
-
-        entry.AddonPurchased = true;
-        entry.AddonDouble = isDouble;
-        entry.AddonAmount = addonValue;
+        var unit = tournament.AddonAmount!.Value;
+        var firstNumber = entry.AddonCount + 1;
+        entry.AddonCount += quantity;
+        entry.AddonAmount += unit * quantity;
 
         RecalculateBalance(entry, tournament);
 
-        var addonLabel = isDouble ? "Addon Duplo" : "Addon";
-        _db.Transactions.Add(new Transaction
+        for (int i = 0; i < quantity; i++)
         {
-            TournamentId = tournamentId,
-            EntryId = entry.Id,
-            Type = nameof(TransactionType.Addon),
-            Amount = addonValue,
-            Description = $"{addonLabel} - {entry.Person.FullName}",
-            CreatedBy = registeredBy
-        });
+            _db.Transactions.Add(new Transaction
+            {
+                TournamentId = tournamentId,
+                EntryId = entry.Id,
+                Type = nameof(TransactionType.Addon),
+                Amount = unit,
+                Description = $"Add-on {firstNumber + i} - {entry.Person.FullName}",
+                CreatedBy = registeredBy
+            });
+        }
 
-        tournament.TotalAddons++;
-        tournament.TotalPrizePool += addonValue;
+        tournament.TotalAddons += quantity;
+        tournament.TotalPrizePool += unit * quantity;
         await RecalcAutoCostsAndTotals(tournament, ct);
 
         await _db.SaveChangesAsync(ct);
@@ -1037,7 +1044,10 @@ public class EntryService
         return _mapper.Map<EntryResponse>(entry);
     }
 
-    /// <summary>Desfaz o add-on ainda valendo (botão do painel). Marca a transação como desfeita.</summary>
+    /// <summary>
+    /// Desfaz o add-on MAIS RECENTE ainda valendo (botão do painel): tira um add-on (o lançamento antigo "Addon Duplo" tira
+    /// os 2 dele). Marca a transação como desfeita.
+    /// </summary>
     public async Task<EntryResponse> RemoveAddonAsync(
         Guid tournamentId, Guid entryId, Guid? removedBy = null, CancellationToken ct = default)
     {
@@ -1055,8 +1065,9 @@ public class EntryService
     }
 
     /// <summary>
-    /// Desfaz um add-on específico: marca a transação e aplica os mesmos ajustes do
-    /// registro, ao contrário (contadores, saldo, bolo e custos automáticos).
+    /// Desfaz um add-on específico: marca a transação e aplica os mesmos ajustes do registro, ao contrário (contadores,
+    /// saldo, bolo e custos automáticos). Desde a SPEC-20261027-1311 cada lançamento é um add-on; o antigo "Addon Duplo - …"
+    /// vale 2 (AddonRules.Units).
     /// </summary>
     public async Task<EntryResponse> UndoAddonAsync(
         Guid tournamentId, Guid entryId, Guid transactionId, Guid? undoneBy = null, CancellationToken ct = default)
@@ -1079,19 +1090,19 @@ public class EntryService
         if (addonTx.ReversedAt != null)
             throw new DomainException("Este item já foi desfeito.");
 
-        if (!entry.AddonPurchased)
+        if (entry.AddonCount <= 0)
             throw new DomainException("Jogador não possui addon.");
 
         addonTx.ReversedAt = DateTimeOffset.UtcNow;
         addonTx.ReversedBy = undoneBy;
         addonTx.ReversalReason = "Desfeito";
 
-        entry.AddonPurchased = false;
-        entry.AddonDouble = false;
-        entry.AddonAmount = 0;
+        var units = Math.Min(AddonRules.Units(addonTx), entry.AddonCount);
+        entry.AddonCount -= units;
+        entry.AddonAmount = entry.AddonCount == 0 ? 0 : Math.Max(0m, entry.AddonAmount - addonTx.Amount);
         RecalculateBalance(entry, tournament);
 
-        tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - 1);
+        tournament.TotalAddons = Math.Max(0, tournament.TotalAddons - units);
         tournament.TotalPrizePool = Math.Max(0, tournament.TotalPrizePool - addonTx.Amount);
         await RecalcAutoCostsAndTotals(tournament, ct);
 
@@ -1586,7 +1597,7 @@ public class EntryService
             + staffPart
             + rankingFixedPart
             + entry.RebuyTotal
-            + (entry.AddonPurchased ? entry.AddonAmount : 0);
+            + (entry.AddonCount > 0 ? entry.AddonAmount : 0);
 
         entry.Balance = entry.TotalDue - entry.TotalPaid;
 

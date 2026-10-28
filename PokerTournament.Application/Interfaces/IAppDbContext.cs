@@ -35,6 +35,11 @@ public interface IAppDbContext
     DbSet<DealerRequest> DealerRequests { get; }
     DbSet<TournamentActivity> TournamentActivities { get; }
     DbSet<UserLogin> UserLogins { get; }
+    // IA na administração (SPEC-20261027-1312)
+    DbSet<AiSettings> AiSettings { get; }
+    DbSet<AiModelPrice> AiModelPrices { get; }
+    DbSet<AiFeature> AiFeatures { get; }
+    DbSet<AiUsage> AiUsages { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

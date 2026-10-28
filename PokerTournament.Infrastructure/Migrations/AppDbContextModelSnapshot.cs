@@ -23,6 +23,328 @@ namespace PokerTournament.Infrastructure.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.AiFeature", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<bool>("IsPaid")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_paid");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("name");
+
+                    b.Property<bool>("RunsOnDevice")
+                        .HasColumnType("boolean")
+                        .HasColumnName("runs_on_device");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key")
+                        .IsUnique()
+                        .HasDatabaseName("ix_ai_features_key");
+
+                    b.ToTable("ai_features", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.AiModelPrice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("CacheReadPerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("cache_read_per_mtok");
+
+                    b.Property<decimal>("CacheWritePerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("cache_write_per_mtok");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("display_name");
+
+                    b.Property<decimal>("InputPerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("input_per_mtok");
+
+                    b.Property<decimal?>("LongCacheReadPerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("long_cache_read_per_mtok");
+
+                    b.Property<decimal?>("LongCacheWritePerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("long_cache_write_per_mtok");
+
+                    b.Property<int?>("LongContextThresholdTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("long_context_threshold_tokens");
+
+                    b.Property<decimal?>("LongInputPerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("long_input_per_mtok");
+
+                    b.Property<decimal?>("LongOutputPerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("long_output_per_mtok");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("model");
+
+                    b.Property<decimal>("OutputPerMTok")
+                        .HasColumnType("numeric(12,4)")
+                        .HasColumnName("output_per_mtok");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Model")
+                        .IsUnique()
+                        .HasDatabaseName("ix_ai_model_prices_model");
+
+                    b.ToTable("ai_model_prices", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.AiSettings", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApiKeyEncrypted")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("api_key_encrypted");
+
+                    b.Property<string>("ApiKeyLast4")
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)")
+                        .HasColumnName("api_key_last4");
+
+                    b.Property<DateTimeOffset?>("ApiKeyUpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("api_key_updated_at");
+
+                    b.Property<Guid?>("ApiKeyUpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_key_updated_by");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DefaultModel")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("default_model");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<DateTimeOffset?>("LastTestAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_test_at");
+
+                    b.Property<string>("LastTestMessage")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("last_test_message");
+
+                    b.Property<string>("LastTestModel")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("last_test_model");
+
+                    b.Property<bool?>("LastTestOk")
+                        .HasColumnType("boolean")
+                        .HasColumnName("last_test_ok");
+
+                    b.Property<decimal>("MonthlyLimitUsd")
+                        .HasColumnType("numeric(10,2)")
+                        .HasColumnName("monthly_limit_usd");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ai_settings", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.AiUsage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActorName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("actor_name");
+
+                    b.Property<long>("CacheCreationInputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("cache_creation_input_tokens");
+
+                    b.Property<long>("CacheReadInputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("cache_read_input_tokens");
+
+                    b.Property<decimal>("CostUsd")
+                        .HasColumnType("numeric(14,6)")
+                        .HasColumnName("cost_usd");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("DurationMs")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_ms");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("error_message");
+
+                    b.Property<string>("FeatureKey")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("feature_key");
+
+                    b.Property<Guid?>("HomeGameId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("home_game_id");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("input_tokens");
+
+                    b.Property<string>("Model")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("model");
+
+                    b.Property<bool>("OnDevice")
+                        .HasColumnType("boolean")
+                        .HasColumnName("on_device");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("outcome");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_tokens");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_ai_usages_created_at");
+
+                    b.HasIndex("FeatureKey", "CreatedAt")
+                        .HasDatabaseName("ix_ai_usages_feature_created_at");
+
+                    b.ToTable("ai_usages", "public");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.AuditLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -244,16 +566,8 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnName("default_addon");
 
                     b.Property<bool>("DefaultAddonAllowed")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
-                        .HasDefaultValue(true)
                         .HasColumnName("default_addon_allowed");
-
-                    b.Property<bool>("DefaultAddonDoubleAllowed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("default_addon_double_allowed");
 
                     b.Property<int?>("DefaultAddonStack")
                         .HasColumnType("integer")
@@ -288,6 +602,10 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<int?>("DefaultLateRegistrationLevel")
                         .HasColumnType("integer")
                         .HasColumnName("default_late_registration_level");
+
+                    b.Property<int>("DefaultMaxAddons")
+                        .HasColumnType("integer")
+                        .HasColumnName("default_max_addons");
 
                     b.Property<int?>("DefaultMaxRebuys")
                         .HasColumnType("integer")
@@ -1612,12 +1930,6 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("addon_amount");
 
-                    b.Property<bool>("AddonDoubleAllowed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("addon_double_allowed");
-
                     b.Property<int?>("AddonStack")
                         .HasColumnType("integer")
                         .HasColumnName("addon_stack");
@@ -1691,6 +2003,10 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<int?>("LateRegistrationLevel")
                         .HasColumnType("integer")
                         .HasColumnName("late_registration_level");
+
+                    b.Property<int>("MaxAddons")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_addons");
 
                     b.Property<int?>("MaxRebuys")
                         .HasColumnType("integer")
@@ -2063,15 +2379,9 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("decimal(10,2)")
                         .HasColumnName("addon_amount");
 
-                    b.Property<bool>("AddonDouble")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("addon_double");
-
-                    b.Property<bool>("AddonPurchased")
-                        .HasColumnType("boolean")
-                        .HasColumnName("addon_purchased");
+                    b.Property<int>("AddonCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("addon_count");
 
                     b.Property<decimal>("Balance")
                         .HasColumnType("decimal(10,2)")

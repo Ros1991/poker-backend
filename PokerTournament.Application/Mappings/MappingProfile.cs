@@ -47,7 +47,10 @@ public class MappingProfile : Profile
         // edição, validar contra o buy-in) — o Map não pode gravar null no formato
         CreateMap<CreateTournamentRequest, Tournament>()
             .ForMember(d => d.KnockoutType, o => o.Ignore())
-            .ForMember(d => d.BountyAmount, o => o.Ignore());
+            .ForMember(d => d.BountyAmount, o => o.Ignore())
+            // Máximo de add-ons (SPEC-20261027-1311): resolvido no TournamentService (null = herdar/manter); o Map gravaria
+            // 0 (ilimitado) no lugar do null
+            .ForMember(d => d.MaxAddons, o => o.Ignore());
 
         // TournamentEntry
         CreateMap<TournamentEntry, EntryResponse>()
@@ -67,7 +70,8 @@ public class MappingProfile : Profile
         // BlindStructure
         CreateMap<CreateBlindStructureRequest, BlindStructure>()
             .ForMember(d => d.DefaultKnockoutType, o => o.Ignore())
-            .ForMember(d => d.DefaultBountyAmount, o => o.Ignore());
+            .ForMember(d => d.DefaultBountyAmount, o => o.Ignore())
+            .ForMember(d => d.DefaultMaxAddons, o => o.Ignore());
         CreateMap<CreateBlindStructureRequest.BlindLevelItem, BlindLevel>();
 
         // Ranking

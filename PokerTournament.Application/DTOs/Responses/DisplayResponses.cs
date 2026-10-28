@@ -112,8 +112,9 @@ public class TvEntry
     public Guid? TableId { get; set; }
     public int? SeatNumber { get; set; }
     public int RebuyCount { get; set; }
-    public bool AddonPurchased { get; set; }
-    public bool AddonDouble { get; set; }
+    // Add-ons comprados (SPEC-20261027-1311; o antigo duplo = 2): fichas em jogo = AddonCount × fichas do add-on
+    public int AddonCount { get; set; }
+    public bool AddonPurchased => AddonCount > 0;
     public decimal Balance { get; set; }
     public decimal TotalDue { get; set; }
     public decimal? PrizeAmount { get; set; }

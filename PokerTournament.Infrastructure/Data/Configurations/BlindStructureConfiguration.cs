@@ -54,13 +54,15 @@ public class BlindStructureConfiguration : IEntityTypeConfiguration<BlindStructu
         builder.Property(b => b.DefaultMaxRebuys)
             .HasColumnName("default_max_rebuys");
 
+        // Sem HasDefaultValue(true) (SPEC-20261027-1311): com valor padrão no banco o EF não grava o false (o valor "vazio"
+        // do bool) e a estrutura criada com "Permitir add-on" desmarcado nascia com add-on. O padrão true vem da entidade.
         builder.Property(b => b.DefaultAddonAllowed)
-            .HasColumnName("default_addon_allowed")
-            .HasDefaultValue(true);
+            .HasColumnName("default_addon_allowed");
 
-        builder.Property(b => b.DefaultAddonDoubleAllowed)
-            .HasColumnName("default_addon_double_allowed")
-            .HasDefaultValue(false);
+        // SPEC-20261027-1311: sem HasDefaultValue no modelo — com valor padrão no banco o EF não grava o 0 (ilimitado),
+        // que é o valor "vazio" do int, e o banco poria 1. O padrão 1 vem da entidade e do pedido.
+        builder.Property(b => b.DefaultMaxAddons)
+            .HasColumnName("default_max_addons");
 
         builder.Property(b => b.DefaultLateRegistrationLevel)
             .HasColumnName("default_late_registration_level");

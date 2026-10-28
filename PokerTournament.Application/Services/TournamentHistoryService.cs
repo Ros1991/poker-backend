@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Addons;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
@@ -257,7 +258,7 @@ public class TournamentHistoryService
                         item.CanUndo = hasEntry
                             && (entry!.Status == nameof(EntryStatus.Active) || entry.Status == nameof(EntryStatus.Registered))
                             && entry.RebuyCount == 0
-                            && !entry.AddonPurchased
+                            && entry.AddonCount == 0
                             && !liveMoneyByEntry.Contains(entry.Id)
                             && !liveEliminationByEntry.Contains(entry.Id);
                         if (!item.CanUndo)
@@ -456,8 +457,9 @@ public class TournamentHistoryService
         var parts = new List<string> { "buy-in" };
         if (entry.RebuyCount > 0)
             parts.Add(entry.RebuyCount == 1 ? "1 rebuy" : $"{entry.RebuyCount} rebuys");
-        if (entry.AddonPurchased)
-            parts.Add(entry.AddonDouble ? "add-on duplo" : "add-on");
+        // SPEC-20261027-1311: quantidade de add-ons (o antigo duplo = 2)
+        if (entry.AddonCount > 0)
+            parts.Add(entry.AddonCount == 1 ? "add-on" : $"{entry.AddonCount} add-ons");
         var what = parts.Count == 1
             ? parts[0]
             : string.Join(", ", parts.Take(parts.Count - 1)) + " e " + parts[^1];
@@ -484,9 +486,8 @@ public class TournamentHistoryService
                 return $"Rebuy ({Money(t.Amount)})";
 
             case nameof(TransactionType.Addon):
-                // RegisterAddonAsync grava "Addon Duplo - {nome}" quando é duplo
-                var isDouble = t.Description?.StartsWith("Addon Duplo", StringComparison.OrdinalIgnoreCase) == true;
-                return isDouble ? $"Add-on duplo ({Money(t.Amount)})" : $"Add-on ({Money(t.Amount)})";
+                // Cada lançamento é um add-on (SPEC-20261027-1311); o antigo "Addon Duplo - {nome}" vale 2
+                return AddonRules.IsLegacyDouble(t) ? $"2 add-ons ({Money(t.Amount)})" : $"Add-on ({Money(t.Amount)})";
 
             case nameof(TransactionType.Payment):
                 var text = DescribePayment(t);
