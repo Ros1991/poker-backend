@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
+using PokerTournament.Api.Hubs;
 using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -25,10 +27,39 @@ namespace PokerTournament.Api.Controllers;
 public class TablesController : ControllerBase
 {
     private readonly IAppDbContext _db;
+    private readonly IHubContext<TournamentHub> _hub;
+    private readonly ILogger<TablesController> _logger;
 
-    public TablesController(IAppDbContext db)
+    /// <summary>
+    /// Evento SignalR de "as mesas mudaram" (SPEC-20261027-2133), mandado ao grupo do torneio DEPOIS do commit de toda
+    /// mudança de mesa/lugar daqui (criar, sortear, balancear, mover, trocar, quebrar, tirar da mesa, dealer, excluir).
+    /// Quem está conectado (painel e terminal do dealer — useWebSocket) recarrega mesas e inscrições na hora; o telão
+    /// (sem login, sem hub) segue pela consulta de 3 s do snapshot.
+    /// </summary>
+    public const string TablesUpdateEvent = "TablesUpdate";
+
+    public TablesController(IAppDbContext db, IHubContext<TournamentHub> hub, ILogger<TablesController> logger)
     {
         _db = db;
+        _hub = hub;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Avisa o grupo do torneio que as mesas mudaram. Melhor esforço: a mudança já foi gravada, então falha do SignalR só
+    /// vai para o log (quem não recebeu atualiza na próxima consulta).
+    /// </summary>
+    private async Task NotifyTablesAsync(Guid tournamentId, string action, Guid? tableId = null, string? tableName = null)
+    {
+        try
+        {
+            await _hub.Clients.Group($"tournament_{tournamentId}")
+                .SendAsync(TablesUpdateEvent, new { tournamentId, action, tableId, tableName }, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Não foi possível avisar o torneio {TournamentId} da mudança de mesa ({Action})", tournamentId, action);
+        }
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
@@ -99,6 +130,7 @@ public class TablesController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, "created", table.Id, EntryService.TableDisplayName(table));
 
         return Ok(new { table.Id, table.TableNumber });
     }
@@ -228,6 +260,7 @@ public class TablesController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, "drawn");
 
         // Retornar lista de mesas criadas (ordem por tableNumber)
         var createdTables = tables
@@ -276,6 +309,7 @@ public class TablesController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
+        await NotifyTablesAsync(tournamentId, "balanced");
         return Ok(new { message = "Mesas balanceadas com sucesso." });
     }
 
@@ -327,6 +361,12 @@ public class TablesController : ControllerBase
         // eliminação, outro aparelho), não troca ninguém: o terminal sorteia de novo
         if (occupant != null && isBalance)
             throw new DomainException("O lugar de destino já está ocupado. Sorteie de novo.");
+
+        // Arrastar até um lugar VAZIO (SPEC-20261027-2133): alguém sentou nele enquanto arrastava (outro aparelho) —
+        // não troca com quem chegou; a troca de propósito vai pela rota swap
+        if (occupant != null && request.RequireFreeSeat)
+            throw new DomainException(
+                $"{EntryService.PlayerDisplayName(occupant.Person)} acabou de sentar nesse lugar. Confira as mesas e tente de novo.");
 
         // Troca só faz sentido entre dois jogadores sentados (senão o ocupante ficaria sem mesa)
         if (occupant != null && (fromTable is null || fromSeat is null))
@@ -396,8 +436,105 @@ public class TablesController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, occupant != null ? "swapped" : "moved", table.Id, EntryService.TableDisplayName(table));
         return Ok(new {
             message = occupant != null ? "Jogadores trocados com sucesso." : "Jogador movido com sucesso."
+        });
+    }
+
+    /// <summary>
+    /// Troca dois jogadores de lugar numa operação só (SPEC-20261027-2133: soltar um jogador no lugar ocupado por
+    /// outro, no painel). As duas inscrições são do torneio da rota, estão jogando e sentadas em mesa ativa; com a trava
+    /// de lugares do torneio (a mesma do mover, da inscrição e da quebra) os dois mudam ou nenhum, e operações ao mesmo
+    /// tempo não deixam dois jogadores no mesmo lugar. Mesmo registro do mover com troca (PlayersSwapped dos dois lados)
+    /// e o mesmo aviso em tempo real. Lugares esperados (opcionais) que não batem → 400 sem mexer em ninguém.
+    /// </summary>
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpPost("swap")]
+    public async Task<ActionResult> SwapPlayers(
+        Guid tournamentId, [FromBody] SwapPlayersRequest request, CancellationToken ct)
+    {
+        if (request.EntryId == request.OtherEntryId)
+            throw new DomainException("Escolha dois jogadores diferentes para trocar de lugar.");
+
+        await using var dbTx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, tournamentId, ct);
+
+        var pair = await _db.EntriesWithPerson()
+            .Where(e => e.TournamentId == tournamentId && (e.Id == request.EntryId || e.Id == request.OtherEntryId))
+            .ToListAsync(ct);
+        var entry = pair.FirstOrDefault(e => e.Id == request.EntryId)
+            ?? throw new DomainException("Inscrição não encontrada.");
+        var other = pair.FirstOrDefault(e => e.Id == request.OtherEntryId)
+            ?? throw new DomainException("Inscrição não encontrada.");
+
+        var name = EntryService.PlayerDisplayName(entry.Person);
+        var otherName = EntryService.PlayerDisplayName(other.Person);
+
+        foreach (var (e, n) in new[] { (entry, name), (other, otherName) })
+        {
+            if (!IsPlaying(e.Status))
+                throw new DomainException($"{n} não está mais jogando o torneio.");
+            if (e.TableId is null || e.SeatNumber is null)
+                throw new DomainException($"{n} está sem lugar. Use \"Mover jogador\" para sentá-lo.");
+        }
+
+        var tableIds = new[] { entry.TableId!.Value, other.TableId!.Value };
+        var tables = await _db.TournamentTables
+            .Where(t => t.TournamentId == tournamentId && t.IsActive && tableIds.Contains(t.Id))
+            .ToListAsync(ct);
+        var entryTable = tables.FirstOrDefault(t => t.Id == entry.TableId)
+            ?? throw new DomainException("Mesa não encontrada.");
+        var otherTable = tables.FirstOrDefault(t => t.Id == other.TableId)
+            ?? throw new DomainException("Mesa não encontrada.");
+
+        // O que o painel via ao soltar: se um dos dois mudou de lugar nesse meio-tempo (outro aparelho), não troca
+        const string moved = "mudou de lugar enquanto você arrastava. Confira as mesas e tente de novo.";
+        if ((request.FromTableId.HasValue && request.FromTableId != entry.TableId)
+            || (request.FromSeat.HasValue && request.FromSeat != entry.SeatNumber))
+            throw new DomainException($"{name} {moved}");
+        if ((request.ToTableId.HasValue && request.ToTableId != other.TableId)
+            || (request.ToSeat.HasValue && request.ToSeat != other.SeatNumber))
+            throw new DomainException($"{otherName} {moved}");
+
+        var fromSeat = entry.SeatNumber;
+        var toSeat = other.SeatNumber;
+        entry.TableId = otherTable.Id;
+        entry.SeatNumber = toSeat;
+        other.TableId = entryTable.Id;
+        other.SeatNumber = fromSeat;
+
+        var fromText = SeatText(entryTable, fromSeat);
+        var toText = SeatText(otherTable, toSeat);
+        var userId = GetUserId();
+        // Mesmo registro do mover com troca: o do arrastado na lista e o espelho no histórico do outro
+        _db.TournamentActivities.Add(new TournamentActivity
+        {
+            TournamentId = tournamentId,
+            EntryId = entry.Id,
+            Type = nameof(TournamentActivityType.PlayersSwapped),
+            Description = $"{name} trocou de lugar com {otherName}: {fromText} → {toText}",
+            CreatedBy = userId
+        });
+        _db.TournamentActivities.Add(new TournamentActivity
+        {
+            TournamentId = tournamentId,
+            EntryId = other.Id,
+            Type = nameof(TournamentActivityType.PlayersSwapped),
+            Description = $"{otherName} trocou de lugar com {name}: {toText} → {fromText}",
+            CreatedBy = userId,
+            PlayerOnly = true
+        });
+
+        await _db.SaveChangesAsync(ct);
+        await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, "swapped", otherTable.Id, EntryService.TableDisplayName(otherTable));
+
+        return Ok(new
+        {
+            message = $"{name} e {otherName} trocaram de lugar.",
+            entry = new { entry.Id, Name = name, entry.TableId, TableName = EntryService.TableDisplayName(otherTable), entry.SeatNumber },
+            other = new { other.Id, Name = otherName, other.TableId, TableName = EntryService.TableDisplayName(entryTable), other.SeatNumber },
         });
     }
 
@@ -520,6 +657,7 @@ public class TablesController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, "broken", broken.Id, brokenName);
 
         return Ok(new BreakTableResponse
         {
@@ -566,6 +704,7 @@ public class TablesController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, "unseated");
         return Ok(new { message = "Jogador removido da mesa." });
     }
 
@@ -579,21 +718,62 @@ public class TablesController : ControllerBase
 
         table.DealerPersonId = request.DealerPersonId;
         await _db.SaveChangesAsync(ct);
+        await NotifyTablesAsync(tournamentId, "dealer", table.Id, EntryService.TableDisplayName(table));
         return Ok(new { message = "Dealer atualizado." });
     }
 
+    /// <summary>
+    /// Exclui uma mesa SEM ninguém jogando sentado nela (SPEC-20261027-2133: mesa criada à toa). Com a trava de lugares
+    /// do torneio: quem senta pela inscrição, pelo mover ou pelo desfazer eliminação ao mesmo tempo ou entra antes (e a
+    /// exclusão é recusada com 400 em pt-BR) ou depois (e já não acha a mesa). A linha fica inativa (o número continua
+    /// reservado e o "Criar Mesa" com ele reativa — TableOpener), o dealer dela é liberado e a mudança vai para o
+    /// histórico e para o aviso em tempo real; telão e terminal deixam de mostrá-la (só listam mesa ativa). Mesa já
+    /// excluída/quebrada → 204 sem mexer em nada (dois aparelhos excluindo a mesma mesa).
+    /// </summary>
     [HttpDelete("{tableId:guid}")]
-    
     public async Task<ActionResult> Delete(Guid tournamentId, Guid tableId, CancellationToken ct)
     {
+        await using var dbTx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, tournamentId, ct);
+
         var table = await _db.TournamentTables
+            .Include(t => t.DealerPerson)
             .FirstOrDefaultAsync(t => t.Id == tableId && t.TournamentId == tournamentId, ct);
 
         if (table is null)
             return NotFound(new { message = "Mesa não encontrada." });
+        if (!table.IsActive)
+            return NoContent();
 
+        var tableName = EntryService.TableDisplayName(table);
+        var seatedCount = await _db.TournamentEntries
+            .CountAsync(e => e.TournamentId == tournamentId
+                          && e.TableId == table.Id
+                          && (e.Status == nameof(EntryStatus.Active) || e.Status == nameof(EntryStatus.Registered)), ct);
+        if (seatedCount > 0)
+            throw new DomainException(seatedCount == 1
+                ? $"A {tableName} ainda tem 1 jogador sentado. Mova o jogador ou quebre a mesa antes de excluir."
+                : $"A {tableName} ainda tem {seatedCount} jogadores sentados. Mova os jogadores ou quebre a mesa antes de excluir.");
+
+        var dealerName = table.DealerPerson is null ? null : EntryService.PlayerDisplayName(table.DealerPerson);
         table.IsActive = false;
+        table.IsFinalTable = false;
+        // O dealer atribuído fica livre para outra mesa
+        table.DealerPersonId = null;
+
+        _db.TournamentActivities.Add(new TournamentActivity
+        {
+            TournamentId = tournamentId,
+            Type = nameof(TournamentActivityType.TableDeleted),
+            Description = dealerName is null
+                ? $"{tableName} excluída (sem jogadores)"
+                : $"{tableName} excluída (sem jogadores); o dealer {dealerName} ficou livre",
+            CreatedBy = GetUserId()
+        });
+
         await _db.SaveChangesAsync(ct);
+        await dbTx.CommitAsync(ct);
+        await NotifyTablesAsync(tournamentId, "deleted", table.Id, tableName);
 
         return NoContent();
     }
