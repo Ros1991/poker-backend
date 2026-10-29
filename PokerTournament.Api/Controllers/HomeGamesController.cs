@@ -23,6 +23,10 @@ namespace PokerTournament.Api.Controllers;
 /// Chave PIX (SPEC-20261023-1218): criar/editar gravam a chave no formato do DICT (PixKeyNormalizer; fora de formato →
 /// 400 com a mensagem) e o beneficiário com Trim (vazio → null), sem checagem de plano. O PUT copia o pedido inteiro:
 /// o frontend manda chave, beneficiário e os três valores padrão para não apagá-los.
+/// Home game principal (SPEC-20261029-1723): toda conta tem um (<see cref="HomeGamePrimary"/>); as respostas levam
+/// isPrimary, isNameDefault e displayName (null no principal de dono Mesa). Criar outro só na Liga (o principal não conta
+/// no limite; Mesa e Clube → 402); o PUT renomeia o principal (é o "nome do clube" no Clube/Liga); o DELETE recusa o
+/// principal (400).
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -38,12 +42,13 @@ public class HomeGamesController : HomeGameScopedControllerBase
         _plans = plans;
     }
 
-    // Map + contagens + plano efetivo do dono (ownerPlan/planFeatures)
+    // Map + contagens + plano efetivo do dono (ownerPlan/planFeatures) + nome exibido do principal
     private async Task<HomeGameResponse> ToResponseAsync(HomeGame homeGame, CancellationToken ct)
     {
         var response = _mapper.Map<HomeGameResponse>(homeGame);
         await ApplyCountsAsync([response], ct);
         await _plans.ApplyOwnerPlanAsync([response], ct);
+        await HomeGamePrimary.ApplyAsync(_db, [response], ct);
         return response;
     }
 
@@ -81,17 +86,20 @@ public class HomeGamesController : HomeGameScopedControllerBase
     {
         var userId = GetUserId();
 
+        // O principal da própria conta primeiro (SPEC-20261029-1723), depois por nome
         var homeGames = await _db.HomeGames
             .Where(h => h.IsActive && (
                 h.OwnerId == userId ||
                 h.Members.Any(m => m.UserId == userId )
             ))
-            .OrderBy(h => h.Name)
+            .OrderByDescending(h => h.OwnerId == userId && h.IsPrimary)
+            .ThenBy(h => h.Name)
             .ToListAsync(ct);
 
         var responses = _mapper.Map<List<HomeGameResponse>>(homeGames);
         await ApplyCountsAsync(responses, ct);
         await _plans.ApplyOwnerPlanAsync(responses, ct);
+        await HomeGamePrimary.ApplyAsync(_db, responses, ct);
         return Ok(responses);
     }
 
@@ -117,12 +125,14 @@ public class HomeGamesController : HomeGameScopedControllerBase
     {
         var userId = GetUserId();
 
-        // Limite de home games como dono (trava por dono na transação: dois cliques não passam juntos)
+        // Limite de home games como dono (trava por dono na transação: dois cliques não passam juntos). O principal não
+        // conta (SPEC-20261029-1723); conta sem principal (só fora do fluxo normal) faz deste o principal.
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        await _plans.EnsureCanCreateHomeGameAsync(userId, ct);
+        var becomesPrimary = await _plans.EnsureCanCreateHomeGameAsync(userId, ct);
 
         var homeGame = _mapper.Map<HomeGame>(request);
         homeGame.OwnerId = userId;
+        homeGame.IsPrimary = becomesPrimary;
         homeGame.PixKey = PixKeyNormalizer.NormalizeForWrite(request.PixKey, request.PixKeyType);
         homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
 
@@ -184,8 +194,9 @@ public class HomeGamesController : HomeGameScopedControllerBase
     }
 
     /// <summary>
-    /// O que some junto com o home game (SPEC-20261026-1126) — torneios, jogadores, rankings, membros — e o torneio em
-    /// andamento que impede a exclusão. Só o dono e o Admin do sistema (membro administrador não exclui).
+    /// O que some junto com o home game (SPEC-20261026-1126) — torneios, jogadores, rankings, membros — e o que impede a
+    /// exclusão (torneio em andamento ou, desde a SPEC-20261029-1723, ser o principal da conta: <c>isPrimary</c> +
+    /// <c>blockedMessage</c>). Só o dono e o Admin do sistema (membro administrador não exclui).
     /// </summary>
     [HttpGet("{id:guid}/deletion-summary")]
     public async Task<ActionResult<HomeGameDeletionSummaryResponse>> GetDeletionSummary(
@@ -204,7 +215,8 @@ public class HomeGamesController : HomeGameScopedControllerBase
     /// ({ "confirmName": "..." }, sem diferenciar maiúsculas e ignorando espaços nas pontas). Exclusão lógica em cascata
     /// (torneios, jogadores, rankings; membros saem; TVs e dealers desconectados; AuditLog HomeGameDeleted) — ver
     /// <see cref="HomeGameDeletionService"/>. 404 inexistente/já excluído; 403 quem não é dono nem Admin (membro,
-    /// outro grupo; o token de dealer nem chega aqui); 400 nome vazio/diferente ou torneio em andamento; 204 excluído.
+    /// outro grupo; o token de dealer nem chega aqui); 400 principal da conta (SPEC-20261029-1723, também para o Admin),
+    /// nome vazio/diferente ou torneio em andamento; 204 excluído.
     /// </summary>
     [HttpDelete("{id:guid}")]
     public async Task<ActionResult> Delete(

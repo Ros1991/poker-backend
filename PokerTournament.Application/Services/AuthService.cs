@@ -50,6 +50,8 @@ public partial class AuthService
     private readonly LoginAttemptLimiter _loginLimiter;
     // Teto diário de cadastros por IP (revisão da SPEC-20261023-1209)
     private readonly RegistrationLimiter _registrationLimiter;
+    // Excluir a conta leva junto o home game principal dela (SPEC-20261029-1723) — AuthService.Profile.cs
+    private readonly HomeGameDeletionService _homeGameDeletion;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
@@ -63,9 +65,11 @@ public partial class AuthService
         ExternalLoginEmailService externalEmail,
         LoginAttemptLimiter loginLimiter,
         RegistrationLimiter registrationLimiter,
+        HomeGameDeletionService homeGameDeletion,
         ILogger<AuthService> logger)
     {
         _registrationLimiter = registrationLimiter;
+        _homeGameDeletion = homeGameDeletion;
         _db = db;
         _tokens = tokens;
         _cache = cache;
@@ -346,6 +350,8 @@ public partial class AuthService
                 user.RefreshToken = null;
                 user.RefreshTokenExpiresAt = null;
                 AddAudit(user, EmailConfirmationService.AuditAction, """{"via":"link"}""", ip, userAgent, now);
+                // Conta confirmada nasce com o home game principal "Clube de <nome>" (SPEC-20261029-1723)
+                await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
 
                 // Sessões não deveriam existir em conta não confirmada; se houver, caem (a senha pode ter mudado)
                 await RevokeAllSessionsAsync(user.Id, ct);

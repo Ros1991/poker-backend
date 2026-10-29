@@ -1314,6 +1314,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsPrimary")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_primary");
+
                     b.Property<string>("Location")
                         .HasColumnType("text")
                         .HasColumnName("location");
@@ -1370,6 +1374,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_home_games_owner_name")
                         .HasFilter("deleted_at IS NULL");
+
+                    b.HasIndex(new[] { "OwnerId" }, "ix_home_games_owner_primary")
+                        .IsUnique()
+                        .HasFilter("is_primary AND deleted_at IS NULL");
 
                     b.ToTable("home_games", "public");
                 });

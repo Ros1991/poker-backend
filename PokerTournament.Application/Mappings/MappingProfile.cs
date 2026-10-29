@@ -25,7 +25,11 @@ public class MappingProfile : Profile
             .ForMember(d => d.MemberCount, o => o.Ignore())
             .ForMember(d => d.TournamentCount, o => o.Ignore())
             .ForMember(d => d.OwnerPlan, o => o.Ignore())
-            .ForMember(d => d.PlanFeatures, o => o.Ignore());
+            .ForMember(d => d.PlanFeatures, o => o.Ignore())
+            // SPEC-20261029-1723: dependem do plano e do nome do dono (HomeGamePrimary.ApplyAsync no controller)
+            .ForMember(d => d.IsNameDefault, o => o.Ignore())
+            .ForMember(d => d.DisplayName, o => o.Ignore());
+        // Sem IsPrimary no pedido: criar/editar nunca mexe no principal pelo corpo (SPEC-20261029-1723)
         CreateMap<CreateHomeGameRequest, HomeGame>();
 
         // HomeGameMember

@@ -21,7 +21,10 @@ public class ProfileResponse
     public DateTimeOffset? EmailConfirmedAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastLoginAt { get; set; }
-    /// <summary>Home games dos quais a conta é dona (com algum, excluir a conta fica bloqueado).</summary>
+    /// <summary>
+    /// Home games dos quais a conta é dona ALÉM do principal da conta (com algum, excluir a conta fica bloqueado). O
+    /// principal (SPEC-20261029-1723) não conta: ele sai junto com a conta.
+    /// </summary>
     public int OwnedHomeGames { get; set; }
     /// <summary>Plano efetivo (atalho para "Meu plano").</summary>
     public string EffectivePlan { get; set; } = "Mesa";

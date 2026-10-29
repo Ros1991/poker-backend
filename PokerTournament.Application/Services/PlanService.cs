@@ -205,24 +205,47 @@ public class PlanService
     // ------------------------------------------------------------------ limites de criação
 
     /// <summary>
-    /// Novo home game como dono: conta os home games do usuário (o filtro global já tira os excluídos)
-    /// contra MaxOwnedHomeGames → 402 home_games_limit. Dentro de uma transação, trava por dono
-    /// (dois cliques simultâneos não passam juntos).
+    /// Novo home game como dono (SPEC-20261029-1723: o principal da conta não conta no limite). Dentro de uma transação,
+    /// trava por dono (dois cliques simultâneos não passam juntos).
+    /// <list type="bullet">
+    /// <item>Conta SEM principal (só conta antiga sem backfill ou confirmada por fora do fluxo, como os scripts de teste
+    /// que confirmam por SQL): o novo home game vira o principal e passa em qualquer plano — devolve true.</item>
+    /// <item>Com principal: os outros home games da conta (o filtro global já tira os excluídos) contra
+    /// <c>MaxOwnedHomeGames - 1</c> → Mesa e Clube nenhum (402 home_games_limit, "a sua conta já é o seu clube"), Liga 2
+    /// (o 3º home game passa, o 4º dá 402). Devolve false.</item>
+    /// </list>
+    /// Com Plans:Enforce = false só a regra do principal vale (nunca 402).
     /// </summary>
-    public async Task EnsureCanCreateHomeGameAsync(Guid userId, CancellationToken ct = default)
+    public async Task<bool> EnsureCanCreateHomeGameAsync(Guid userId, CancellationToken ct = default)
     {
-        if (!Enforce)
-            return;
-
         await LockAsync($"owner:{userId}", ct);
+        if (!await _db.HomeGames.AnyAsync(h => h.OwnerId == userId && h.IsPrimary, ct))
+            return true;
+        if (!Enforce)
+            return false;
+
         var plan = await GetUserEffectivePlanAsync(userId, ct);
         var definition = PlanCatalog.Get(plan);
-        var owned = await _db.HomeGames.CountAsync(h => h.OwnerId == userId, ct);
-        if (owned < definition.MaxOwnedHomeGames)
-            return;
+        var others = await _db.HomeGames.CountAsync(h => h.OwnerId == userId && !h.IsPrimary, ct);
+        if (others < definition.MaxOwnedHomeGames - 1)
+            return false;
 
+        var owned = others + 1;
         var next = NextPlan(plan, p => p.MaxOwnedHomeGames > owned);
-        var message = $"O plano {plan} permite {Count(definition.MaxOwnedHomeGames, "home game", "home games")} como dono.";
+        if (definition.MaxOwnedHomeGames <= 1)
+        {
+            // Mesa e Clube: a conta tem um só (o principal), que é a própria conta — não há "outro home game" para criar.
+            // Sem usage/limit: "1 de 1 home game" não faz sentido para quem nem vê home game.
+            var single = $"No plano {plan} a sua conta já é o seu clube: não dá para criar outros home games.";
+            if (next is not null)
+                single += $" No plano {next.Name} você pode ter até {Count(next.MaxOwnedHomeGames, "home game", "home games")}"
+                    + $" (o da sua conta e mais {next.MaxOwnedHomeGames - 1}).";
+            throw new PlanLimitException(
+                PlanLimitException.HomeGamesLimit, single, plan, next?.Name ?? PlanCatalog.Liga);
+        }
+
+        var message = $"O plano {plan} permite até {Count(definition.MaxOwnedHomeGames, "home game", "home games")} como dono"
+            + $" (o da sua conta e mais {definition.MaxOwnedHomeGames - 1}).";
         if (next is not null)
             message += $" No plano {next.Name} você pode ter até {Count(next.MaxOwnedHomeGames, "home game", "home games")}.";
 
@@ -333,10 +356,12 @@ public class PlanService
         var definition = PlanCatalog.Get(effective);
         var limitsApply = Enforce;
 
+        // O principal primeiro (SPEC-20261029-1723), depois os outros por nome
         var homeGames = await _db.HomeGames.AsNoTracking()
             .Where(h => h.OwnerId == userId)
-            .OrderBy(h => h.Name)
-            .Select(h => new { h.Id, h.Name, Members = h.Members.Count })
+            .OrderByDescending(h => h.IsPrimary)
+            .ThenBy(h => h.Name)
+            .Select(h => new { h.Id, h.Name, h.IsPrimary, Members = h.Members.Count })
             .ToListAsync(ct);
 
         var window = await TournamentsInWindowAsync(userId, ct);
@@ -351,9 +376,11 @@ public class PlanService
             ExpiresAt = user.PlanExpiresAt,
             Source = user.PlanSource,
             Note = user.PlanNote,
+            PrimaryHomeGameId = homeGames.FirstOrDefault(h => h.IsPrimary)?.Id,
             Limits = new PlanLimitsResponse
             {
                 MaxOwnedHomeGames = definition.MaxOwnedHomeGames,
+                HomeGamesVisible = definition.HomeGamesVisible,
                 MaxMembersPerHomeGame = definition.MaxMembersPerHomeGame,
                 TournamentsPer7Days = definition.TournamentsPer7Days,
             },
@@ -373,6 +400,7 @@ public class PlanService
                     {
                         HomeGameId = h.Id,
                         Name = h.Name,
+                        IsPrimary = h.IsPrimary,
                         Used = h.Members,
                         Limit = definition.MaxMembersPerHomeGame,
                     })

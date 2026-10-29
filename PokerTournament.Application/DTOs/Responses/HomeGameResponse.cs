@@ -15,6 +15,22 @@ public class HomeGameResponse
     public decimal? DefaultRebuy { get; set; }
     public decimal? DefaultAddon { get; set; }
     public bool IsActive { get; set; }
+    /// <summary>
+    /// Home game principal da conta do dono (SPEC-20261029-1723): nunca excluível; no Mesa e no Clube é o único e a
+    /// interface não fala em "home game" (a conta é o clube).
+    /// </summary>
+    public bool IsPrimary { get; set; }
+    /// <summary>
+    /// O principal ainda tem o nome padrão "Clube de &lt;nome do dono&gt;" (dica "Dê um nome ao seu clube" em
+    /// Configurações). Sempre false nos outros home games.
+    /// </summary>
+    public bool IsNameDefault { get; set; }
+    /// <summary>
+    /// Nome que a interface mostra: null no principal de dono Mesa (o frontend trata null como "sem home game": no Mesa
+    /// não existe nome de clube); senão <see cref="Name"/> (o "nome do clube" no Clube/Liga). Preenchido pelo controller
+    /// depois do plano (HomeGamePrimary.ApplyAsync).
+    /// </summary>
+    public string? DisplayName { get; set; }
     public int MemberCount { get; set; }
     public int TournamentCount { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

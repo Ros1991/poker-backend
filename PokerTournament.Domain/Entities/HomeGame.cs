@@ -14,6 +14,12 @@ public class HomeGame : SoftDeletableEntity
     public decimal? DefaultRebuy { get; set; }
     public decimal? DefaultAddon { get; set; }
     public bool IsActive { get; set; } = true;
+    /// <summary>
+    /// Home game principal da conta (SPEC-20261029-1723): um por dono, criado junto da conta (ou pela migration
+    /// HomeGamePrincipal) e nunca excluído. No Mesa e no Clube é o único — a interface não fala em "home game": a conta
+    /// é o clube, e no Clube o <see cref="Name"/> é o "nome do clube". Só a Liga cria outros (até 3 com o principal).
+    /// </summary>
+    public bool IsPrimary { get; set; }
 
     // Navigation
     public User Owner { get; set; } = null!;

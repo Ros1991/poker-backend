@@ -55,6 +55,11 @@ public class HomeGameConfiguration : IEntityTypeConfiguration<HomeGame>
             .HasColumnName("owner_id")
             .IsRequired();
 
+        // Principal da conta (SPEC-20261029-1723); sem valor padrão no modelo (o EF grava sempre o que a entidade tem)
+        builder.Property(h => h.IsPrimary)
+            .HasColumnName("is_primary")
+            .IsRequired();
+
         // Nome único POR DONO entre os não excluídos (revisão geral do programa, ondas 7–9): donos diferentes podem
         // repetir o nome; o mesmo dono recebe 400 "Você já tem um home game chamado X." (HomeGamesController, também na
         // corrida). O índice antigo ix_home_games_name era do banco inteiro e o 2º grupo com o mesmo nome levava 500.
@@ -66,6 +71,12 @@ public class HomeGameConfiguration : IEntityTypeConfiguration<HomeGame>
         // Índice da FK do dono declarado à parte: o composto acima é parcial (deleted_at IS NULL) e não serve às
         // buscas por dono que incluem os excluídos
         builder.HasIndex(h => h.OwnerId);
+
+        // Um principal por dono entre os não excluídos (SPEC-20261029-1723): dois caminhos criando ao mesmo tempo
+        // não deixam a conta com dois
+        builder.HasIndex(h => h.OwnerId, HomeGamePrimary.UniqueIndex)
+            .IsUnique()
+            .HasFilter("is_primary AND deleted_at IS NULL");
 
         builder.HasIndex(h => h.DeletedAt)
             .HasFilter("deleted_at IS NULL")

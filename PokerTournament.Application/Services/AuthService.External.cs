@@ -147,6 +147,8 @@ public partial class AuthService
                     };
                     _db.Users.Add(user);
                     await _db.SaveChangesAsync(ct); // gera o Id para o vínculo e a sessão
+                    // Conta nova nasce com o home game principal "Clube de <nome>" (SPEC-20261029-1723)
+                    await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
                     AddLogin(user, provider, identity.Subject, email, now);
                     AddAudit(user, ExternalLoginCreatedAction, Json(new { provider = provider.StoredName }), ip, userAgent, now);
                     _logger.LogInformation("Conta criada pelo {Provider}: usuário {UserId}", provider.DisplayName, user.Id);
@@ -162,6 +164,8 @@ public partial class AuthService
                     // quem a criou deixam de valer; sessões não deveriam existir, mas caem também.
                     user = existing;
                     user.EmailConfirmedAt = now;
+                    // Confirmada agora: ganha o home game principal (SPEC-20261029-1723)
+                    await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
                     user.PasswordHash = null;
                     user.RefreshToken = null;
                     user.RefreshTokenExpiresAt = null;

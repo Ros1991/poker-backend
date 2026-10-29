@@ -13,6 +13,11 @@ public class MyPlanResponse
     public DateTimeOffset? ExpiresAt { get; set; }
     public string Source { get; set; } = "Manual";
     public string? Note { get; set; }
+    /// <summary>
+    /// Home game principal da conta (SPEC-20261029-1723): é nele que ficam os torneios, estruturas e jogadores da conta
+    /// no Mesa e no Clube. Null só em conta sem principal (antiga sem backfill).
+    /// </summary>
+    public Guid? PrimaryHomeGameId { get; set; }
     public PlanLimitsResponse Limits { get; set; } = new();
     public List<string> Features { get; set; } = [];
     public PlanUsageResponse Usage { get; set; } = new();
@@ -21,7 +26,10 @@ public class MyPlanResponse
 
 public class PlanLimitsResponse
 {
+    /// <summary>Contando o principal da conta (Mesa 1, Clube 1, Liga 3).</summary>
     public int MaxOwnedHomeGames { get; set; }
+    /// <summary>"Home game" aparece na interface (só Liga).</summary>
+    public bool HomeGamesVisible { get; set; }
     public int? MaxMembersPerHomeGame { get; set; }   // null = ilimitado
     public int? TournamentsPer7Days { get; set; }     // null = ilimitado
 }
@@ -53,6 +61,8 @@ public class PlanMemberUsage
 {
     public Guid HomeGameId { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>O principal da conta (vem primeiro na lista).</summary>
+    public bool IsPrimary { get; set; }
     public int Used { get; set; }
     public int? Limit { get; set; }
 }
