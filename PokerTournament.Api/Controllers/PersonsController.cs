@@ -1,6 +1,7 @@
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
@@ -19,6 +20,8 @@ namespace PokerTournament.Api.Controllers;
 /// conferidos pela assinatura; nome de arquivo novo a cada envio). Token de dealer nunca chega aqui (403 do
 /// TokenKindHandler): o dealer põe foto por POST tournaments/{id}/players/{personId}/photo.
 /// WhatsApp normalizado no servidor (F18) e repetido no home game → 400 com mensagem (antes estourava o índice).
+/// Conta vinculada (SPEC-20261029-1725): cadastrar e trocar o e-mail recalculam <c>Person.UserId</c>
+/// (<see cref="PlayerLinkService"/>); as respostas levam a foto exibida (a da conta, se tiver), a foto própria e a conta.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -52,6 +55,8 @@ public class PersonsController : HomeGameScopedControllerBase
             return "O apelido pode ter no máximo 100 caracteres.";
 
         person.Email = string.IsNullOrWhiteSpace(person.Email) ? null : person.Email.Trim();
+        if (person.Email is { Length: > 200 })
+            return TournamentPlayerService.EmailTooLongMessage;
         person.Whatsapp = PhoneNumbers.NormalizeLocal(person.Whatsapp);
         if (person.Whatsapp is { Length: > 20 })
             return PhoneNumbers.InvalidWhatsappMessage;
@@ -61,11 +66,14 @@ public class PersonsController : HomeGameScopedControllerBase
             return TournamentPlayerService.DuplicateWhatsappMessage;
 
         if (person.Email is { } email
-            && await _db.Persons.AnyAsync(p => p.HomeGameId == person.HomeGameId && p.Id != person.Id && p.Email == email, ct))
-            return "Esse e-mail já está cadastrado em outro jogador do home game.";
+            && await PlayerLinkService.EmailInUseAsync(_db, person.HomeGameId, email, person.Id, ct))
+            return TournamentPlayerService.DuplicateEmailMessage;
 
         return null;
     }
+
+    /// <summary>Pessoa com a conta vinculada (a foto exibida é a da conta, se tiver — PlayerPhoto).</summary>
+    private IQueryable<Person> PersonsWithAccount() => _db.Persons.Include(p => p.User);
 
     [HttpGet("{id:guid}/history")]
     public async Task<ActionResult> GetHistory(Guid id, CancellationToken ct)
@@ -105,7 +113,7 @@ public class PersonsController : HomeGameScopedControllerBase
         if (!await CanAccessAsync(homeGameId.Value, ct))
             return Forbidden();
 
-        var query = _db.Persons.Where(p => p.IsActive && p.HomeGameId == homeGameId.Value);
+        var query = PersonsWithAccount().Where(p => p.IsActive && p.HomeGameId == homeGameId.Value);
 
         if (!string.IsNullOrWhiteSpace(type))
             query = query.Where(p => p.Type == type);
@@ -129,7 +137,7 @@ public class PersonsController : HomeGameScopedControllerBase
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<PersonResponse>> GetById(Guid id, CancellationToken ct)
     {
-        var person = await _db.Persons
+        var person = await PersonsWithAccount()
             .FirstOrDefaultAsync(p => p.Id == id, ct);
 
         if (person is null)
@@ -152,6 +160,9 @@ public class PersonsController : HomeGameScopedControllerBase
         person.PhotoUrl = null;
         if (await NormalizeAndValidateAsync(person, ct) is { } error)
             return BadRequest(new { message = error });
+        // E-mail igual ao de uma conta confirmada → jogador vinculado a ela (SPEC-20261029-1725)
+        person.UserId = null;
+        await PlayerLinkService.RelinkPersonAsync(_db, person, ct);
         _db.Persons.Add(person);
         await _db.SaveChangesAsync(ct);
 
@@ -163,7 +174,7 @@ public class PersonsController : HomeGameScopedControllerBase
     public async Task<ActionResult<PersonResponse>> Update(
         Guid id, [FromBody] UpdatePersonRequest request, CancellationToken ct)
     {
-        var person = await _db.Persons
+        var person = await PersonsWithAccount()
             .FirstOrDefaultAsync(p => p.Id == id, ct);
 
         if (person is null)
@@ -172,9 +183,14 @@ public class PersonsController : HomeGameScopedControllerBase
             return Forbidden();
 
         // Campos nulos no pedido não mudam nada (MappingProfile); "" limpa (apelido, e-mail, WhatsApp, notas)
+        var previousEmail = PlayerLinkService.NormalizeEmail(person.Email);
         _mapper.Map(request, person);
         if (await NormalizeAndValidateAsync(person, ct) is { } error)
             return BadRequest(new { message = error });
+        // E-mail mudou → recalcula o vínculo com a conta (achou conta confirmada → vincula; não achou → solta).
+        // Sem mudança de e-mail, o vínculo fica (inclusive o feito pelo "vincular membro ↔ jogador").
+        if (PlayerLinkService.NormalizeEmail(person.Email) != previousEmail)
+            await PlayerLinkService.RelinkPersonAsync(_db, person, ct);
         await _db.SaveChangesAsync(ct);
 
         return Ok(_mapper.Map<PersonResponse>(person));
@@ -183,7 +199,7 @@ public class PersonsController : HomeGameScopedControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<ActionResult> Delete(Guid id, CancellationToken ct)
     {
-        var person = await _db.Persons
+        var person = await PersonsWithAccount()
             .FirstOrDefaultAsync(p => p.Id == id, ct);
 
         if (person is null)
@@ -203,7 +219,7 @@ public class PersonsController : HomeGameScopedControllerBase
     public async Task<ActionResult<PersonResponse>> UploadPhoto(
         Guid id, IFormFile? file, CancellationToken ct)
     {
-        var person = await _db.Persons
+        var person = await PersonsWithAccount()
             .FirstOrDefaultAsync(p => p.Id == id, ct);
 
         if (person is null)
@@ -223,7 +239,7 @@ public class PersonsController : HomeGameScopedControllerBase
     [HttpDelete("{id:guid}/photo")]
     public async Task<ActionResult<PersonResponse>> RemovePhoto(Guid id, CancellationToken ct)
     {
-        var person = await _db.Persons
+        var person = await PersonsWithAccount()
             .FirstOrDefaultAsync(p => p.Id == id, ct);
 
         if (person is null)
@@ -244,7 +260,7 @@ public class PersonsController : HomeGameScopedControllerBase
         if (string.IsNullOrWhiteSpace(q) || q.Length < 2)
             return Ok(new List<PersonResponse>());
 
-        var query = _db.Persons.Where(p => p.IsActive);
+        var query = PersonsWithAccount().Where(p => p.IsActive);
         if (homeGameId is not null)
         {
             if (!await CanAccessAsync(homeGameId.Value, ct))
@@ -267,5 +283,39 @@ public class PersonsController : HomeGameScopedControllerBase
             .ToListAsync(ct);
 
         return Ok(_mapper.Map<List<PersonResponse>>(persons));
+    }
+
+    /// <summary>
+    /// "Já conhecemos este jogador" (SPEC-20261029-1725): ao sair do campo de e-mail do cadastro do jogador (painel,
+    /// terminal logado e cadastro rápido), devolve nome, apelido e foto da conta CONFIRMADA e ativa com aquele e-mail
+    /// (<c>found = false</c> se não houver). Só quem GERENCIA o home game do cadastro (dono, membro administrador ou
+    /// Admin do sistema) — o mesmo público do <c>GET Users/lookup</c> do "Adicionar membro" (decisão consciente: o
+    /// organizador logado já sabia, por aquele modal, se existe conta com um e-mail). Home game pela query
+    /// (<c>homeGameId</c>) ou pelo torneio (<c>tournamentId</c>, no cadastro pelo torneio). Mesmo limite de 10 buscas por
+    /// minuto por usuário (política "user-lookup"). Token de dealer (QR) nunca chega aqui (TokenKindHandler).
+    /// </summary>
+    [HttpGet("lookup-email")]
+    [EnableRateLimiting("user-lookup")]
+    public async Task<ActionResult<AccountLookupResponse>> LookupEmail(
+        [FromQuery] string? email, [FromQuery] Guid? homeGameId, [FromQuery] Guid? tournamentId, CancellationToken ct)
+    {
+        var scope = homeGameId;
+        if (scope is null && tournamentId is { } id)
+        {
+            scope = await _db.Tournaments
+                .Where(t => t.Id == id)
+                .Select(t => (Guid?)t.HomeGameId)
+                .FirstOrDefaultAsync(ct);
+            if (scope is null)
+                return NotFound(new { message = "Torneio não encontrado." });
+        }
+        if (scope is null)
+            return BadRequest(new { message = "Informe o home game (homeGameId) ou o torneio (tournamentId)." });
+        if (!await CanManageAsync(scope.Value, ct))
+            return Forbidden();
+        if (string.IsNullOrWhiteSpace(email))
+            return BadRequest(new { message = "Informe o e-mail." });
+
+        return Ok(await PlayerLinkService.LookupAsync(_db, email, ct));
     }
 }

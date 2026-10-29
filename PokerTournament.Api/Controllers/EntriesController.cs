@@ -158,6 +158,9 @@ public class EntriesController : ControllerBase
         person.Whatsapp = null;
         person.Document = null;
         person.Notes = null;
+        // Conta vinculada (SPEC-20261029-1725): o dealer não sabe de quem é a conta
+        person.LinkedUserId = null;
+        person.LinkedUserName = null;
     }
 
     private Guid GetUserId()

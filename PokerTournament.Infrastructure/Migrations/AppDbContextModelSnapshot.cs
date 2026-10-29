@@ -1650,6 +1650,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
 
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.Property<string>("Whatsapp")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
@@ -1666,6 +1670,9 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.HasIndex("DeletedAt")
                         .HasDatabaseName("ix_persons_not_deleted")
                         .HasFilter("deleted_at IS NULL");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_persons_user_id");
 
                     b.HasIndex("HomeGameId", "Email")
                         .IsUnique()
@@ -3174,7 +3181,14 @@ namespace PokerTournament.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("PokerTournament.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("HomeGame");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.Ranking", b =>

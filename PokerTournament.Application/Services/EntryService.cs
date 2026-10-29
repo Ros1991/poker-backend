@@ -334,7 +334,8 @@ public class EntryService
                 Id = p.Id,
                 FullName = p.FullName,
                 Nickname = p.Nickname,
-                PhotoUrl = p.PhotoUrl
+                // Foto exibida: a da conta vinculada, se tiver (SPEC-20261029-1725) — LEFT JOIN em users, regra no PlayerPhoto
+                PhotoUrl = PlayerPhoto.Of(p.User!.PhotoUrl, p.PhotoUrl)
             })
             .ToListAsync(ct);
 

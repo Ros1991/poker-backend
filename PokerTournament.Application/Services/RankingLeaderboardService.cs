@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Jint;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Plans;
@@ -58,7 +59,7 @@ public class RankingLeaderboardService
         // Include(Person) de propósito: o filtro global de soft-delete da Person
         // tira da conta entries de pessoas excluídas, como sempre foi.
         var entries = await _db.TournamentEntries
-            .Include(e => e.Person)
+            .Include(e => e.Person).ThenInclude(p => p.User) // foto exibida: a da conta vinculada (SPEC-20261029-1725)
             .Where(e => stageIds.Contains(e.TournamentId)
                      && e.FinalPosition != null
                      && ScoredStatuses.Contains(e.Status))
@@ -144,7 +145,7 @@ public class RankingLeaderboardService
                 Id = p.Person.Id,
                 FullName = p.Person.FullName,
                 Nickname = p.Person.Nickname,
-                PhotoUrl = p.Person.PhotoUrl,
+                PhotoUrl = PlayerPhoto.Of(p.Person),
                 IsActive = p.Person.IsActive,
             },
             TotalPoints = p.TotalPoints,
@@ -217,7 +218,7 @@ public class RankingLeaderboardService
                 Position = p.Position,
                 PersonId = p.Person.Id,
                 DisplayName = PublicName(p.Person),
-                PhotoUrl = p.Person.PhotoUrl,
+                PhotoUrl = PlayerPhoto.Of(p.Person),
                 TotalPoints = p.TotalPoints,
                 TournamentsPlayed = p.TournamentsPlayed,
                 BestPosition = p.BestPosition,

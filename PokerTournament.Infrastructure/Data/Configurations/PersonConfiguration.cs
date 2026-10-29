@@ -60,11 +60,25 @@ public class PersonConfiguration : IEntityTypeConfiguration<Person>
             .HasColumnName("is_active")
             .HasDefaultValue(true);
 
+        builder.Property(p => p.UserId)
+            .HasColumnName("user_id");
+
         // Relationship with HomeGame
         builder.HasOne(p => p.HomeGame)
             .WithMany(h => h.Persons)
             .HasForeignKey(p => p.HomeGameId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // Conta vinculada pelo e-mail (SPEC-20261029-1725). Conta apagada de fato (não acontece hoje: a exclusão é
+        // anonimização, que solta os jogadores no serviço) também solta: SET NULL.
+        builder.HasOne(p => p.User)
+            .WithMany()
+            .HasForeignKey(p => p.UserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // "Meus torneios" (SPEC-20261029-1726) e o vínculo pela conta leem por user_id
+        builder.HasIndex(p => p.UserId)
+            .HasDatabaseName("ix_persons_user_id");
 
         // Unique email per home_game where not null and not deleted
         builder.HasIndex(p => new { p.HomeGameId, p.Email })

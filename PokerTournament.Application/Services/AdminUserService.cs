@@ -480,6 +480,10 @@ public class AdminUserService
             // Papel novo: o token antigo carrega o papel antigo — todos os aparelhos saem
             if (oldRole is not null)
                 await _auth.RevokeAllSessionsAsync(user.Id, ct);
+            // E-mail trocado pela Administração (a conta continua confirmada — quem responde pelo e-mail é o Admin): os
+            // jogadores sem conta com o e-mail novo passam a ser dela; os vínculos do e-mail antigo ficam (SPEC-20261029-1725)
+            if (changed.Contains(nameof(User.Email)))
+                await PlayerLinkService.LinkUserAsync(_db, user, ct);
         }
 
         await tx.CommitAsync(ct);
@@ -692,6 +696,9 @@ public class AdminUserService
             await _db.SaveChangesAsync(ct);
             if (!isActive)
                 await _auth.RevokeAllSessionsAsync(id, ct);
+            else
+                // Reativada: volta a receber os jogadores com o e-mail dela que ficaram sem conta (SPEC-20261029-1725)
+                await PlayerLinkService.LinkUserAsync(_db, user, ct);
             _logger.LogInformation("Administração: {Actor} {Acao} a conta {UserId}",
                 actor.UserId, isActive ? "reativou" : "desativou", id);
         }
@@ -736,6 +743,8 @@ public class AdminUserService
             user.RefreshTokenExpiresAt = null;
             // Confirmada agora: ganha o home game principal "Clube de <nome>" (SPEC-20261029-1723)
             await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
+            // ... e os jogadores cadastrados com o e-mail dela, em qualquer home game (SPEC-20261029-1725)
+            await PlayerLinkService.LinkUserAsync(_db, user, ct);
             var actorName = await ActorNameAsync(actor, ct);
             AddAudit(id, EmailConfirmationService.AuditAction, null,
                 Json(new { via = "admin", pendingRegistration = pending is not null }), null, actor, actorName);

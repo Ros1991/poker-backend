@@ -1,4 +1,5 @@
 using AutoMapper;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Plans;
@@ -10,8 +11,14 @@ public class MappingProfile : Profile
 {
     public MappingProfile()
     {
-        // Person
-        CreateMap<Person, PersonResponse>();
+        // Person — foto exibida resolvida no servidor (SPEC-20261029-1725): a da conta vinculada, se tiver, senão a do
+        // cadastro. Exige Person.User carregado (Include/ThenInclude User) quando há UserId.
+        CreateMap<Person, PersonResponse>()
+            .ForMember(d => d.PhotoUrl, o => o.MapFrom(s => PlayerPhoto.Of(s)))
+            .ForMember(d => d.OwnPhotoUrl, o => o.MapFrom(s => s.PhotoUrl))
+            .ForMember(d => d.PhotoFromAccount, o => o.MapFrom(s => PlayerPhoto.FromAccount(s)))
+            .ForMember(d => d.LinkedUserId, o => o.MapFrom(s => s.UserId))
+            .ForMember(d => d.LinkedUserName, o => o.MapFrom(s => s.User != null ? s.User.FullName : null));
         CreateMap<CreatePersonRequest, Person>();
         CreateMap<UpdatePersonRequest, Person>()
             .ForAllMembers(opt => opt.Condition((src, dest, srcMember) => srcMember != null));
@@ -39,7 +46,7 @@ public class MappingProfile : Profile
             .ForMember(d => d.UserPhotoUrl, o => o.MapFrom(s => s.User.PhotoUrl))
             .ForMember(d => d.PersonName, o => o.MapFrom(s => s.Person != null ? s.Person.FullName : null))
             .ForMember(d => d.PersonNickname, o => o.MapFrom(s => s.Person != null ? s.Person.Nickname : null))
-            .ForMember(d => d.PersonPhotoUrl, o => o.MapFrom(s => s.Person != null ? s.Person.PhotoUrl : null));
+            .ForMember(d => d.PersonPhotoUrl, o => o.MapFrom(s => s.Person != null ? PlayerPhoto.Of(s.Person) : null));
 
         // Tournament — navegações podem não estar carregadas (null-check obrigatório)
         CreateMap<Tournament, TournamentResponse>()

@@ -149,6 +149,8 @@ public partial class AuthService
                     await _db.SaveChangesAsync(ct); // gera o Id para o vínculo e a sessão
                     // Conta nova nasce com o home game principal "Clube de <nome>" (SPEC-20261029-1723)
                     await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
+                    // Primeiro login do Google = e-mail confirmado: os jogadores com este e-mail são da conta (SPEC-20261029-1725)
+                    await PlayerLinkService.LinkUserAsync(_db, user, ct);
                     AddLogin(user, provider, identity.Subject, email, now);
                     AddAudit(user, ExternalLoginCreatedAction, Json(new { provider = provider.StoredName }), ip, userAgent, now);
                     _logger.LogInformation("Conta criada pelo {Provider}: usuário {UserId}", provider.DisplayName, user.Id);
@@ -166,6 +168,8 @@ public partial class AuthService
                     user.EmailConfirmedAt = now;
                     // Confirmada agora: ganha o home game principal (SPEC-20261029-1723)
                     await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
+                    // ... e os jogadores cadastrados com o e-mail dela (SPEC-20261029-1725)
+                    await PlayerLinkService.LinkUserAsync(_db, user, ct);
                     user.PasswordHash = null;
                     user.RefreshToken = null;
                     user.RefreshTokenExpiresAt = null;

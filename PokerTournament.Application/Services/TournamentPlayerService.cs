@@ -19,6 +19,8 @@ public class TournamentPlayerService
 {
     public const string DuplicateNameMessage = "Já existe um jogador com esse nome no home game. Procure na lista.";
     public const string DuplicateWhatsappMessage = "Esse WhatsApp já está cadastrado em outro jogador do home game.";
+    public const string DuplicateEmailMessage = "Esse e-mail já está cadastrado em outro jogador do home game.";
+    public const string EmailTooLongMessage = "O e-mail pode ter no máximo 200 caracteres.";
     public const string DealerPhotoForbiddenMessage = "O dealer só pode pôr foto em quem está no torneio ou ainda não tem foto.";
 
     /// <summary>Teto de cadastros de um mesmo dealer autorizado (pedido aprovado) num torneio: limita lixo e sondagem.</summary>
@@ -74,6 +76,12 @@ public class TournamentPlayerService
         if (whatsapp is not null && !PhoneNumbers.IsValidLocal(whatsapp))
             throw new DomainException(PhoneNumbers.InvalidWhatsappMessage);
 
+        // E-mail (SPEC-20261029-1725): só do organizador. O dealer por QR não informa e-mail (o campo nem aparece para
+        // ele): o e-mail liga o jogador à conta e a resposta já sairia com a foto dela — um oráculo de contas.
+        var email = scopedToken || string.IsNullOrWhiteSpace(request.Email) ? null : request.Email.Trim();
+        if (email is { Length: > 200 })
+            throw new DomainException(EmailTooLongMessage);
+
         await EnsureUniqueNameAsync(homeGameId, fullName, ct);
         if (whatsapp is not null && await WhatsappInUseAsync(homeGameId, whatsapp, ct))
         {
@@ -81,6 +89,8 @@ public class TournamentPlayerService
                 throw new DomainException(DuplicateWhatsappMessage);
             whatsapp = null; // dealer: sem oráculo — grava sem o número repetido (o organizador completa no painel)
         }
+        if (email is not null && await PlayerLinkService.EmailInUseAsync(_db, homeGameId, email, null, ct))
+            throw new DomainException(DuplicateEmailMessage);
 
         var person = new Person
         {
@@ -88,9 +98,12 @@ public class TournamentPlayerService
             Type = "Jogador",
             FullName = fullName,
             Nickname = nickname.Length == 0 ? null : nickname,
+            Email = email,
             Whatsapp = whatsapp,
             IsActive = true
         };
+        // E-mail igual ao de uma conta confirmada → jogador vinculado a ela; a resposta já sai com a foto da conta
+        await PlayerLinkService.RelinkPersonAsync(_db, person, ct);
         _db.Persons.Add(person);
         // O Id da pessoa é atribuído no SaveChanges: a atividade não aponta para ela (sem EntryId), só o texto
         _db.TournamentActivities.Add(new TournamentActivity
@@ -104,6 +117,12 @@ public class TournamentPlayerService
         try
         {
             await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (email is not null
+            && ex.InnerException?.Message.Contains("ix_persons_home_game_email", StringComparison.Ordinal) == true)
+        {
+            // Dois cadastros ao mesmo tempo com o mesmo e-mail (só o organizador informa e-mail)
+            throw new DomainException(DuplicateEmailMessage);
         }
         catch (DbUpdateException) when (whatsapp is not null && !scopedToken)
         {
@@ -167,6 +186,7 @@ public class TournamentPlayerService
     {
         var homeGameId = await HomeGameOfAsync(tournamentId, ct);
         var person = await _db.Persons
+            .Include(p => p.User) // resposta com a foto exibida (a da conta, se tiver)
             .FirstOrDefaultAsync(p => p.Id == personId && p.HomeGameId == homeGameId, ct)
             ?? throw new KeyNotFoundException("Jogador não encontrado neste home game.");
 
@@ -188,11 +208,12 @@ public class TournamentPlayerService
         return ToResponse(person);
     }
 
+    /// <summary>Foto EXIBIDA (a da conta vinculada, se tiver — SPEC-20261029-1725): exige <c>person.User</c> carregado.</summary>
     private static AvailablePlayerResponse ToResponse(Person person) => new()
     {
         Id = person.Id,
         FullName = person.FullName,
         Nickname = person.Nickname,
-        PhotoUrl = person.PhotoUrl
+        PhotoUrl = PlayerPhoto.Of(person)
     };
 }

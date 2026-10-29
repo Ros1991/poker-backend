@@ -11,7 +11,7 @@ namespace PokerTournament.Api.Filters;
 /// <summary>
 /// Token de escopo restrito (dealer por QR) nunca recebe contato nem documento de
 /// jogador: antes de serializar, percorre a resposta (DTOs, listas, objetos aninhados
-/// e anônimos) e zera Email/Whatsapp/Document/Notes de todo <see cref="PersonResponse"/>
+/// e anônimos) e zera Email/Whatsapp/Document/Notes (e a conta vinculada) de todo <see cref="PersonResponse"/>
 /// e o link de WhatsApp de <see cref="EliminationResultResponse"/>.
 /// Global de propósito: endpoint novo liberado ao dealer já nasce sem vazar.
 /// </summary>
@@ -49,6 +49,9 @@ public class ScopedTokenContactFilter : IAsyncResultFilter
                 person.Whatsapp = null;
                 person.Document = null;
                 person.Notes = null;
+                // Conta vinculada (SPEC-20261029-1725): o dealer não sabe de quem é a conta
+                person.LinkedUserId = null;
+                person.LinkedUserName = null;
                 return;
             case EliminationResultResponse elimination:
                 elimination.WhatsAppLink = null;

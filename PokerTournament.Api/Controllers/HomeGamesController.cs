@@ -311,7 +311,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         var members = await _db.HomeGameMembers
             .Include(m => m.User)
-            .Include(m => m.Person)
+            .Include(m => m.Person).ThenInclude(p => p!.User) // foto exibida do jogador (SPEC-20261029-1725)
             .Where(m => m.HomeGameId == id )
             .OrderBy(m => m.User.FullName)
             .ToListAsync(ct);
@@ -349,9 +349,18 @@ public class HomeGamesController : HomeGameScopedControllerBase
         await _plans.EnsureCanAddMemberAsync(id, ct);
 
         // Vínculo só com jogador/dealer DESTE home game (pessoa apagada não conta: filtro de soft delete)
-        if (request.PersonId is { } personId
-            && !await _db.Persons.AnyAsync(p => p.Id == personId && p.HomeGameId == id, ct))
-            return BadRequest(new { message = "Jogador não pertence a este home game." });
+        Person? linkedPerson = null;
+        if (request.PersonId is { } personId)
+        {
+            linkedPerson = await _db.Persons.FirstOrDefaultAsync(p => p.Id == personId && p.HomeGameId == id, ct);
+            if (linkedPerson is null)
+                return BadRequest(new { message = "Jogador não pertence a este home game." });
+        }
+
+        // "Vincular membro ↔ jogador" também liga o jogador à conta do membro (SPEC-20261029-1725), mesmo com outro
+        // e-mail no cadastro (o modal avisa antes). Remover o membro depois não desfaz o vínculo do jogador.
+        if (linkedPerson is not null)
+            linkedPerson.UserId = request.UserId;
 
         var member = new HomeGameMember
         {
@@ -369,7 +378,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         member = await _db.HomeGameMembers
             .Include(m => m.User)
-            .Include(m => m.Person)
+            .Include(m => m.Person).ThenInclude(p => p!.User)
             .FirstAsync(m => m.Id == member.Id, ct);
 
         return Ok(_mapper.Map<HomeGameMemberResponse>(member));
@@ -395,7 +404,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         var member = await _db.HomeGameMembers
             .Include(m => m.User)
-            .Include(m => m.Person)
+            .Include(m => m.Person).ThenInclude(p => p!.User)
             .FirstOrDefaultAsync(m => m.Id == memberId && m.HomeGameId == id, ct);
 
         if (member is null)
@@ -407,10 +416,17 @@ public class HomeGamesController : HomeGameScopedControllerBase
         if (request.PersonId is { } personId)
         {
             // Vínculo só com jogador/dealer DESTE home game (pessoa apagada não conta: filtro de soft delete)
-            if (!await _db.Persons.AnyAsync(p => p.Id == personId && p.HomeGameId == id, ct))
+            var person = await _db.Persons
+                .Include(p => p.User)
+                .FirstOrDefaultAsync(p => p.Id == personId && p.HomeGameId == id, ct);
+            if (person is null)
                 return BadRequest(new { message = "Jogador não pertence a este home game." });
 
             member.PersonId = personId;
+            member.Person = person;
+            // Como no AddMember: o jogador passa a ser da conta do membro (SPEC-20261029-1725)
+            person.UserId = member.UserId;
+            person.User = member.User;
         }
 
         await _db.SaveChangesAsync(ct);
