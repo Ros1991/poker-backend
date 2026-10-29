@@ -212,7 +212,8 @@ public class PlanService
     /// que confirmam por SQL): o novo home game vira o principal e passa em qualquer plano — devolve true.</item>
     /// <item>Com principal: os outros home games da conta (o filtro global já tira os excluídos) contra
     /// <c>MaxOwnedHomeGames - 1</c> → Mesa e Clube nenhum (402 home_games_limit, "a sua conta já é o seu clube"), Liga 2
-    /// (o 3º home game passa, o 4º dá 402). Devolve false.</item>
+    /// (o 3º home game passa, o 4º dá 402). <c>usage</c> = home games da conta contando o principal, <c>limit</c> =
+    /// MaxOwnedHomeGames (o mesmo contrato de antes: Mesa/Clube 1 de 1, Liga 3 de 3). Devolve false.</item>
     /// </list>
     /// Com Plans:Enforce = false só a regra do principal vale (nunca 402).
     /// </summary>
@@ -235,13 +236,15 @@ public class PlanService
         if (definition.MaxOwnedHomeGames <= 1)
         {
             // Mesa e Clube: a conta tem um só (o principal), que é a própria conta — não há "outro home game" para criar.
-            // Sem usage/limit: "1 de 1 home game" não faz sentido para quem nem vê home game.
+            // usage/limit continuam no corpo (contrato do 402); quem não vê home game não recebe a linha de uso na tela
+            // (UpgradeModal decide pelo homeGamesVisible do catálogo).
             var single = $"No plano {plan} a sua conta já é o seu clube: não dá para criar outros home games.";
             if (next is not null)
                 single += $" No plano {next.Name} você pode ter até {Count(next.MaxOwnedHomeGames, "home game", "home games")}"
                     + $" (o da sua conta e mais {next.MaxOwnedHomeGames - 1}).";
             throw new PlanLimitException(
-                PlanLimitException.HomeGamesLimit, single, plan, next?.Name ?? PlanCatalog.Liga);
+                PlanLimitException.HomeGamesLimit, single, plan, next?.Name ?? PlanCatalog.Liga,
+                usage: owned, limit: definition.MaxOwnedHomeGames);
         }
 
         var message = $"O plano {plan} permite até {Count(definition.MaxOwnedHomeGames, "home game", "home games")} como dono"
