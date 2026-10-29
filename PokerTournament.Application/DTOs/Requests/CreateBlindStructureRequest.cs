@@ -39,6 +39,11 @@ public class CreateBlindStructureRequest
     public string? DefaultKnockoutType { get; set; }
     public decimal? DefaultBountyAmount { get; set; }
 
+    // Timebank padrão (SPEC-20261029-1722): DefaultTimebankCount 0 = sem timebank, 1 a 99 = por jogador; no POST null =
+    // sem timebank, no PUT null = manter os dois campos. DefaultTimebankSeconds de 5 a 300 (null = 30 ou o atual).
+    public int? DefaultTimebankCount { get; set; }
+    public int? DefaultTimebankSeconds { get; set; }
+
     public class DefaultCostItem
     {
         public string Description { get; set; } = string.Empty;

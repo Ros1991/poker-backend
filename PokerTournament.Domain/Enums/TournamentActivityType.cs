@@ -12,5 +12,7 @@ public enum TournamentActivityType
     PlayerCreated,      // jogador novo cadastrado pelo torneio (painel ou terminal) — SPEC-20261023-1213
     PlayerPhotoChanged, // foto do jogador posta/trocada pelo torneio — SPEC-20261023-1213
     TableOpened,        // mesa aberta pela inscrição (e quem mudou para ela) — SPEC-20261023-1214
-    TableDeleted        // mesa sem ninguém sentado excluída pelo organizador (dealer dela liberado) — SPEC-20261027-2133
+    TableDeleted,       // mesa sem ninguém sentado excluída pelo organizador (dealer dela liberado) — SPEC-20261027-2133
+    TimebankUsed,       // jogador usou um timebank (−1, com os segundos) — SPEC-20261029-1722; desfaz pelo histórico
+    TimebankAdjusted    // dealer/organizador deu ou tirou um timebank (+1/−1) — SPEC-20261029-1722; desfaz pelo histórico
 }

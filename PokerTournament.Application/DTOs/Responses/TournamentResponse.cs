@@ -34,6 +34,11 @@ public class TournamentResponse
     public string KnockoutType { get; set; } = "None";
     public decimal? BountyAmount { get; set; }
 
+    /// <summary>Timebank virtual (SPEC-20261029-1722): timebanks por jogador; null = torneio sem timebank.</summary>
+    public int? TimebankCount { get; set; }
+    /// <summary>Segundos de cada timebank (null sem timebank).</summary>
+    public int? TimebankSeconds { get; set; }
+
     public int? CurrentLevel { get; set; }
     public bool IsTimerRunning { get; set; }
 

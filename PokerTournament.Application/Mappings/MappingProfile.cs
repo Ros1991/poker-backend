@@ -63,7 +63,11 @@ public class MappingProfile : Profile
             .ForMember(d => d.BountyAmount, o => o.Ignore())
             // Máximo de add-ons (SPEC-20261027-1311): resolvido no TournamentService (null = herdar/manter); o Map gravaria
             // 0 (ilimitado) no lugar do null
-            .ForMember(d => d.MaxAddons, o => o.Ignore());
+            .ForMember(d => d.MaxAddons, o => o.Ignore())
+            // Timebank (SPEC-20261029-1722): resolvido no TournamentService (0 = desligado, null = herdar/manter); o Map
+            // gravaria o 0 e apagaria o valor na edição sem o campo
+            .ForMember(d => d.TimebankCount, o => o.Ignore())
+            .ForMember(d => d.TimebankSeconds, o => o.Ignore());
 
         // TournamentEntry
         CreateMap<TournamentEntry, EntryResponse>()
@@ -84,7 +88,9 @@ public class MappingProfile : Profile
         CreateMap<CreateBlindStructureRequest, BlindStructure>()
             .ForMember(d => d.DefaultKnockoutType, o => o.Ignore())
             .ForMember(d => d.DefaultBountyAmount, o => o.Ignore())
-            .ForMember(d => d.DefaultMaxAddons, o => o.Ignore());
+            .ForMember(d => d.DefaultMaxAddons, o => o.Ignore())
+            .ForMember(d => d.DefaultTimebankCount, o => o.Ignore())
+            .ForMember(d => d.DefaultTimebankSeconds, o => o.Ignore());
         CreateMap<CreateBlindStructureRequest.BlindLevelItem, BlindLevel>();
 
         // Ranking

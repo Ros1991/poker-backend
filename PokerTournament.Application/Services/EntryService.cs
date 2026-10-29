@@ -8,6 +8,7 @@ using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Plans;
 using PokerTournament.Application.Seating;
+using PokerTournament.Application.Timebank;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -455,6 +456,8 @@ public class EntryService
             EntryNumber = entryNumber,
             IsReentry = entryNumber > 1,
             BountyHead = bounty,
+            // Timebank (SPEC-20261029-1722): nasce com a quantidade do torneio (0 sem timebank)
+            TimebanksRemaining = TimebankRules.Initial(tournament),
             RegisteredAt = DateTimeOffset.UtcNow,
             RegisteredBy = registeredBy
         };
@@ -577,6 +580,8 @@ public class EntryService
                 EntryNumber = 1,
                 IsReentry = false,
                 BountyHead = bounty,
+                // Timebank (SPEC-20261029-1722): nasce com a quantidade do torneio (0 sem timebank)
+                TimebanksRemaining = TimebankRules.Initial(tournament),
                 RegisteredAt = DateTimeOffset.UtcNow,
                 RegisteredBy = registeredBy
             };

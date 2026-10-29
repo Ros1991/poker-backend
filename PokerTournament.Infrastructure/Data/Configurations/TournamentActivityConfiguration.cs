@@ -22,6 +22,10 @@ public class TournamentActivityConfiguration : IEntityTypeConfiguration<Tourname
         builder.Property(a => a.Description).HasColumnName("description").IsRequired().HasMaxLength(1000);
         builder.Property(a => a.CreatedBy).HasColumnName("created_by");
         builder.Property(a => a.PlayerOnly).HasColumnName("player_only").HasDefaultValue(false);
+        // Timebank (SPEC-20261029-1722): variação do contador e o desfazer pelo histórico
+        builder.Property(a => a.Delta).HasColumnName("delta");
+        builder.Property(a => a.UndoneAt).HasColumnName("undone_at");
+        builder.Property(a => a.UndoneBy).HasColumnName("undone_by");
 
         builder.HasOne<Tournament>()
             .WithMany()

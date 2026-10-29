@@ -2,6 +2,7 @@ using System.Globalization;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.Addons;
+using PokerTournament.Application.Timebank;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
@@ -248,6 +249,10 @@ public class TournamentService
         // Máximo de add-ons (SPEC-20261027-1311): pedido > padrão da estrutura > 1; 0 = ilimitado
         tournament.MaxAddons = AddonRules.Resolve(request.MaxAddons, structure?.DefaultMaxAddons ?? AddonRules.DefaultMax);
 
+        // Timebank (SPEC-20261029-1722): pedido (0 = desligado) > padrão da estrutura > sem timebank; segundos 5–300 (30)
+        (tournament.TimebankCount, tournament.TimebankSeconds) = TimebankRules.Resolve(
+            request.TimebankCount, request.TimebankSeconds, structure?.DefaultTimebankCount, structure?.DefaultTimebankSeconds);
+
         // Knockout (SPEC-20261026-1909): pedido > padrão da estrutura > Normal; bounty validado contra buy-in e rebuy
         var structureKnockout = KnockoutRules.IsKnockout(structure?.DefaultKnockoutType);
         var koType = KnockoutRules.Parse(request.KnockoutType)
@@ -329,9 +334,20 @@ public class TournamentService
         var kept = (tournament.StaffAmount, tournament.RankingId, tournament.RankingContribMode,
             tournament.RankingContribValue, tournament.ResponsiblePixKey);
         var keptKnockout = (tournament.KnockoutType, tournament.BountyAmount);
+        var keptTimebankCount = tournament.TimebankCount;
         _mapper.Map(request, tournament);
         // Máximo de add-ons (SPEC-20261027-1311): null = manter; o Map ignora o campo
         tournament.MaxAddons = AddonRules.Resolve(request.MaxAddons, tournament.MaxAddons);
+        // Timebank (SPEC-20261029-1722): null = manter; 0 = desligar. Mudar a quantidade no rascunho reaplica nas inscrições
+        // que já existem (cada uma volta a ter a quantidade nova; 0 ao desligar) — o Map ignora os dois campos
+        (tournament.TimebankCount, tournament.TimebankSeconds) = TimebankRules.Resolve(
+            request.TimebankCount, request.TimebankSeconds, tournament.TimebankCount, tournament.TimebankSeconds);
+        if (tournament.TimebankCount != keptTimebankCount)
+        {
+            var initial = TimebankRules.Initial(tournament);
+            foreach (var entry in await _db.TournamentEntries.Where(e => e.TournamentId == tournament.Id).ToListAsync(ct))
+                entry.TimebanksRemaining = initial;
+        }
         var hasPayments = await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.Payments, ct);
         if (!hasPayments)
         {

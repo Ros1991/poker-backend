@@ -8,6 +8,7 @@ using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
+using PokerTournament.Application.Timebank;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Exceptions;
 
@@ -90,6 +91,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             bs.DefaultDealerFee,
             bs.DefaultKnockoutType,
             bs.DefaultBountyAmount,
+            bs.DefaultTimebankCount,
+            bs.DefaultTimebankSeconds,
             DefaultCosts = ProjectDefaultCosts(bs),
             LevelCount = bs.Levels.Count,
             Levels = bs.Levels.Select(l => new
@@ -148,6 +151,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             structure.DefaultDealerFee,
             structure.DefaultKnockoutType,
             structure.DefaultBountyAmount,
+            structure.DefaultTimebankCount,
+            structure.DefaultTimebankSeconds,
             DefaultCosts = ProjectDefaultCosts(structure),
             Levels = structure.Levels.Select(l => new
             {
@@ -178,6 +183,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         var (koType, koBounty) = KnockoutRules.ResolveStructureDefault(
             KnockoutRules.Parse(request.DefaultKnockoutType) ?? nameof(Domain.Enums.KnockoutType.None), request.DefaultBountyAmount,
             request.DefaultBuyIn);
+        // Timebank padrão (SPEC-20261029-1722): null ou 0 = sem timebank; segundos 5–300 (30)
+        var (tbCount, tbSeconds) = TimebankRules.Resolve(request.DefaultTimebankCount, request.DefaultTimebankSeconds, null, null);
 
         var structure = new BlindStructure
         {
@@ -204,6 +211,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             DefaultDealerFee = dealerFee,
             DefaultKnockoutType = koType,
             DefaultBountyAmount = koBounty,
+            DefaultTimebankCount = tbCount,
+            DefaultTimebankSeconds = tbSeconds,
         };
 
         foreach (var levelRequest in request.Levels)
@@ -271,6 +280,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         KnockoutRules.EnsureBelowDefaultBuyIn(keepKoType, keepKoBounty, request.DefaultBuyIn);
         // Máximo de add-ons padrão (SPEC-20261027-1311): null = manter; 0 = ilimitado
         var keepMaxAddons = AddonRules.Resolve(request.DefaultMaxAddons, structure.DefaultMaxAddons);
+        // Timebank padrão (SPEC-20261029-1722): null = manter; 0 = desligar
+        var (keepTbCount, keepTbSeconds) = TimebankRules.Resolve(
+            request.DefaultTimebankCount, request.DefaultTimebankSeconds, structure.DefaultTimebankCount, structure.DefaultTimebankSeconds);
 
         structure.Name = request.Name;
         structure.Description = request.Description;
@@ -294,6 +306,8 @@ public class BlindStructuresController : HomeGameScopedControllerBase
         structure.DefaultDealerFee = keepDealerFee;
         structure.DefaultKnockoutType = keepKoType;
         structure.DefaultBountyAmount = keepKoBounty;
+        structure.DefaultTimebankCount = keepTbCount;
+        structure.DefaultTimebankSeconds = keepTbSeconds;
 
         // Remover levels existentes e recriar
         foreach (var level in structure.Levels.ToList())

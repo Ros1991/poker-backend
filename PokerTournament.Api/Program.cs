@@ -367,6 +367,8 @@ builder.Services.AddScoped<InicioService>(); // SPEC-20261029-1724: GET me/inici
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
 builder.Services.AddScoped<EntryService>();
+// Timebank virtual (SPEC-20261029-1722): uso, ajuste e desfazer (o histórico delega o desfazer para ele)
+builder.Services.AddScoped<TimebankService>();
 builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<PrizeService>();
 builder.Services.AddScoped<TimerService>();

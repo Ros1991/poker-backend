@@ -13,7 +13,7 @@ namespace PokerTournament.Application.Services;
 
 /// <summary>
 /// Histórico único do torneio para o terminal: transações (inscrição, rebuy, add-on,
-/// pagamento, abatimento, prêmio), eliminações e atividades (mesas, movimentações),
+/// pagamento, abatimento, prêmio), eliminações e atividades (mesas, movimentações, timebank — SPEC-20261029-1722),
 /// do mais recente para o mais antigo, com quem fez e se dá para desfazer.
 /// O desfazer delega para os fluxos de sempre (EntryService/PaymentService), que mantêm
 /// contadores, saldo e custos automáticos consistentes.
@@ -76,7 +76,7 @@ public class TournamentHistoryService
     {
         var tournamentInfo = await _db.Tournaments
             .Where(t => t.Id == tournamentId)
-            .Select(t => new { t.Status, t.KnockoutType, t.BountyAmount })
+            .Select(t => new { t.Status, t.KnockoutType, t.BountyAmount, t.TimebankCount })
             .FirstOrDefaultAsync(ct)
             ?? throw new DomainException("Torneio não encontrado.");
         var tournamentStatus = tournamentInfo.Status;
@@ -119,7 +119,7 @@ public class TournamentHistoryService
         // (antes da autorização pelo organizador: só "Dealer") e usuários citados
         var actorIds = transactions.SelectMany(t => new[] { t.CreatedBy, t.ReversedBy })
             .Concat(eliminations.SelectMany(e => new[] { e.CreatedBy, e.CorrectedBy }))
-            .Concat(activities.Select(a => a.CreatedBy))
+            .Concat(activities.SelectMany(a => new[] { a.CreatedBy, a.UndoneBy }))
             .Where(id => id.HasValue)
             .Select(id => id!.Value)
             .Distinct()
@@ -336,9 +336,11 @@ public class TournamentHistoryService
             items.Add(item);
         }
 
+        // Timebank (SPEC-20261029-1722): o uso e o ajuste se desfazem pelo histórico, como o rebuy; as demais atividades não
+        var timebankEnabled = tournamentInfo.TimebankCount is > 0;
         foreach (var a in activities)
         {
-            items.Add(new HistoryItemResponse
+            var item = new HistoryItemResponse
             {
                 Id = $"{KindActivity}:{a.Id}",
                 Kind = KindActivity,
@@ -351,7 +353,23 @@ public class TournamentHistoryService
                 At = a.CreatedAt,
                 By = ResolveActor(a.CreatedBy),
                 CanUndo = false
-            });
+            };
+            if (TimebankService.IsTimebankActivity(a.Type))
+            {
+                item.Delta = a.Delta;
+                item.Undone = a.UndoneAt is not null;
+                item.UndoneAt = a.UndoneAt;
+                item.UndoneBy = item.Undone ? ResolveActor(a.UndoneBy) : null;
+                if (!item.Undone)
+                {
+                    TournamentEntry? entry = null;
+                    if (a.EntryId is { } eid) entryMap.TryGetValue(eid, out entry);
+                    var blocked = TimebankService.UndoBlockedReason(a, entry, timebankEnabled);
+                    item.CanUndo = blocked is null;
+                    item.UndoBlockedReason = blocked;
+                }
+            }
+            items.Add(item);
         }
 
         return items

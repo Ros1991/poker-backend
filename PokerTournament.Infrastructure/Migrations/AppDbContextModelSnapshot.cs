@@ -644,6 +644,14 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("default_starting_stack");
 
+                    b.Property<int?>("DefaultTimebankCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("default_timebank_count");
+
+                    b.Property<int?>("DefaultTimebankSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("default_timebank_seconds");
+
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
@@ -2135,6 +2143,14 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("character varying(50)")
                         .HasColumnName("status");
 
+                    b.Property<int?>("TimebankCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("timebank_count");
+
+                    b.Property<int?>("TimebankSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("timebank_seconds");
+
                     b.Property<int>("TimerElapsedSeconds")
                         .HasColumnType("integer")
                         .HasColumnName("timer_elapsed_seconds");
@@ -2226,6 +2242,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<int?>("Delta")
+                        .HasColumnType("integer")
+                        .HasColumnName("delta");
+
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasMaxLength(1000)
@@ -2251,6 +2271,14 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")
                         .HasColumnName("type");
+
+                    b.Property<DateTimeOffset?>("UndoneAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("undone_at");
+
+                    b.Property<Guid?>("UndoneBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("undone_by");
 
                     b.Property<DateTimeOffset?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -2515,6 +2543,10 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<Guid?>("TableId")
                         .HasColumnType("uuid")
                         .HasColumnName("table_id");
+
+                    b.Property<int>("TimebanksRemaining")
+                        .HasColumnType("integer")
+                        .HasColumnName("timebanks_remaining");
 
                     b.Property<decimal>("TotalDue")
                         .HasColumnType("decimal(10,2)")

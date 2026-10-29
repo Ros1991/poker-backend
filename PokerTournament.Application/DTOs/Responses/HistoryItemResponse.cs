@@ -28,6 +28,9 @@ public class HistoryItemResponse
     // do desfazer monta a frase com eles ("Desfazer a eliminação de Duda (10º lugar, quem eliminou foi Beto)?").
     public int? Position { get; set; }
     public string? EliminatedByName { get; set; }
+    // Só nas atividades de timebank (SPEC-20261029-1722): −1 no uso, +1/−1 no ajuste. A confirmação do desfazer diz o que
+    // volta ("o timebank volta para o jogador").
+    public int? Delta { get; set; }
 }
 
 public class UndoResultResponse

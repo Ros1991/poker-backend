@@ -105,6 +105,13 @@ public class BlindStructureConfiguration : IEntityTypeConfiguration<BlindStructu
             .HasColumnName("default_bounty_amount")
             .HasColumnType("decimal(10,2)");
 
+        // Timebank padrão (SPEC-20261029-1722): null = sem timebank
+        builder.Property(b => b.DefaultTimebankCount)
+            .HasColumnName("default_timebank_count");
+
+        builder.Property(b => b.DefaultTimebankSeconds)
+            .HasColumnName("default_timebank_seconds");
+
         builder.HasOne(b => b.HomeGame)
             .WithMany()
             .HasForeignKey(b => b.HomeGameId)

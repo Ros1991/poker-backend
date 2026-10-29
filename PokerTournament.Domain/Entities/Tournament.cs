@@ -38,6 +38,12 @@ public class Tournament : SoftDeletableEntity
     public string KnockoutType { get; set; } = nameof(Enums.KnockoutType.None);
     public decimal? BountyAmount { get; set; }
 
+    // Timebank virtual (SPEC-20261029-1722): null = torneio sem timebank (nada muda nas telas). Ligado, cada inscrição
+    // nasce com TimebankCount timebanks (1 a 99) de TimebankSeconds segundos (5 a 300; padrão 30). O dealer conta o tempo
+    // no celular; o servidor só registra o uso (TournamentActivity TimebankUsed/TimebankAdjusted, com desfazer).
+    public int? TimebankCount { get; set; }
+    public int? TimebankSeconds { get; set; }
+
     // Timer state
     public int? CurrentLevel { get; set; }
     public DateTimeOffset? TimerStartedAt { get; set; }

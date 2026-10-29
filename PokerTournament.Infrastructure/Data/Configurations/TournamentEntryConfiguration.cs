@@ -59,6 +59,9 @@ public class TournamentEntryConfiguration : IEntityTypeConfiguration<TournamentE
         // Knockout (SPEC-20261026-1909)
         builder.Property(e => e.BountyHead).HasColumnName("bounty_head").HasColumnType("decimal(10,2)").HasDefaultValue(0m);
         builder.Property(e => e.BountyWon).HasColumnName("bounty_won").HasColumnType("decimal(10,2)").HasDefaultValue(0m);
+        // Timebank (SPEC-20261029-1722). Sem HasDefaultValue no modelo (como o addon_count): a coluna nasce com 0 nas
+        // inscrições que já existem e o valor vem sempre da inscrição.
+        builder.Property(e => e.TimebanksRemaining).HasColumnName("timebanks_remaining");
 
         // Re-entry
         builder.Property(e => e.IsReentry).HasColumnName("is_reentry");

@@ -70,6 +70,10 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
             .HasDefaultValue("None");
         builder.Property(t => t.BountyAmount).HasColumnName("bounty_amount").HasColumnType("decimal(10,2)");
 
+        // Timebank virtual (SPEC-20261029-1722): null = sem timebank
+        builder.Property(t => t.TimebankCount).HasColumnName("timebank_count");
+        builder.Property(t => t.TimebankSeconds).HasColumnName("timebank_seconds");
+
         // Timer state
         builder.Property(t => t.CurrentLevel).HasColumnName("current_level");
         builder.Property(t => t.TimerStartedAt).HasColumnName("timer_started_at");

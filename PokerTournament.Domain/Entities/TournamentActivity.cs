@@ -15,4 +15,11 @@ public class TournamentActivity : BaseEntity
     // Detalhe por jogador de algo já resumido em outra linha (cada um da mesa quebrada, o outro
     // lado da troca de lugar): aparece só no histórico do jogador, não no do torneio
     public bool PlayerOnly { get; set; }
+
+    // Timebank (SPEC-20261029-1722): quanto a atividade mudou nos timebanks do jogador (−1 no uso; +1/−1 no ajuste do
+    // dealer). Null nas outras atividades.
+    public int? Delta { get; set; }
+    // Desfeita pelo histórico (só as de timebank se desfazem): quando e quem (usuário OU acesso de dealer, sem FK)
+    public DateTimeOffset? UndoneAt { get; set; }
+    public Guid? UndoneBy { get; set; }
 }

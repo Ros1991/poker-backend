@@ -1,7 +1,9 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
+using PokerTournament.Api.Hubs;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
@@ -18,10 +20,18 @@ namespace PokerTournament.Api.Controllers;
 public class TournamentHistoryController : ControllerBase
 {
     private readonly TournamentHistoryService _historyService;
+    private readonly TimebankService _timebankService;
+    private readonly IHubContext<TournamentHub> _hub;
+    private readonly ILogger<TournamentHistoryController> _logger;
 
-    public TournamentHistoryController(TournamentHistoryService historyService)
+    public TournamentHistoryController(
+        TournamentHistoryService historyService, TimebankService timebankService, IHubContext<TournamentHub> hub,
+        ILogger<TournamentHistoryController> logger)
     {
         _historyService = historyService;
+        _timebankService = timebankService;
+        _hub = hub;
+        _logger = logger;
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
@@ -52,6 +62,28 @@ public class TournamentHistoryController : ControllerBase
         Guid tournamentId, Guid eliminationId, CancellationToken ct)
     {
         var message = await _historyService.UndoEliminationAsync(tournamentId, eliminationId, GetUserId(), ct);
+        return Ok(new UndoResultResponse { Message = message });
+    }
+
+    /// <summary>
+    /// Desfaz uma atividade do histórico (SPEC-20261029-1722): só as de timebank — o uso (devolve o timebank) e o ajuste
+    /// (+1/−1 ao contrário). Dealer e organizador, como o desfazer de rebuy. Avisa o grupo do torneio ("EntryUpdate").
+    /// </summary>
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpPost("activities/{activityId:guid}/undo")]
+    public async Task<ActionResult<UndoResultResponse>> UndoActivity(
+        Guid tournamentId, Guid activityId, CancellationToken ct)
+    {
+        var message = await _timebankService.UndoAsync(tournamentId, activityId, GetUserId(), ct);
+        try
+        {
+            await _hub.Clients.Group($"tournament_{tournamentId}")
+                .SendAsync("EntryUpdate", new { tournamentId, activityId }, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Não foi possível avisar o torneio {TournamentId} do timebank desfeito", tournamentId);
+        }
         return Ok(new UndoResultResponse { Message = message });
     }
 

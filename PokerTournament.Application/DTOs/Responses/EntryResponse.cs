@@ -44,6 +44,9 @@ public class EntryResponse
     /// <summary>Knockout: dinheiro de bounty que o jogador já ganhou eliminando os outros.</summary>
     public decimal BountyWon { get; set; }
 
+    /// <summary>Timebank (SPEC-20261029-1722): quantos o jogador ainda tem (0 no torneio sem timebank).</summary>
+    public int TimebanksRemaining { get; set; }
+
     public bool IsReentry { get; set; }
     public int EntryNumber { get; set; }
 

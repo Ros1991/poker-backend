@@ -40,6 +40,10 @@ public class TournamentEntry : BaseEntity
     public decimal BountyHead { get; set; }
     public decimal BountyWon { get; set; }
 
+    // Timebank (SPEC-20261029-1722): quantos timebanks o jogador ainda tem. Nasce = Tournament.TimebankCount (0 sem
+    // timebank); usar tira 1, o dealer dá/tira 1 de cada vez (nunca abaixo de 0; pode passar do inicial).
+    public int TimebanksRemaining { get; set; }
+
     // Re-entry
     public bool IsReentry { get; set; }
     public Guid? OriginalEntryId { get; set; }

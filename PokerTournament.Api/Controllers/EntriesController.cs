@@ -3,6 +3,8 @@ using PokerTournament.Api.Authorization;
 using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using PokerTournament.Api.Hubs;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
@@ -15,10 +17,17 @@ namespace PokerTournament.Api.Controllers;
 public class EntriesController : ControllerBase
 {
     private readonly EntryService _entryService;
+    private readonly TimebankService _timebankService;
+    private readonly IHubContext<TournamentHub> _hub;
+    private readonly ILogger<EntriesController> _logger;
 
-    public EntriesController(EntryService entryService)
+    public EntriesController(
+        EntryService entryService, TimebankService timebankService, IHubContext<TournamentHub> hub, ILogger<EntriesController> logger)
     {
         _entryService = entryService;
+        _timebankService = timebankService;
+        _hub = hub;
+        _logger = logger;
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
@@ -136,6 +145,53 @@ public class EntriesController : ControllerBase
         var userId = GetUserId();
         var result = await _entryService.UndoEliminationAsync(tournamentId, entryId, userId, ct);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Timebank virtual (SPEC-20261029-1722): "Usar timebank" — tira 1 do jogador e grava o uso (com os segundos) no
+    /// histórico. A contagem é do celular do dealer (D4); esta rota só registra. { actionId } opcional: o "Tentar de novo"
+    /// manda o mesmo id e não desconta duas vezes. 400 sem timebank no torneio, com 0 restantes ou jogador fora do jogo.
+    /// </summary>
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpPost("{entryId:guid}/timebank/use")]
+    public async Task<ActionResult<TimebankResultResponse>> UseTimebank(
+        Guid tournamentId, Guid entryId, [FromBody] TimebankUseRequest? request, CancellationToken ct)
+    {
+        var result = await _timebankService.UseAsync(tournamentId, entryId, request, GetUserId(), ct);
+        if (IsScopedToken())
+            StripContact(result.Entry.Person);
+        await NotifyEntryAsync(tournamentId, result.Entry);
+        return Ok(result);
+    }
+
+    /// <summary>Timebank (SPEC-20261029-1722): { delta: 1 | -1 } — o dealer ou o organizador dá ou tira um; nunca abaixo de 0.</summary>
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpPost("{entryId:guid}/timebank/adjust")]
+    public async Task<ActionResult<TimebankResultResponse>> AdjustTimebank(
+        Guid tournamentId, Guid entryId, [FromBody] TimebankAdjustRequest? request, CancellationToken ct)
+    {
+        var result = await _timebankService.AdjustAsync(tournamentId, entryId, request, GetUserId(), ct);
+        if (IsScopedToken())
+            StripContact(result.Entry.Person);
+        await NotifyEntryAsync(tournamentId, result.Entry);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Evento SignalR "EntryUpdate" ao grupo do torneio (SPEC-20261029-1722) depois do timebank: o painel aberto recarrega as
+    /// inscrições na hora (o terminal também). Só ids e o número — nada de contato. Melhor esforço: falha vai para o log.
+    /// </summary>
+    private async Task NotifyEntryAsync(Guid tournamentId, EntryResponse entry)
+    {
+        try
+        {
+            await _hub.Clients.Group($"tournament_{tournamentId}")
+                .SendAsync("EntryUpdate", new { tournamentId, entryId = entry.Id, entry.TimebanksRemaining }, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Não foi possível avisar o torneio {TournamentId} do timebank", tournamentId);
+        }
     }
 
     [HttpDelete("{entryId:guid}")]

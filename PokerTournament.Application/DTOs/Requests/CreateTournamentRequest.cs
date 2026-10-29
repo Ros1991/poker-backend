@@ -37,4 +37,11 @@ public class CreateTournamentRequest
     // BountyAmount: parte fixa do buy-in (e de cada rebuy) que vira bounty; null no knockout = herdar/manter.
     public string? KnockoutType { get; set; }
     public decimal? BountyAmount { get; set; }
+
+    // SPEC-20261029-1722 — timebank virtual. TimebankCount: 0 = sem timebank; 1 a 99 = timebanks por jogador. Na criação,
+    // null = herdar o padrão da estrutura escolhida (sem estrutura ou estrutura sem timebank: desligado); na edição, null =
+    // manter. TimebankSeconds: 5 a 300 (null = o da estrutura/o atual, senão 30); ignorado com o timebank desligado.
+    // Mudar a quantidade no rascunho reaplica nas inscrições que já existem.
+    public int? TimebankCount { get; set; }
+    public int? TimebankSeconds { get; set; }
 }

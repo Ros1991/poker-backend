@@ -37,6 +37,11 @@ public class BlindStructure : BaseEntity
     public string DefaultKnockoutType { get; set; } = nameof(Enums.KnockoutType.None);
     public decimal? DefaultBountyAmount { get; set; }
 
+    // Timebank padrão (SPEC-20261029-1722): o torneio criado com a estrutura herda (editável no torneio). Null = sem
+    // timebank; ligado, quantidade de 1 a 99 e segundos de 5 a 300.
+    public int? DefaultTimebankCount { get; set; }
+    public int? DefaultTimebankSeconds { get; set; }
+
     // Navigation
     public HomeGame? HomeGame { get; set; }
     public ICollection<BlindLevel> Levels { get; set; } = [];
