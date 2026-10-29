@@ -38,6 +38,19 @@ public class TournamentDirectController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Níveis de blinds do torneio sem o homeGameId na URL (SPEC-20261029-1721): o telão no celular
+    /// (/dealer/{id}/telao) calcula o "Próximo intervalo" com eles, também com o token do dealer por QR
+    /// (a rota com homeGameId é negada a esse token). Só leitura: editar continua na rota do home game.
+    /// </summary>
+    [AllowTokenKind(TokenKinds.Dealer)]
+    [HttpGet("{tournamentId:guid}/blind-levels")]
+    public async Task<ActionResult<List<TournamentBlindLevelResponse>>> GetBlindLevels(Guid tournamentId, CancellationToken ct)
+    {
+        var result = await _tournamentService.GetBlindLevelsAsync(tournamentId, ct);
+        return Ok(result);
+    }
+
     [HttpPut("{tournamentId:guid}/punctuality-bonus")]
     public async Task<ActionResult<TournamentResponse>> UpdatePunctualityBonus(
         Guid tournamentId, [FromBody] UpdatePunctualityBonusRequest request, CancellationToken ct)
