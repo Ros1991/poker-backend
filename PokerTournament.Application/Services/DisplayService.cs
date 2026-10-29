@@ -464,6 +464,7 @@ public class DisplayService
             RemainingSeconds = Math.Max(0, timer.RemainingSeconds - elapsed),
             IsRunning = timer.IsRunning,
             IsBreak = timer.IsBreak,
+            IsLastLevel = timer.IsLastLevel,
             NextLevel = timer.NextLevel,
         };
 

@@ -11,6 +11,11 @@ public class TimerStateResponse
     public int RemainingSeconds { get; set; }
     public bool IsRunning { get; set; }
     public bool IsBreak { get; set; }
+    /// <summary>
+    /// Não existe nível depois do atual (SPEC-20261029-1720): o "Próximo" é recusado e, com o tempo zerado, o relógio
+    /// fica em 00:00 no último blind com o selo "Último nível".
+    /// </summary>
+    public bool IsLastLevel { get; set; }
     public NextLevelInfo? NextLevel { get; set; }
 }
 

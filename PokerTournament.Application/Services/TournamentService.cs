@@ -621,6 +621,25 @@ public class TournamentService
             .FirstOrDefaultAsync(t => t.Id == tournamentId && t.HomeGameId == homeGameId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
+        // SPEC-20261029-1720 (D2): no fim da estrutura o relógio fica em 00:00 e o organizador acrescenta níveis para
+        // continuar. O tempo que passou parado em 00:00 não pode ir para o nível novo (o auto-avanço do relógio levaria o
+        // excedente e pularia níveis): o último nível fica "recém-terminado" e o seguinte começa do zero.
+        var oldLast = tournament.BlindLevels.OrderByDescending(l => l.LevelNumber).FirstOrDefault();
+        if (oldLast is not null && (tournament.CurrentLevel ?? 0) >= oldLast.LevelNumber)
+        {
+            var duration = oldLast.DurationMinutes * 60;
+            var elapsed = tournament.TimerElapsedSeconds
+                + (tournament.IsTimerRunning && tournament.TimerStartedAt.HasValue
+                    ? (int)(DateTimeOffset.UtcNow - tournament.TimerStartedAt.Value).TotalSeconds
+                    : 0);
+            if ((tournament.CurrentLevel ?? 0) > oldLast.LevelNumber || elapsed > duration)
+            {
+                tournament.CurrentLevel = oldLast.LevelNumber;
+                tournament.TimerElapsedSeconds = duration;
+                tournament.TimerStartedAt = tournament.IsTimerRunning ? DateTimeOffset.UtcNow : null;
+            }
+        }
+
         foreach (var level in tournament.BlindLevels.ToList())
             _db.TournamentBlindLevels.Remove(level);
 
