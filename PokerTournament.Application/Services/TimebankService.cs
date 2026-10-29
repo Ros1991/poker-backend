@@ -1,3 +1,4 @@
+using System.Data.Common;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.Common;
@@ -35,7 +36,9 @@ public class TimebankService
 
     /// <summary>
     /// "Usar timebank": tira 1 do jogador e grava TimebankUsed com os segundos do torneio. Com <c>ActionId</c> já gravado
-    /// (o "Tentar de novo" do celular depois de uma falha de rede), devolve o registro que já existe sem descontar outra vez.
+    /// (o "Tentar de novo" do celular depois de uma falha de rede), devolve o registro que já existe sem descontar outra vez
+    /// — também quando os dois envios chegam ao mesmo tempo: o segundo esbarra na chave da atividade (23505) ou no
+    /// <c>xmin</c> da inscrição (<see cref="DbUpdateConcurrencyException"/>), relê e responde como o primeiro.
     /// </summary>
     public async Task<TimebankResultResponse> UseAsync(
         Guid tournamentId, Guid entryId, TimebankUseRequest? request, Guid? usedBy = null, CancellationToken ct = default)
@@ -48,11 +51,7 @@ public class TimebankService
             var existing = await _db.TournamentActivities.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.Id == id, ct);
             if (existing is not null)
-            {
-                if (existing.TournamentId != tournamentId || existing.EntryId != entryId || existing.Type != UsedType)
-                    throw new DomainException("Pedido de timebank inválido.");
-                return Result(entry, existing.Id, tournament, alreadyRegistered: true);
-            }
+                return await AlreadyRegisteredAsync(existing, tournamentId, entryId, tournament, ct);
         }
 
         EnsurePlayable(tournament, entry);
@@ -74,9 +73,47 @@ public class TimebankService
         };
         _db.TournamentActivities.Add(activity);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (actionId is not null
+            && (ex is DbUpdateConcurrencyException || IsDuplicateActivityId(ex)))
+        {
+            // O mesmo "Tentar de novo" chegou junto com o primeiro envio, que gravou antes (a gravação deste foi
+            // desfeita inteira). Tira do rastreamento a atividade que não entrou e relê do banco o que o primeiro gravou.
+            _db.TournamentActivities.Remove(activity);
+            var registered = await _db.TournamentActivities.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.Id == actionId.Value, ct);
+            if (registered is null)
+                throw; // conflito de verdade (outro uso/ajuste desta inscrição ao mesmo tempo): o 409 de sempre
+            return await AlreadyRegisteredAsync(registered, tournamentId, entryId, tournament, ct);
+        }
         return Result(entry, activity.Id, tournament);
     }
+
+    /// <summary>
+    /// Resposta do envio repetido (mesmo <c>ActionId</c>): o registro que já existe, sem descontar outra vez, com a
+    /// inscrição relida do banco — o saldo já descontado pelo primeiro envio, mesmo que ele tenha gravado depois de esta
+    /// requisição carregar a inscrição.
+    /// </summary>
+    private async Task<TimebankResultResponse> AlreadyRegisteredAsync(
+        TournamentActivity existing, Guid tournamentId, Guid entryId, Tournament tournament, CancellationToken ct)
+    {
+        if (existing.TournamentId != tournamentId || existing.EntryId != entryId || existing.Type != UsedType)
+            throw new DomainException("Pedido de timebank inválido.");
+        var current = await _db.EntriesWithPerson().AsNoTracking()
+            .FirstAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct);
+        return Result(current, existing.Id, tournament, alreadyRegistered: true);
+    }
+
+    /// <summary>Violação da chave primária da atividade (PostgreSQL 23505): o id do celular já foi gravado.</summary>
+    private static bool IsDuplicateActivityId(DbUpdateException ex) =>
+        ex.InnerException is DbException { SqlState: "23505" } db
+        && db.Message.Contains(ActivityPrimaryKey, StringComparison.Ordinal);
+
+    /// <summary>Nome da chave primária de tournament_activities no banco.</summary>
+    private const string ActivityPrimaryKey = "PK_tournament_activities";
 
     /// <summary>Dá (+1) ou tira (−1) um timebank: nunca abaixo de 0; pode passar do inicial (até 99). Grava TimebankAdjusted.</summary>
     public async Task<TimebankResultResponse> AdjustAsync(

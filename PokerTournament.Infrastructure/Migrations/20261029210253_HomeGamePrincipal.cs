@@ -17,6 +17,12 @@ namespace PokerTournament.Infrastructure.Migrations
     /// ainda não confirmada ganha o principal ao confirmar.</item>
     /// </list>
     /// Nada é apagado: contas donas de 2+ home games continuam com todos (os extras seguem visíveis e operáveis).
+    /// <para>
+    /// Down (revisão independente da SPEC-20261029-1723): antes de apagar a coluna, apaga de vez (SQL) os principais
+    /// vazios — sem torneio, jogador, membro, ranking, estrutura de blinds nem regra de pontuação, contando também os
+    /// excluídos logicamente —, que são os "Clube de X" criados pelo backfill (e pelas contas confirmadas depois). Sem a
+    /// coluna eles virariam home games comuns que ninguém criou. Principal com qualquer dado fica.
+    /// </para>
     /// </summary>
     public partial class HomeGamePrincipal : Migration
     {
@@ -68,6 +74,17 @@ namespace PokerTournament.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // Principais vazios saem de vez (o SQL não tem o filtro de soft delete: excluídos logicamente contam como dado)
+            migrationBuilder.Sql(
+                "DELETE FROM home_games h" +
+                " WHERE h.is_primary" +
+                "  AND NOT EXISTS (SELECT 1 FROM tournaments t WHERE t.home_game_id = h.id)" +
+                "  AND NOT EXISTS (SELECT 1 FROM persons p WHERE p.home_game_id = h.id)" +
+                "  AND NOT EXISTS (SELECT 1 FROM home_game_members m WHERE m.home_game_id = h.id)" +
+                "  AND NOT EXISTS (SELECT 1 FROM rankings r WHERE r.home_game_id = h.id)" +
+                "  AND NOT EXISTS (SELECT 1 FROM blind_structures b WHERE b.home_game_id = h.id)" +
+                "  AND NOT EXISTS (SELECT 1 FROM scoring_rules s WHERE s.home_game_id = h.id);");
+
             migrationBuilder.DropIndex(
                 name: "ix_home_games_owner_primary",
                 table: "home_games");
