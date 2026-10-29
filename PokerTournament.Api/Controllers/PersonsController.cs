@@ -40,8 +40,10 @@ public class PersonsController : HomeGameScopedControllerBase
     /// <summary>
     /// Normaliza o que veio do formulário (nome sem espaços sobrando, vazio → null em apelido/e-mail, WhatsApp só
     /// com os dígitos locais) e confere nome obrigatório, WhatsApp e e-mail únicos no home game. Null = tudo certo.
+    /// O e-mail repetido só é conferido quando ele MUDA (<paramref name="previousEmail"/>, na forma do vínculo; null ao
+    /// cadastrar): home game antigo com "ana@x.com" e "Ana@x.com" gravados continua editando o nome desses jogadores.
     /// </summary>
-    private async Task<string?> NormalizeAndValidateAsync(Person person, CancellationToken ct)
+    private async Task<string?> NormalizeAndValidateAsync(Person person, string? previousEmail, CancellationToken ct)
     {
         person.FullName = PlayerNames.NormalizeSpaces(person.FullName);
         if (person.FullName.Length == 0)
@@ -66,6 +68,7 @@ public class PersonsController : HomeGameScopedControllerBase
             return TournamentPlayerService.DuplicateWhatsappMessage;
 
         if (person.Email is { } email
+            && PlayerLinkService.NormalizeEmail(email) != previousEmail
             && await PlayerLinkService.EmailInUseAsync(_db, person.HomeGameId, email, person.Id, ct))
             return TournamentPlayerService.DuplicateEmailMessage;
 
@@ -158,7 +161,7 @@ public class PersonsController : HomeGameScopedControllerBase
         var person = _mapper.Map<Person>(request);
         // Foto só pelo upload (POST {id}/photo): nada de URL arbitrária vinda do formulário
         person.PhotoUrl = null;
-        if (await NormalizeAndValidateAsync(person, ct) is { } error)
+        if (await NormalizeAndValidateAsync(person, previousEmail: null, ct) is { } error)
             return BadRequest(new { message = error });
         // E-mail igual ao de uma conta confirmada → jogador vinculado a ela (SPEC-20261029-1725)
         person.UserId = null;
@@ -185,13 +188,23 @@ public class PersonsController : HomeGameScopedControllerBase
         // Campos nulos no pedido não mudam nada (MappingProfile); "" limpa (apelido, e-mail, WhatsApp, notas)
         var previousEmail = PlayerLinkService.NormalizeEmail(person.Email);
         _mapper.Map(request, person);
-        if (await NormalizeAndValidateAsync(person, ct) is { } error)
+        if (await NormalizeAndValidateAsync(person, previousEmail, ct) is { } error)
             return BadRequest(new { message = error });
         // E-mail mudou → recalcula o vínculo com a conta (achou conta confirmada → vincula; não achou → solta).
         // Sem mudança de e-mail, o vínculo fica (inclusive o feito pelo "vincular membro ↔ jogador").
         if (PlayerLinkService.NormalizeEmail(person.Email) != previousEmail)
             await PlayerLinkService.RelinkPersonAsync(_db, person, ct);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (person.Email is not null
+            && ex.InnerException?.Message.Contains("ix_persons_home_game_email", StringComparison.Ordinal) == true)
+        {
+            // Só a caixa mudou ("Ana@x.com" → "ana@x.com") e outro jogador antigo já tem o e-mail exatamente assim (o
+            // índice do banco distingue maiúsculas), ou dois envios ao mesmo tempo: a mesma mensagem do e-mail repetido
+            return BadRequest(new { message = TournamentPlayerService.DuplicateEmailMessage });
+        }
 
         return Ok(_mapper.Map<PersonResponse>(person));
     }

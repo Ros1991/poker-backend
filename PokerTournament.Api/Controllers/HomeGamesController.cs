@@ -381,9 +381,13 @@ public class HomeGamesController : HomeGameScopedControllerBase
         }
 
         // "Vincular membro ↔ jogador" também liga o jogador à conta do membro (SPEC-20261029-1725), mesmo com outro
-        // e-mail no cadastro (o modal avisa antes). Remover o membro depois não desfaz o vínculo do jogador.
+        // e-mail no cadastro (o modal avisa antes). Remover o membro depois não desfaz o vínculo do jogador — mas voltar
+        // a adicioná-lo com OUTRO jogador é uma troca: o de antes deixa de ser dele (ReleaseMemberLinksAsync).
         if (linkedPerson is not null)
+        {
+            await ReleaseMemberLinksAsync(id, request.UserId, linkedPerson.Id, ct);
             linkedPerson.UserId = request.UserId;
+        }
 
         var member = new HomeGameMember
         {
@@ -445,11 +449,21 @@ public class HomeGamesController : HomeGameScopedControllerBase
             if (person is null)
                 return BadRequest(new { message = "Jogador não pertence a este home game." });
 
+            // Troca de jogador: o anterior deixa de ser da conta do membro (salvo vínculo pelo e-mail dela)
+            await ReleaseMemberLinksAsync(id, member.UserId, personId, ct);
             member.PersonId = personId;
             member.Person = person;
             // Como no AddMember: o jogador passa a ser da conta do membro (SPEC-20261029-1725)
             person.UserId = member.UserId;
             person.User = member.User;
+        }
+        else if (request.PersonIdSent)
+        {
+            // "personId": null → tira o vínculo do membro com o jogador (o "Nenhum" do editar membro); o jogador deixa de
+            // ser da conta do membro, salvo vínculo pelo e-mail dela
+            await ReleaseMemberLinksAsync(id, member.UserId, null, ct);
+            member.PersonId = null;
+            member.Person = null;
         }
 
         await _db.SaveChangesAsync(ct);
@@ -487,6 +501,23 @@ public class HomeGamesController : HomeGameScopedControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Troca ou retirada do jogador vinculado a um membro (revisão independente da SPEC-20261029-1725): os jogadores
+    /// DESTE home game ligados à conta do membro (menos <paramref name="keepPersonId"/>, o novo) voltam ao vínculo pelo
+    /// e-mail (<see cref="PlayerLinkService.RelinkPersonAsync"/>) — com o e-mail confirmado da própria conta continuam
+    /// dela (o vínculo veio do e-mail); senão saem da conta do membro (nada de foto dele nem "Meus torneios" dele no
+    /// jogador errado). Quem chama salva.
+    /// </summary>
+    private async Task ReleaseMemberLinksAsync(Guid homeGameId, Guid memberUserId, Guid? keepPersonId, CancellationToken ct)
+    {
+        var linked = await _db.Persons
+            .Include(p => p.User)
+            .Where(p => p.HomeGameId == homeGameId && p.UserId == memberUserId && p.Id != keepPersonId)
+            .ToListAsync(ct);
+        foreach (var person in linked)
+            await PlayerLinkService.RelinkPersonAsync(_db, person, ct);
+    }
+
     private static string? NullIfEmpty(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
@@ -500,6 +531,22 @@ public class AddHomeGameMemberRequest
 
 public class UpdateHomeGameMemberRequest
 {
+    private Guid? _personId;
+
     public bool? IsAdmin { get; set; }
-    public Guid? PersonId { get; set; }
+
+    /// <summary>Id do jogador a vincular; <c>null</c> enviado → tira o vínculo; ausente do corpo → não muda.</summary>
+    public Guid? PersonId
+    {
+        get => _personId;
+        set
+        {
+            _personId = value;
+            PersonIdSent = true;
+        }
+    }
+
+    /// <summary>O corpo trouxe <c>personId</c> (mesmo <c>null</c>): o System.Text.Json só chama o setter quando o campo vem.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool PersonIdSent { get; private set; }
 }
