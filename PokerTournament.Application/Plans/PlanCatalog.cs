@@ -40,7 +40,17 @@ public sealed class PlanDefinition
     public decimal PriceMonthly { get; init; }
     /// <summary>Só exibido ("quando a cobrança entrar"); nada cobra hoje.</summary>
     public decimal PriceYearly { get; init; }
+    /// <summary>
+    /// Home games como dono CONTANDO o principal da conta (SPEC-20261029-1723): Mesa 1, Clube 1, Liga 3 (o principal + 2
+    /// que podem ser criados e excluídos). O principal existe em todo plano; criar só passa enquanto os outros (não
+    /// principais) cabem em <c>MaxOwnedHomeGames - 1</c> — no Mesa e no Clube, nenhum.
+    /// </summary>
     public int MaxOwnedHomeGames { get; init; }
+    /// <summary>
+    /// "Home game" aparece como conceito na interface (seletor, criar, excluir)? Só na Liga (D18 do plano de
+    /// 2026-10-29): no Mesa e no Clube a conta tem um só, invisível — a conta é o clube.
+    /// </summary>
+    public bool HomeGamesVisible { get; init; }
     /// <summary>Membros além do dono; null = ilimitado.</summary>
     public int? MaxMembersPerHomeGame { get; init; }
     /// <summary>Torneios criados numa janela móvel de 7 dias; null = ilimitado.</summary>
@@ -57,7 +67,8 @@ public sealed class PlanDefinition
 /// <summary>
 /// Catálogo de planos em código (até a cobrança entrar): tabela 3.1 de docs/PLANO-poker-da-galera-produto.md.
 /// Mesa R$ 0 / Clube R$ 49,90 / Liga R$ 99,90 por mês (anual R$ 499 / R$ 999 só exibido); home games
-/// como dono 1 / 1 / 3; torneios 1 a cada 7 dias / ilimitado / ilimitado; membros além do dono 0 / 3 / ilimitado.
+/// como dono 1 / 1 / 3 contando o principal da conta (SPEC-20261029-1723: Mesa e Clube só têm o principal, invisível;
+/// a Liga cria mais 2); torneios 1 a cada 7 dias / ilimitado / ilimitado; membros além do dono 0 / 3 / ilimitado.
 /// </summary>
 public static class PlanCatalog
 {
@@ -92,6 +103,7 @@ public static class PlanCatalog
             PriceMonthly = 0m,
             PriceYearly = 0m,
             MaxOwnedHomeGames = 1,
+            HomeGamesVisible = false,
             MaxMembersPerHomeGame = 0,
             TournamentsPer7Days = 1,
             Features = [],
@@ -105,6 +117,7 @@ public static class PlanCatalog
             PriceMonthly = 49.90m,
             PriceYearly = 499m,
             MaxOwnedHomeGames = 1,
+            HomeGamesVisible = false,
             MaxMembersPerHomeGame = 3,
             TournamentsPer7Days = null,
             Features = PaidFeatures,
@@ -118,6 +131,7 @@ public static class PlanCatalog
             PriceMonthly = 99.90m,
             PriceYearly = 999m,
             MaxOwnedHomeGames = 3,
+            HomeGamesVisible = true,
             MaxMembersPerHomeGame = null,
             TournamentsPer7Days = null,
             Features = [.. PaidFeatures, nameof(PlanFeature.ClubLogoOnTv)],

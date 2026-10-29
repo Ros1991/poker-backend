@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Domain.Entities;
@@ -30,6 +31,10 @@ namespace PokerTournament.Application.Services;
 /// último" o tempo todo, faria a exclusão falhar à toa. UpdatedAt/DeletedAt vão à mão por isso (o override do
 /// SaveChanges não vê UPDATE direto). O torneio que começar no meio da exclusão é pego pela conferência depois do
 /// UPDATE e desfaz tudo (rollback).
+///
+/// SPEC-20261029-1723: o home game principal da conta nunca é excluído por aqui (400 "O home game principal da conta não
+/// pode ser excluído.", também para o Admin do sistema); ele só sai junto com a conta (<see cref="DeleteWithAccountAsync"/>,
+/// chamado pelo DELETE me), com a mesma cascata.
 /// </summary>
 public class HomeGameDeletionService
 {
@@ -70,12 +75,16 @@ public class HomeGameDeletionService
 
     private static string Canonical(string value) => value.Trim().Normalize(NormalizationForm.FormC);
 
-    /// <summary>O que some junto. Null = home game inexistente ou já excluído.</summary>
+    /// <summary>
+    /// O que some junto. Null = home game inexistente ou já excluído. O principal da conta (SPEC-20261029-1723) vem com
+    /// <c>isPrimary</c> e o <c>blockedMessage</c> "O home game principal da conta não pode ser excluído." (antes do
+    /// torneio em andamento, que continua em <c>blockingTournament*</c>).
+    /// </summary>
     public async Task<HomeGameDeletionSummaryResponse?> GetSummaryAsync(Guid homeGameId, CancellationToken ct = default)
     {
         var homeGame = await _db.HomeGames.AsNoTracking()
             .Where(h => h.Id == homeGameId)
-            .Select(h => new { h.Id, h.Name, h.OwnerId, OwnerName = h.Owner.FullName })
+            .Select(h => new { h.Id, h.Name, h.OwnerId, h.IsPrimary, OwnerName = h.Owner.FullName })
             .FirstOrDefaultAsync(ct);
         if (homeGame is null)
             return null;
@@ -87,19 +96,23 @@ public class HomeGameDeletionService
             Name = homeGame.Name,
             OwnerId = homeGame.OwnerId,
             OwnerName = homeGame.OwnerName,
+            IsPrimary = homeGame.IsPrimary,
             Tournaments = await _db.Tournaments.CountAsync(t => t.HomeGameId == homeGameId, ct),
             Players = await _db.Persons.CountAsync(p => p.HomeGameId == homeGameId, ct),
             Rankings = await _db.Rankings.CountAsync(r => r.HomeGameId == homeGameId, ct),
             Members = await _db.HomeGameMembers.CountAsync(m => m.HomeGameId == homeGameId, ct),
             BlockingTournamentId = running?.Id,
             BlockingTournamentName = running?.Name,
-            BlockedMessage = running is null ? null : RunningTournamentMessage(running.Name),
+            BlockedMessage = homeGame.IsPrimary
+                ? HomeGamePrimary.NotDeletableMessage
+                : running is null ? null : RunningTournamentMessage(running.Name),
         };
     }
 
     /// <summary>
     /// Exclui o home game em cascata (ver a classe). Null = home game inexistente ou já excluído (404).
-    /// Nome vazio/diferente ou torneio em andamento → <see cref="DomainException"/> (400) sem mudar nada.
+    /// Principal da conta (SPEC-20261029-1723, também para o Admin do sistema), nome vazio/diferente ou torneio em
+    /// andamento → <see cref="DomainException"/> (400) sem mudar nada.
     /// </summary>
     public async Task<HomeGameDeletionSummaryResponse?> DeleteAsync(
         Guid homeGameId, string? confirmName, Guid byUserId, bool bySystemAdmin, string? ip, string? userAgent,
@@ -116,133 +129,187 @@ public class HomeGameDeletionService
         if (!NameMatches(confirmName, summary.Name))
             throw new DomainException(ConfirmNameMismatchMessage);
 
-        var now = DateTimeOffset.UtcNow;
-        var running = RunningStatuses;
-        List<Guid> droppedDealerRequests;
-        List<string> rankingSlugs;
-
+        HomeGameDeletionCleanup? cleanup;
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
-            // Home game primeiro: segura a linha (UPDATE) até o commit — dois cliques não excluem duas vezes
-            var homeGames = await _db.HomeGames
-                .Where(h => h.Id == homeGameId)
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(h => h.DeletedAt, now)
-                    .SetProperty(h => h.IsActive, false)
-                    .SetProperty(h => h.UpdatedAt, now), ct);
-            if (homeGames == 0)
+            cleanup = await CascadeAsync(summary, byUserId, bySystemAdmin, withAccount: false, ip, userAgent,
+                RunningTournamentMessage, ct);
+            if (cleanup is null)
                 return null; // outra requisição excluiu no meio do caminho
-
-            // Torneios do home game, inclusive os já excluídos antes: TV e QR de dealer deles também caem
-            var allTournamentIds = await _db.Tournaments.IgnoreQueryFilters()
-                .Where(t => t.HomeGameId == homeGameId)
-                .Select(t => t.Id)
-                .ToListAsync(ct);
-
-            var tournaments = await _db.Tournaments
-                .Where(t => t.HomeGameId == homeGameId && !running.Contains(t.Status))
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(t => t.DeletedAt, now)
-                    .SetProperty(t => t.UpdatedAt, now), ct);
-
-            // Torneio que começou depois da conferência lá em cima: o UPDATE pulou ele (status) — desfaz tudo
-            var startedMeanwhile = await _db.Tournaments.AsNoTracking()
-                .Where(t => t.HomeGameId == homeGameId)
-                .Select(t => t.Name)
-                .FirstOrDefaultAsync(ct);
-            if (startedMeanwhile is not null)
-                throw new DomainException(RunningTournamentMessage(startedMeanwhile));
-
-            rankingSlugs = await _db.Rankings
-                .Where(r => r.HomeGameId == homeGameId && r.Slug != null)
-                .Select(r => r.Slug!)
-                .ToListAsync(ct);
-            var rankings = await _db.Rankings
-                .Where(r => r.HomeGameId == homeGameId)
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(r => r.DeletedAt, now)
-                    .SetProperty(r => r.UpdatedAt, now), ct);
-
-            // Membros antes dos jogadores (o membro pode estar vinculado a um jogador)
-            var members = await _db.HomeGameMembers
-                .Where(m => m.HomeGameId == homeGameId)
-                .ExecuteDeleteAsync(ct);
-
-            var players = await _db.Persons
-                .Where(p => p.HomeGameId == homeGameId)
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(p => p.DeletedAt, now)
-                    .SetProperty(p => p.UpdatedAt, now), ct);
-
-            var structures = await _db.BlindStructures
-                .Where(b => b.HomeGameId == homeGameId && b.IsActive)
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(b => b.IsActive, false)
-                    .SetProperty(b => b.UpdatedAt, now), ct);
-
-            // TVs mostrando um torneio do home game voltam para o QR grande (como o "Voltar" do telão)
-            var displays = allTournamentIds.Count == 0 ? 0 : await _db.DisplaySessions
-                .Where(s => s.Status == Paired && s.TournamentId != null && allTournamentIds.Contains(s.TournamentId.Value))
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(s => s.Status, Pending)
-                    .SetProperty(s => s.TournamentId, (Guid?)null)
-                    .SetProperty(s => s.PairedAt, (DateTimeOffset?)null)
-                    .SetProperty(s => s.UpdatedAt, now), ct);
-
-            var dealer = await _dealers.RevokeForTournamentsAsync(allTournamentIds, byUserId, ct);
-            droppedDealerRequests = dealer.DroppedRequestIds;
-
-            var byName = await _db.Users.AsNoTracking()
-                .Where(u => u.Id == byUserId)
-                .Select(u => u.FullName)
-                .FirstOrDefaultAsync(ct);
-
-            _db.AuditLogs.Add(new AuditLog
-            {
-                // AuditLog não é BaseEntity: Id e CreatedAt à mão
-                Id = Guid.NewGuid(),
-                EntityType = AuditEntityType,
-                EntityId = homeGameId,
-                Action = AuditAction,
-                OldValues = JsonSerializer.Serialize(new
-                {
-                    name = summary.Name,
-                    ownerId = summary.OwnerId,
-                    ownerName = summary.OwnerName,
-                }),
-                NewValues = JsonSerializer.Serialize(new
-                {
-                    tournaments,
-                    players,
-                    rankings,
-                    members,
-                    blindStructures = structures,
-                    tvsUnpaired = displays,
-                    dealerQrsRevoked = dealer.Accesses,
-                    dealerRequestsClosed = dealer.Requests,
-                    bySystemAdmin,
-                }),
-                UserId = byUserId == Guid.Empty ? null : byUserId,
-                UserName = byName,
-                IpAddress = Cut(ip, 50),
-                UserAgent = Cut(userAgent, 500),
-                CreatedAt = now,
-            });
-            await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-
-            summary.Tournaments = tournaments;
-            summary.Players = players;
-            summary.Rankings = rankings;
-            summary.Members = members;
         }
 
-        // Depois do commit: o terminal do dealer cai na próxima requisição e o link público do ranking dá 404 já
-        _dealers.ForgetRevokedRequests(droppedDealerRequests);
-        foreach (var slug in rankingSlugs)
-            _cache.Remove(RankingLeaderboardService.PublicCacheKey(slug));
-
+        AfterCommit(cleanup);
         return summary;
+    }
+
+    // ------------------------------------------------------------------ junto com a conta (SPEC-20261029-1723)
+
+    /// <summary>Mensagem do DELETE me quando o principal da conta tem torneio em andamento.</summary>
+    public static string AccountRunningTournamentMessage(string tournamentName) =>
+        $"Encerre ou cancele o torneio {tournamentName} antes de excluir a conta.";
+
+    /// <summary>Resumo do principal da conta (o que sai junto no DELETE me), ou null se ela não tem principal.</summary>
+    public async Task<HomeGameDeletionSummaryResponse?> GetAccountPrimarySummaryAsync(Guid ownerId, CancellationToken ct = default)
+    {
+        var id = await HomeGamePrimary.FindIdAsync(_db, ownerId, ct);
+        return id is null ? null : await GetSummaryAsync(id.Value, ct);
+    }
+
+    /// <summary>
+    /// Excluir a conta (<c>DELETE me</c>) leva junto o principal dela — que pela tela do home game nunca é excluído — com
+    /// a MESMA cascata (torneios, jogadores e rankings com <c>deleted_at</c>, membros fora, TVs e dealers desconectados,
+    /// AuditLog <c>HomeGameDeleted</c> com <c>withAccount: true</c>). Roda DENTRO da transação de quem chama (exigida);
+    /// depois do commit, chamar <see cref="AfterCommit"/> com o que voltar. Torneio que começou no meio → 400
+    /// "Encerre ou cancele o torneio X antes de excluir a conta." e quem chama desfaz tudo. Null = o principal já não
+    /// existia.
+    /// </summary>
+    public async Task<HomeGameDeletionCleanup?> DeleteWithAccountAsync(
+        HomeGameDeletionSummaryResponse primary, Guid ownerId, string? ip, string? userAgent, CancellationToken ct = default)
+    {
+        if (_db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("Excluir o principal junto com a conta exige a transação da exclusão da conta.");
+        return await CascadeAsync(primary, ownerId, bySystemAdmin: false, withAccount: true, ip, userAgent,
+            AccountRunningTournamentMessage, ct);
+    }
+
+    /// <summary>
+    /// Depois do commit: o terminal do dealer cai na próxima requisição e o link público do ranking dá 404 já.
+    /// </summary>
+    public void AfterCommit(HomeGameDeletionCleanup cleanup)
+    {
+        _dealers.ForgetRevokedRequests(cleanup.DroppedDealerRequests);
+        foreach (var slug in cleanup.RankingSlugs)
+            _cache.Remove(RankingLeaderboardService.PublicCacheKey(slug));
+    }
+
+    // ------------------------------------------------------------------ cascata
+
+    /// <summary>
+    /// A cascata em si, dentro da transação aberta por quem chama (sem commit). Null = o home game já tinha sido
+    /// excluído. Preenche as contagens de <paramref name="summary"/> com o que foi excluído.
+    /// </summary>
+    private async Task<HomeGameDeletionCleanup?> CascadeAsync(
+        HomeGameDeletionSummaryResponse summary, Guid byUserId, bool bySystemAdmin, bool withAccount,
+        string? ip, string? userAgent, Func<string, string> runningMessage, CancellationToken ct)
+    {
+        var homeGameId = summary.HomeGameId;
+        var now = DateTimeOffset.UtcNow;
+        var running = RunningStatuses;
+
+        // Home game primeiro: segura a linha (UPDATE) até o commit — dois cliques não excluem duas vezes
+        var homeGames = await _db.HomeGames
+            .Where(h => h.Id == homeGameId)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(h => h.DeletedAt, now)
+                .SetProperty(h => h.IsActive, false)
+                .SetProperty(h => h.UpdatedAt, now), ct);
+        if (homeGames == 0)
+            return null;
+
+        // Torneios do home game, inclusive os já excluídos antes: TV e QR de dealer deles também caem
+        var allTournamentIds = await _db.Tournaments.IgnoreQueryFilters()
+            .Where(t => t.HomeGameId == homeGameId)
+            .Select(t => t.Id)
+            .ToListAsync(ct);
+
+        var tournaments = await _db.Tournaments
+            .Where(t => t.HomeGameId == homeGameId && !running.Contains(t.Status))
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(t => t.DeletedAt, now)
+                .SetProperty(t => t.UpdatedAt, now), ct);
+
+        // Torneio que começou depois da conferência lá em cima: o UPDATE pulou ele (status) — desfaz tudo
+        var startedMeanwhile = await _db.Tournaments.AsNoTracking()
+            .Where(t => t.HomeGameId == homeGameId)
+            .Select(t => t.Name)
+            .FirstOrDefaultAsync(ct);
+        if (startedMeanwhile is not null)
+            throw new DomainException(runningMessage(startedMeanwhile));
+
+        var rankingSlugs = await _db.Rankings
+            .Where(r => r.HomeGameId == homeGameId && r.Slug != null)
+            .Select(r => r.Slug!)
+            .ToListAsync(ct);
+        var rankings = await _db.Rankings
+            .Where(r => r.HomeGameId == homeGameId)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(r => r.DeletedAt, now)
+                .SetProperty(r => r.UpdatedAt, now), ct);
+
+        // Membros antes dos jogadores (o membro pode estar vinculado a um jogador)
+        var members = await _db.HomeGameMembers
+            .Where(m => m.HomeGameId == homeGameId)
+            .ExecuteDeleteAsync(ct);
+
+        var players = await _db.Persons
+            .Where(p => p.HomeGameId == homeGameId)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(p => p.DeletedAt, now)
+                .SetProperty(p => p.UpdatedAt, now), ct);
+
+        var structures = await _db.BlindStructures
+            .Where(b => b.HomeGameId == homeGameId && b.IsActive)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(b => b.IsActive, false)
+                .SetProperty(b => b.UpdatedAt, now), ct);
+
+        // TVs mostrando um torneio do home game voltam para o QR grande (como o "Voltar" do telão)
+        var displays = allTournamentIds.Count == 0 ? 0 : await _db.DisplaySessions
+            .Where(s => s.Status == Paired && s.TournamentId != null && allTournamentIds.Contains(s.TournamentId.Value))
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(s => s.Status, Pending)
+                .SetProperty(s => s.TournamentId, (Guid?)null)
+                .SetProperty(s => s.PairedAt, (DateTimeOffset?)null)
+                .SetProperty(s => s.UpdatedAt, now), ct);
+
+        var dealer = await _dealers.RevokeForTournamentsAsync(allTournamentIds, byUserId, ct);
+
+        var byName = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == byUserId)
+            .Select(u => u.FullName)
+            .FirstOrDefaultAsync(ct);
+
+        _db.AuditLogs.Add(new AuditLog
+        {
+            // AuditLog não é BaseEntity: Id e CreatedAt à mão
+            Id = Guid.NewGuid(),
+            EntityType = AuditEntityType,
+            EntityId = homeGameId,
+            Action = AuditAction,
+            OldValues = JsonSerializer.Serialize(new
+            {
+                name = summary.Name,
+                ownerId = summary.OwnerId,
+                ownerName = summary.OwnerName,
+                isPrimary = summary.IsPrimary,
+            }),
+            NewValues = JsonSerializer.Serialize(new
+            {
+                tournaments,
+                players,
+                rankings,
+                members,
+                blindStructures = structures,
+                tvsUnpaired = displays,
+                dealerQrsRevoked = dealer.Accesses,
+                dealerRequestsClosed = dealer.Requests,
+                bySystemAdmin,
+                withAccount,
+            }),
+            UserId = byUserId == Guid.Empty ? null : byUserId,
+            UserName = byName,
+            IpAddress = Cut(ip, 50),
+            UserAgent = Cut(userAgent, 500),
+            CreatedAt = now,
+        });
+        await _db.SaveChangesAsync(ct);
+
+        summary.Tournaments = tournaments;
+        summary.Players = players;
+        summary.Rankings = rankings;
+        summary.Members = members;
+        return new HomeGameDeletionCleanup(dealer.DroppedRequestIds, rankingSlugs);
     }
 
     // Em andamento primeiro o mais recente (é o que aparece na mensagem)
@@ -259,3 +326,6 @@ public class HomeGameDeletionService
     private static string? Cut(string? value, int max) =>
         string.IsNullOrEmpty(value) ? null : value.Length <= max ? value : value[..max];
 }
+
+/// <summary>O que fica para depois do commit de uma exclusão (cache do dealer e do ranking público).</summary>
+public sealed record HomeGameDeletionCleanup(List<Guid> DroppedDealerRequests, List<string> RankingSlugs);

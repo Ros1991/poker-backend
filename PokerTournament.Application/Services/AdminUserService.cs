@@ -244,13 +244,16 @@ public class AdminUserService
             .Select(l => new { l.Provider, l.Email, l.CreatedAt, l.LastUsedAt })
             .ToListAsync(ct);
 
+        // O principal da conta primeiro (SPEC-20261029-1723), depois os demais por nome
         var owned = await _db.HomeGames.AsNoTracking()
             .Where(h => h.OwnerId == id)
-            .OrderBy(h => h.Name)
+            .OrderByDescending(h => h.IsPrimary)
+            .ThenBy(h => h.Name)
             .Select(h => new AdminUserOwnedHomeGame
             {
                 Id = h.Id,
                 Name = h.Name,
+                IsPrimary = h.IsPrimary,
                 TournamentsCount = h.Tournaments.Count,
                 MembersCount = h.Members.Count,
             })
@@ -731,6 +734,8 @@ public class AdminUserService
             user.EmailConfirmedAt = DateTimeOffset.UtcNow;
             user.RefreshToken = null;
             user.RefreshTokenExpiresAt = null;
+            // Confirmada agora: ganha o home game principal "Clube de <nome>" (SPEC-20261029-1723)
+            await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
             var actorName = await ActorNameAsync(actor, ct);
             AddAudit(id, EmailConfirmationService.AuditAction, null,
                 Json(new { via = "admin", pendingRegistration = pending is not null }), null, actor, actorName);

@@ -197,7 +197,11 @@ public class PasswordResetService
         // conta ainda não confirmada fica confirmada (e os links de confirmação perdem o sentido)
         var confirmsEmail = user.EmailConfirmedAt is null;
         if (confirmsEmail)
+        {
             user.EmailConfirmedAt = now;
+            // Confirmada agora: ganha o home game principal (SPEC-20261029-1723), no mesmo SaveChanges
+            await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
+        }
 
         _db.AuditLogs.Add(new AuditLog
         {

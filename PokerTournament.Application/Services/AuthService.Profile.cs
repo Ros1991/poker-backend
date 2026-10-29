@@ -61,9 +61,10 @@ public partial class AuthService
     // audit_logs.changed_fields é jsonb: lista JSON com os nomes dos campos
     private const string PhotoUrlField = """["PhotoUrl"]""";
 
+    // SPEC-20261029-1723: conta só os home games ALÉM do principal da conta (que sai junto com ela)
     public static string OwnerOfHomeGamesMessage(int count) => count == 1
-        ? "Você é dono de 1 home game. Exclua-o antes ou fale com o suporte para transferir."
-        : $"Você é dono de {count} home games. Exclua-os antes ou fale com o suporte para transferir.";
+        ? "Você é dono de 1 home game além do da sua conta. Exclua-o antes ou fale com o suporte para transferir."
+        : $"Você é dono de {count} home games além do da sua conta. Exclua-os antes ou fale com o suporte para transferir.";
 
     // ---------------------------------------------------------------- dados
 
@@ -79,7 +80,8 @@ public partial class AuthService
 
     public async Task<ProfileResponse> ToProfileAsync(User user, CancellationToken ct = default)
     {
-        var owned = await _db.HomeGames.CountAsync(h => h.OwnerId == user.Id, ct);
+        // Os que bloqueiam excluir a conta: o principal (SPEC-20261029-1723) não conta — ele sai junto com a conta
+        var owned = await _db.HomeGames.CountAsync(h => h.OwnerId == user.Id && !h.IsPrimary, ct);
         return new ProfileResponse
         {
             Id = user.Id,
@@ -521,8 +523,11 @@ public partial class AuthService
     // ---------------------------------------------------------------- excluir conta
 
     /// <summary>
-    /// <c>DELETE me</c> (LGPD, arts. 15 e 16): bloqueado para dono de home game (400 com a contagem) e para Admin do
-    /// sistema. Confirmação: "EXCLUIR" + a senha (conta com senha; errada conta no limitador do login) ou, em conta
+    /// <c>DELETE me</c> (LGPD, arts. 15 e 16): bloqueado para dono de home game além do principal da conta (400 com a
+    /// contagem), com torneio em andamento no principal (400) e para Admin do sistema. O principal (SPEC-20261029-1723),
+    /// que nunca é excluído pela tela, sai JUNTO com a conta, com a cascata do <see cref="HomeGameDeletionService"/>
+    /// (torneios, jogadores e rankings dele excluídos; membros fora; TVs e dealers desconectados). Confirmação: "EXCLUIR"
+    /// + a senha (conta com senha; errada conta no limitador do login) ou, em conta
     /// sem senha, um ID token do Google de um login desta conta emitido há menos de 5 min (nonce da API, gasto aqui).
     /// Exclusão = anonimização: nome "Conta excluída", apelido/WhatsApp/foto apagados, e-mail trocado por um marcador
     /// único inválido (o endereço fica livre para um cadastro novo), senha e logins externos removidos, links
@@ -540,9 +545,12 @@ public partial class AuthService
         if (user.Role == "Admin")
             throw new DomainException(DeleteAdminBlockedMessage);
 
-        var owned = await _db.HomeGames.CountAsync(h => h.OwnerId == user.Id, ct);
+        var owned = await _db.HomeGames.CountAsync(h => h.OwnerId == user.Id && !h.IsPrimary, ct);
         if (owned > 0)
             throw new DomainException(OwnerOfHomeGamesMessage(owned));
+        var primary = await _homeGameDeletion.GetAccountPrimarySummaryAsync(user.Id, ct);
+        if (primary?.BlockingTournamentName is { } runningTournament)
+            throw new DomainException(HomeGameDeletionService.AccountRunningTournamentMessage(runningTournament));
 
         var via = user.PasswordHash is not null
             ? ConfirmDeletionWithPassword(user, request.Password, ip)
@@ -550,8 +558,12 @@ public partial class AuthService
 
         var previousPhoto = user.PhotoUrl;
         var now = DateTimeOffset.UtcNow;
+        HomeGameDeletionCleanup? primaryCleanup = null;
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
+            // O principal da conta sai junto (mesma cascata da exclusão de home game, nesta transação)
+            if (primary is not null)
+                primaryCleanup = await _homeGameDeletion.DeleteWithAccountAsync(primary, user.Id, ip, userAgent, ct);
             // Links pendentes: nenhum "Esqueci minha senha" ou confirmação de e-mail reabre a conta
             await _db.PasswordResetTokens
                 .Where(t => t.UserId == user.Id && t.UsedAt == null && t.RevokedAt == null)
@@ -589,6 +601,8 @@ public partial class AuthService
             await tx.CommitAsync(ct);
         }
 
+        if (primaryCleanup is not null)
+            _homeGameDeletion.AfterCommit(primaryCleanup);
         _logger.LogInformation("Conta excluída (anonimizada) pelo perfil: usuário {UserId}", user.Id);
         return previousPhoto;
     }

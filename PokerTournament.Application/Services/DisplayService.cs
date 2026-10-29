@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Plans;
@@ -243,7 +244,10 @@ public class DisplayService
         return new DisplayDeviceTokenResponse { DeviceToken = deviceToken };
     }
 
-    /// <summary>Torneios que o usuário pode pôr na TV: em andamento primeiro.</summary>
+    /// <summary>
+    /// Torneios que o usuário pode pôr na TV: em andamento primeiro. O rótulo do home game (SPEC-20261029-1723) é o
+    /// nome do clube (Clube/Liga) ou, no principal de dono Mesa — que não tem nome de clube —, o nome da conta do dono.
+    /// </summary>
     public async Task<List<PairableTournamentResponse>> GetPairableTournamentsAsync(
         Guid userId, bool isAdmin, CancellationToken ct = default)
     {
@@ -257,20 +261,35 @@ public class DisplayService
             query = query.Where(t => homeGameIds.Contains(t.HomeGameId));
         }
 
-        var list = await query
-            .Join(_db.HomeGames, t => t.HomeGameId, h => h.Id, (t, h) => new PairableTournamentResponse
-            {
-                Id = t.Id,
-                Name = t.Name,
-                Date = t.Date,
-                Status = t.Status,
-                HomeGameName = h.Name,
-            })
+        var rows = await query
             .OrderByDescending(t => t.Date)
             .Take(40)
+            .Join(_db.HomeGames, t => t.HomeGameId, h => h.Id, (t, h) => new
+            {
+                Item = new PairableTournamentResponse
+                {
+                    Id = t.Id,
+                    Name = t.Name,
+                    Date = t.Date,
+                    Status = t.Status,
+                    HomeGameName = h.Name,
+                },
+                h.OwnerId,
+                h.IsPrimary,
+                OwnerName = h.Owner.FullName,
+            })
             .ToListAsync(ct);
 
-        return list.OrderBy(t => StatusRank(t.Status)).ThenByDescending(t => t.Date).ToList();
+        // Plano efetivo por dono (cache do PlanService): só o principal de dono Mesa troca o rótulo
+        var plans = new Dictionary<Guid, string>();
+        foreach (var row in rows.Where(r => r.IsPrimary))
+        {
+            if (!plans.TryGetValue(row.OwnerId, out var plan))
+                plans[row.OwnerId] = plan = await _plans.GetUserEffectivePlanAsync(row.OwnerId, ct);
+            row.Item.HomeGameName = HomeGamePrimary.LabelFor(true, plan, row.Item.HomeGameName, row.OwnerName);
+        }
+
+        return rows.Select(r => r.Item).OrderBy(t => StatusRank(t.Status)).ThenByDescending(t => t.Date).ToList();
     }
 
     // ---------------------------------------------------------------- snapshot

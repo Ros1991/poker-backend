@@ -51,7 +51,8 @@ public class MeController : ControllerBase
     /// <summary>
     /// Plano da conta (SPEC-20261023-1205): plano gravado e efetivo, vencimento, origem, nota, limites e
     /// recursos do plano efetivo, uso (home games n/limite, torneios nos últimos 7 dias n/limite + quando
-    /// libera o próximo, membros por home game) e o catálogo inteiro (tabela comparativa de "Meu plano").
+    /// libera o próximo, membros por home game) e o catálogo inteiro (tabela comparativa de "Meu plano"). Desde a
+    /// SPEC-20261029-1723 traz o <c>primaryHomeGameId</c> (home game principal da conta).
     /// </summary>
     [HttpGet("plan")]
     public async Task<ActionResult<MyPlanResponse>> GetPlan(CancellationToken ct)
@@ -262,8 +263,9 @@ public class MeController : ControllerBase
 
     /// <summary>
     /// Excluir a conta: <c>{ confirmation: "EXCLUIR", password }</c> ou, sem senha, <c>{ confirmation, idToken, nonce }</c>
-    /// de um login com o Google feito agora. Dono de home game → 400 ("Você é dono de N home games…"). 204 = conta
-    /// anonimizada, sessões revogadas, e-mail liberado.
+    /// de um login com o Google feito agora. Dono de home game além do principal da conta → 400 ("Você é dono de N home
+    /// games além do da sua conta…"); torneio em andamento no principal → 400. 204 = conta anonimizada, sessões
+    /// revogadas, e-mail liberado e o home game principal excluído junto (SPEC-20261029-1723).
     /// </summary>
     [HttpDelete]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

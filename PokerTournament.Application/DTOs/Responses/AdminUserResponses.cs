@@ -167,6 +167,8 @@ public class AdminUserOwnedHomeGame
 {
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>Principal da conta (SPEC-20261029-1723): vem primeiro e não tem a lixeira (nunca é excluído).</summary>
+    public bool IsPrimary { get; set; }
     public int TournamentsCount { get; set; }
     public int MembersCount { get; set; }
 }

@@ -10,6 +10,8 @@ public class HomeGameDeletionSummaryResponse
     public string Name { get; set; } = string.Empty;
     public Guid OwnerId { get; set; }
     public string? OwnerName { get; set; }
+    /// <summary>Principal da conta (SPEC-20261029-1723): nunca excluído pela tela — vem com o <see cref="BlockedMessage"/>.</summary>
+    public bool IsPrimary { get; set; }
     /// <summary>Torneios do home game (inclusive encerrados e cancelados)</summary>
     public int Tournaments { get; set; }
     /// <summary>Jogadores cadastrados (inclusive os marcados como Dealer)</summary>
@@ -20,6 +22,9 @@ public class HomeGameDeletionSummaryResponse
     /// <summary>Torneio em andamento que impede a exclusão (null = pode excluir)</summary>
     public Guid? BlockingTournamentId { get; set; }
     public string? BlockingTournamentName { get; set; }
-    /// <summary>"Encerre ou cancele o torneio X antes de excluir o home game." quando há bloqueio</summary>
+    /// <summary>
+    /// Por que não dá para excluir (null = pode): "O home game principal da conta não pode ser excluído." no principal,
+    /// senão "Encerre ou cancele o torneio X antes de excluir o home game." com torneio em andamento.
+    /// </summary>
     public string? BlockedMessage { get; set; }
 }
