@@ -31,6 +31,12 @@ public class HomeGameResponse
     /// depois do plano (HomeGamePrimary.ApplyAsync).
     /// </summary>
     public string? DisplayName { get; set; }
+    /// <summary>
+    /// Quem está logado gerencia este home game: dono, membro administrador ou Admin do sistema (a regra do
+    /// <c>HomeGameAccess.CanManageAsync</c>). O menu usa para mostrar Membros e Configurações (SPEC-20261029-1724).
+    /// Preenchido pelo controller.
+    /// </summary>
+    public bool CanManage { get; set; }
     public int MemberCount { get; set; }
     public int TournamentCount { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

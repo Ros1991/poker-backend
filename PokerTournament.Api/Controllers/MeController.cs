@@ -64,6 +64,22 @@ public class MeController : ControllerBase
         return plan is null ? NotFound(new { message = NotFoundMessage }) : Ok(plan);
     }
 
+    /// <summary>
+    /// Início da conta (SPEC-20261029-1724): plano, torneios acontecendo agora nos home games que a conta acessa (os
+    /// dela e os de outras pessoas em que é membro), os últimos torneios de cada um e o próximo/último dos clubes de
+    /// outras pessoas — tudo numa consulta, para a tela não buscar home game por home game.
+    /// </summary>
+    [HttpGet("inicio")]
+    [ProducesResponseType(typeof(InicioResponse), StatusCodes.Status200OK)]
+    public async Task<ActionResult<InicioResponse>> GetInicio([FromServices] InicioService inicio, CancellationToken ct)
+    {
+        if (UserId is not { } userId)
+            return NotFound(new { message = NotFoundMessage });
+        var isAdmin = User.FindFirst(ClaimTypes.Role)?.Value == "Admin";
+        var response = await inicio.GetAsync(userId, isAdmin, ct);
+        return response is null ? NotFound(new { message = NotFoundMessage }) : Ok(response);
+    }
+
     // ---------------------------------------------------------------- dados e foto
 
     /// <summary>Perfil da conta: nome, apelido, WhatsApp (55 + DDD + número), foto, e-mail (só leitura), tem senha?,
