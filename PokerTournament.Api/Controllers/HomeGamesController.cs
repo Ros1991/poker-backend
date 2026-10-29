@@ -47,9 +47,31 @@ public class HomeGamesController : HomeGameScopedControllerBase
     {
         var response = _mapper.Map<HomeGameResponse>(homeGame);
         await ApplyCountsAsync([response], ct);
+        await ApplyCanManageAsync([response], ct);
         await _plans.ApplyOwnerPlanAsync([response], ct);
         await HomeGamePrimary.ApplyAsync(_db, [response], ct);
         return response;
+    }
+
+    /// <summary>
+    /// <c>canManage</c> de quem está logado (SPEC-20261029-1724): dono, membro administrador ou Admin do sistema — a
+    /// regra do <see cref="HomeGameAccess.CanManageAsync"/>, numa consulta só para todos os home games da resposta.
+    /// </summary>
+    private async Task ApplyCanManageAsync(IReadOnlyList<HomeGameResponse> responses, CancellationToken ct)
+    {
+        if (responses.Count == 0)
+            return;
+        var userId = GetUserId();
+        var isAdmin = IsAdmin;
+        var ids = responses.Select(r => r.Id).Distinct().ToList();
+        var adminOf = isAdmin
+            ? []
+            : await _db.HomeGameMembers.AsNoTracking()
+                .Where(m => ids.Contains(m.HomeGameId) && m.UserId == userId && m.IsAdmin)
+                .Select(m => m.HomeGameId)
+                .ToListAsync(ct);
+        foreach (var response in responses)
+            response.CanManage = isAdmin || response.OwnerId == userId || adminOf.Contains(response.Id);
     }
 
     /// <summary>
@@ -98,6 +120,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
         var responses = _mapper.Map<List<HomeGameResponse>>(homeGames);
         await ApplyCountsAsync(responses, ct);
+        await ApplyCanManageAsync(responses, ct);
         await _plans.ApplyOwnerPlanAsync(responses, ct);
         await HomeGamePrimary.ApplyAsync(_db, responses, ct);
         return Ok(responses);
