@@ -21,7 +21,10 @@ namespace PokerTournament.Application.Common;
 /// </summary>
 public static class EntryQueries
 {
-    /// <summary>Inscrições (rastreadas) com a pessoa, inclusive a removida do cadastro.</summary>
+    /// <summary>
+    /// Inscrições (rastreadas) com a pessoa, inclusive a removida do cadastro, e a conta vinculada a ela
+    /// (SPEC-20261029-1725): a foto exibida do jogador é a da conta, se ela tiver (<see cref="PlayerPhoto"/>).
+    /// </summary>
     public static IQueryable<TournamentEntry> EntriesWithPerson(this IAppDbContext db) =>
-        db.TournamentEntries.IgnoreQueryFilters().Include(e => e.Person);
+        db.TournamentEntries.IgnoreQueryFilters().Include(e => e.Person).ThenInclude(p => p.User);
 }

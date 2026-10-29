@@ -73,6 +73,7 @@ public class TablesController : ControllerBase
             .Include(t => t.DealerPerson)
             .Include(t => t.Entries.Where(e => e.Status == nameof(EntryStatus.Active)))
                 .ThenInclude(e => e.Person)
+                    .ThenInclude(p => p.User) // foto exibida: a da conta vinculada, se tiver (SPEC-20261029-1725)
             .Where(t => t.TournamentId == tournamentId && t.IsActive)
             .OrderBy(t => t.TableNumber)
             .ToListAsync(ct);
@@ -93,7 +94,7 @@ public class TablesController : ControllerBase
                 e.SeatNumber,
                 PersonId = e.PersonId,
                 Name = e.Person.FullName,
-                Photo = e.Person.PhotoUrl
+                Photo = PlayerPhoto.Of(e.Person)
             })
         });
 

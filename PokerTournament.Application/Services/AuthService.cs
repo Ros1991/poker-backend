@@ -352,6 +352,8 @@ public partial class AuthService
                 AddAudit(user, EmailConfirmationService.AuditAction, """{"via":"link"}""", ip, userAgent, now);
                 // Conta confirmada nasce com o home game principal "Clube de <nome>" (SPEC-20261029-1723)
                 await HomeGamePrimary.EnsureForAccountAsync(_db, user, ct);
+                // E fica com os jogadores cadastrados com o e-mail dela, em qualquer home game (SPEC-20261029-1725)
+                await PlayerLinkService.LinkUserAsync(_db, user, ct);
 
                 // Sessões não deveriam existir em conta não confirmada; se houver, caem (a senha pode ter mudado)
                 await RevokeAllSessionsAsync(user.Id, ct);

@@ -233,7 +233,12 @@ public class PasswordResetService
         await _db.SaveChangesAsync(ct);
         // Links de confirmação e cadastros pendentes presos a eles (D16.10) deixam de valer: a senha agora é esta
         if (confirmsEmail)
+        {
             await _emailConfirmation.ClearPendingAsync(user.Id, ct);
+            // Confirmada pelo link da senha: os jogadores com o e-mail dela são da conta (SPEC-20261029-1725). Depois do
+            // SaveChanges (aqui não há transação): se falhasse antes, nada ficaria vinculado a conta não confirmada
+            await PlayerLinkService.LinkUserAsync(_db, user, ct);
+        }
         await _auth.RevokeAllSessionsAsync(user.Id, ct);
 
         _logger.LogInformation("Senha redefinida pelo link para o usuário {UserId}", user.Id);

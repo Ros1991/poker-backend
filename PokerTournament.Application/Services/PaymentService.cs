@@ -162,7 +162,7 @@ public class PaymentService
                 Id = entry.Person.Id,
                 FullName = entry.Person.FullName,
                 Nickname = entry.Person.Nickname,
-                PhotoUrl = entry.Person.PhotoUrl
+                PhotoUrl = PlayerPhoto.Of(entry.Person) // a da conta vinculada, se tiver (SPEC-20261029-1725)
             }
         };
     }
@@ -340,7 +340,7 @@ public class PaymentService
             Id = entry.Person.Id,
             FullName = entry.Person.FullName,
             Nickname = entry.Person.Nickname,
-            PhotoUrl = entry.Person.PhotoUrl
+            PhotoUrl = PlayerPhoto.Of(entry.Person)
         }
     };
 
@@ -363,7 +363,7 @@ public class PaymentService
             {
                 EntryId = e.Id,
                 PlayerName = e.Person.FullName,
-                PhotoUrl = e.Person.PhotoUrl,
+                PhotoUrl = PlayerPhoto.Of(e.Person),
                 TotalDue = e.TotalDue,
                 TotalPaid = e.TotalPaid,
                 Balance = e.Balance,
@@ -537,7 +537,7 @@ public class PaymentService
                 e.TotalPaid,
                 e.Person.FullName,
                 e.Person.Nickname,
-                e.Person.PhotoUrl
+                PhotoUrl = PlayerPhoto.Of(e.Person.User!.PhotoUrl, e.Person.PhotoUrl) // foto exibida (SPEC-20261029-1725)
             })
             .ToListAsync(ct);
         var payers = entries.ToDictionary(

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using PokerTournament.Application.Common;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Domain.Entities;
 
@@ -26,7 +27,7 @@ public class TournamentDealersController : ControllerBase
                 td.PersonId,
                 Name = td.Person.FullName,
                 Nickname = td.Person.Nickname,
-                PhotoUrl = td.Person.PhotoUrl,
+                PhotoUrl = PlayerPhoto.Of(td.Person.User!.PhotoUrl, td.Person.PhotoUrl), // a da conta vinculada, se tiver (SPEC-20261029-1725)
                 Whatsapp = td.Person.Whatsapp,
                 td.AssignedAt
             })

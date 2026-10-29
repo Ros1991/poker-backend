@@ -534,7 +534,8 @@ public partial class AuthService
     /// pendentes revogados, participação nos home games de outras pessoas removida, todas as sessões revogadas,
     /// IsActive = false e o nome tirado dos AuditLogs e dos registros de uso de IA (ai_usages.actor_name) da própria
     /// conta; grava <c>AccountDeleted</c>. Os jogadores
-    /// (Person) dos home games ficam (são dos organizadores). Devolve a foto anterior (quem chama apaga o arquivo).
+    /// (Person) dos home games ficam (são dos organizadores), mas soltos da conta (Person.UserId = null — SPEC-20261029-1725).
+    /// Devolve a foto anterior (quem chama apaga o arquivo).
     /// </summary>
     public async Task<string?> DeleteAccountAsync(
         Guid userId, DeleteAccountRequest request, string? ip, string? userAgent, CancellationToken ct = default)
@@ -585,6 +586,9 @@ public partial class AuthService
                     .SetProperty(u => u.ActorName, DeletedAccountName)
                     .SetProperty(u => u.UpdatedAt, now), ct);
 
+            // Os jogadores vinculados a ela (em qualquer home game) ficam sem conta (SPEC-20261029-1725): a foto que sai
+            // daqui não continua aparecendo; eles voltam à foto do cadastro. No mesmo SaveChanges da anonimização.
+            await PlayerLinkService.UnlinkUserAsync(_db, user.Id, ct);
             user.FullName = DeletedAccountName;
             user.Nickname = null;
             user.Whatsapp = null;
