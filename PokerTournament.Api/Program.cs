@@ -364,6 +364,7 @@ builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<DealerAccessService>();
 builder.Services.AddScoped<HomeGameDeletionService>(); // SPEC-20261026-1126: excluir home game em cascata
 builder.Services.AddScoped<InicioService>(); // SPEC-20261029-1724: GET me/inicio
+builder.Services.AddScoped<MePlayerService>(); // SPEC-20261029-1726: área do jogador (me/player, me/tournaments)
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
 builder.Services.AddScoped<EntryService>();
