@@ -339,7 +339,8 @@ public class TournamentService
 
     /// <summary>
     /// Edição do torneio (SPEC-20261103-1927): vale do rascunho até o intervalo de acerto; finalizado e cancelado → 400.
-    /// Depois de começar (fora do rascunho) a estrutura de blinds e o formato knockout ficam travados. Mudar valores
+    /// Depois de começar (Em andamento e intervalo de acerto, a regra do <see cref="IsBeforeStart"/>) a estrutura de blinds e
+    /// o formato knockout ficam travados. Campo de staff, ranking ou PIX do dia ausente no corpo mantém o gravado. Mudar valores
     /// (buy-in, rebuy, add-on, staff, contribuição ao ranking, bounty) recalcula o devido de cada inscrição, os custos
     /// automáticos e os totais do torneio na mesma transação (<see cref="RecalcMoneyAsync"/>); com a premiação confirmada,
     /// mudar valor é recusado. Os pagamentos já registrados não mudam.
@@ -363,8 +364,9 @@ public class TournamentService
             throw new DomainException(CancelledCannotBeEditedMessage);
         EnsureValidDealerCount(request.DealerCount);
 
-        // Depois de começar: a estrutura (os níveis se editam na aba Blinds) e o formato knockout não mudam
-        var started = tournament.Status != nameof(TournamentStatus.Draft);
+        // Depois de começar: a estrutura (os níveis se editam na aba Blinds) e o formato knockout não mudam. "Começou" é a
+        // mesma regra do relógio (IsBeforeStart): inscrições abertas ainda trocam estrutura e formato (revisão da 1927)
+        var started = !IsBeforeStart(tournament.Status);
         var previousStructureId = tournament.BlindStructureId;
         if (started && request.BlindStructureId.HasValue && request.BlindStructureId != previousStructureId)
             throw new DomainException(StructureLockedMessage);
@@ -411,9 +413,25 @@ public class TournamentService
         }
         else
         {
-            // SPEC-20261023-1218: chave nova no formato do DICT; a MESMA chave antiga que não normaliza fica como está
-            tournament.ResponsiblePixKey = PixKeyNormalizer.NormalizeForUpdate(
-                request.ResponsiblePixKey, request.ResponsiblePixKeyType, kept.ResponsiblePixKey);
+            // Campo ausente no corpo = manter o gravado (revisão da SPEC-20261103-1927): o Map gravaria null e o recálculo
+            // tiraria o staff ou o ranking de todos os jogadores. Quem manda o campo, com valor ou null, continua mandando.
+            // O ranking é um grupo (vínculo, modo e valor da contribuição): qualquer um deles no corpo = os três do pedido,
+            // como antes; nenhum = os três como estavam (o devido cobra a contribuição pelo modo e valor, com ou sem vínculo)
+            if (!request.Sent.Contains(nameof(request.StaffAmount)))
+                tournament.StaffAmount = kept.StaffAmount;
+            if (!request.Sent.Contains(nameof(request.RankingId))
+                && !request.Sent.Contains(nameof(request.RankingContribMode))
+                && !request.Sent.Contains(nameof(request.RankingContribValue)))
+            {
+                tournament.RankingId = kept.RankingId;
+                tournament.RankingContribMode = kept.RankingContribMode;
+                tournament.RankingContribValue = kept.RankingContribValue;
+            }
+            // SPEC-20261023-1218: chave nova no formato do DICT; a MESMA chave antiga que não normaliza fica como está. Sem a
+            // chave no corpo, fica a gravada (o tipo sozinho não muda nada)
+            tournament.ResponsiblePixKey = request.Sent.Contains(nameof(request.ResponsiblePixKey))
+                ? PixKeyNormalizer.NormalizeForUpdate(request.ResponsiblePixKey, request.ResponsiblePixKeyType, kept.ResponsiblePixKey)
+                : kept.ResponsiblePixKey;
         }
 
         // If the blind structure changed (or was set when previously null), copy levels
@@ -480,8 +498,10 @@ public class TournamentService
 
         var after = MoneyValues.Of(tournament);
         var moneyChanged = !before.SameMoney(after);
-        // Os prêmios confirmados são % do líquido de agora: mudar valor deixaria a premiação desencontrada
-        if (moneyChanged && tournament.PrizeConfirmed)
+        // Os prêmios confirmados são % do líquido de agora: mudar valor deixaria a premiação desencontrada. Também mexem no
+        // líquido sem mudar valor nenhum (revisão da 1927): o custo automático criado nesta edição (ex.: o acumulado do
+        // ranking que tinha sido excluído volta ao trocar o ranking) e os custos padrão da primeira estrutura
+        if ((moneyChanged || createdAutoCosts.Count > 0 || addedDefaultCosts) && tournament.PrizeConfirmed)
             throw new DomainException(PrizeConfirmedValuesMessage);
 
         if (moneyChanged || createdAutoCosts.Count > 0)

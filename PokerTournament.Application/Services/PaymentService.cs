@@ -76,30 +76,41 @@ public class PaymentService
                 ?? throw new DomainException("Destino do PIX não pertence a este torneio.");
         }
 
+        // Favorecido pagando para o próprio custo (SPEC-20261103-1927, o "Abater" saiu da tela): é abatimento — o valor todo
+        // (Amount) quita a dívida dele e é creditado no custo. Partes PIX/dinheiro não cabem aí: o misto é recusado e um
+        // PixAmount diferente do valor também (revisão: o limite conferia o PixAmount e o crédito usava o Amount)
+        var ownCost = CostBeneficiary.IsPlayersOwnCost(pixDestination, entry.Person);
+        if (ownCost)
+        {
+            var name = EntryService.PlayerDisplayName(entry.Person);
+            if (IsMixedMethod(request.Method))
+                throw new DomainException(OwnCostMixedMessage(name, pixDestination!.Description));
+            if ((request.PixAmount.HasValue && Math.Abs(request.PixAmount.Value - request.Amount) > HalfCent)
+                || request.CashAmount is > 0)
+                throw new DomainException(OwnCostSplitMessage(name, pixDestination!.Description));
+        }
+
         // Limite por destino (SPEC-20261026-1906): um destino que não é o caixa nunca recebe mais do que ainda tem a
         // receber — senão o excedente "some" das contas (nem no custo, nem no caixa). A tela limita e oferece lançar o
-        // restante no caixa; aqui o servidor recusa (400) o que passar. O crédito no custo segue a regra de sempre:
-        // PIX puro = o valor todo; misto = só a parte PIX (o dinheiro fica no caixa). Concorrência: o xmin do custo
-        // faz o segundo pagamento simultâneo cair em 409.
+        // restante no caixa; aqui o servidor recusa (400) o que passar. Confere o que de fato é creditado no custo:
+        // abatimento = o valor todo; PIX puro = o valor todo; misto = só a parte PIX (o dinheiro fica no caixa).
+        // Concorrência: o xmin do custo faz o segundo pagamento simultâneo cair em 409.
         if (pixDestination is { IsCashBox: false } limited)
         {
             // Pago nunca abaixo do que os jogadores já pagaram a ele (dado antigo do "Reverter pagamento" que zerava)
             CostCredits.FitPaid(limited, await CostCredits.OfCostAsync(_db, limited, ct));
-            var credit = request.PixAmount ?? request.Amount;
+            var credit = ownCost ? request.Amount : request.PixAmount ?? request.Amount;
             var remaining = limited.Amount - limited.PaidAmount;
             if (credit > remaining + HalfCent)
                 throw new DomainException(DestinationLimitMessage(limited.Description, Math.Max(0m, remaining)));
         }
 
-        // Favorecido pagando para o próprio custo (SPEC-20261103-1927, o "Abater" saiu da tela): é abatimento — quita a
-        // dívida dele contra o que ele tem a receber, sem dinheiro trocar de mãos. Grava como o SettleAgainstCostAsync
-        // (Settlement, "Compensacao"), para o Financeiro continuar mostrando abatimento e não PIX/dinheiro
-        if (CostBeneficiary.IsPlayersOwnCost(pixDestination, entry.Person))
+        // Abatimento: quita a dívida dele contra o que ele tem a receber, sem dinheiro trocar de mãos. Grava como o
+        // SettleAgainstCostAsync (Settlement, "Compensacao"), para o Financeiro continuar mostrando abatimento e não PIX/dinheiro
+        if (ownCost)
         {
             var cost = pixDestination!;
             var name = EntryService.PlayerDisplayName(entry.Person);
-            if (IsMixedMethod(request.Method))
-                throw new DomainException(OwnCostMixedMessage(name, cost.Description));
             var owed = entry.TotalDue - entry.TotalPaid;
             if (owed <= HalfCent)
                 throw new DomainException($"Nada a abater: {name} não tem saldo devedor.");
@@ -226,6 +237,14 @@ public class PaymentService
     public static string OwnCostMixedMessage(string playerName, string costDescription) =>
         $"{playerName} é o favorecido de {costDescription}: o valor vira abatimento, sem dinheiro trocar de mãos. " +
         "Lance sem misto; o que for em dinheiro vai à parte, para o caixa.";
+
+    /// <summary>
+    /// Destino no próprio custo do jogador com partes PIX/dinheiro diferentes do valor (revisão da SPEC-20261103-1927): o
+    /// abatimento é o valor todo, sem divisão.
+    /// </summary>
+    public static string OwnCostSplitMessage(string playerName, string costDescription) =>
+        $"{playerName} é o favorecido de {costDescription}: o abatimento é o valor todo, sem parte em PIX ou dinheiro. " +
+        "Lance o abatimento sozinho; o que for pago de verdade vai à parte, para o caixa.";
 
     /// <summary>
     /// As duas pernas do abatimento (já conferido o valor) + o lançamento Settlement "Compensacao" com a descrição de sempre

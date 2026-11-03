@@ -1,10 +1,14 @@
+using System.Text.Json.Serialization;
+
 namespace PokerTournament.Application.DTOs.Requests;
 
 public class CreateTournamentRequest
 {
     public string Name { get; set; } = string.Empty;
     public DateTimeOffset Date { get; set; }
-    public Guid? RankingId { get; set; }
+    // SPEC-20261103-1927 (revisão): ranking, staff e PIX do dia guardam se vieram no corpo (ver Sent). Na edição, ausente =
+    // manter o gravado; null explícito continua apagando
+    public Guid? RankingId { get => _rankingId; set { _rankingId = value; Sent.Add(nameof(RankingId)); } }
     public Guid? BlindStructureId { get; set; }
     public decimal BuyInAmount { get; set; }
     public decimal? RebuyAmount { get; set; }
@@ -20,12 +24,12 @@ public class CreateTournamentRequest
     public int? LateRegistrationLevel { get; set; }
     public int? RebuyUntilLevel { get; set; }
     public int SeatsPerTable { get; set; } = 9;
-    public string? ResponsiblePixKey { get; set; }
+    public string? ResponsiblePixKey { get => _responsiblePixKey; set { _responsiblePixKey = value; Sent.Add(nameof(ResponsiblePixKey)); } }
     // SPEC-20261023-1218: tipo escolhido da chave do dia (null = detectar); a chave é normalizada no TournamentService
     public string? ResponsiblePixKeyType { get; set; }
-    public decimal? StaffAmount { get; set; }
-    public string? RankingContribMode { get; set; }
-    public decimal? RankingContribValue { get; set; }
+    public decimal? StaffAmount { get => _staffAmount; set { _staffAmount = value; Sent.Add(nameof(StaffAmount)); } }
+    public string? RankingContribMode { get => _rankingContribMode; set { _rankingContribMode = value; Sent.Add(nameof(RankingContribMode)); } }
+    public decimal? RankingContribValue { get => _rankingContribValue; set { _rankingContribValue = value; Sent.Add(nameof(RankingContribValue)); } }
 
     // SPEC-20261023-1215 (CP17): quantos dealers trabalham no torneio quando a estrutura tem dealer pago.
     // null = 1 (cliente que não conhece o campo); 0 = sem custo de dealer; fora de 0–20 → 400. Não é gravado
@@ -44,4 +48,19 @@ public class CreateTournamentRequest
     // Mudar a quantidade no rascunho reaplica nas inscrições que já existem.
     public int? TimebankCount { get; set; }
     public int? TimebankSeconds { get; set; }
+
+    /// <summary>
+    /// Quais de RankingId, RankingContribMode, RankingContribValue, StaffAmount e ResponsiblePixKey vieram no corpo (com valor
+    /// ou null). O System.Text.Json só chama o setter do que está no JSON, então o campo ausente não entra aqui
+    /// (SPEC-20261103-1927, revisão: a tela que ainda não sabia o plano mandava esses campos vazios e a edição de um torneio
+    /// em andamento tirava o staff e o ranking de todos e apagava o PIX do dia). Só a edição usa; a criação segue com ausente = nulo.
+    /// </summary>
+    [JsonIgnore]
+    public HashSet<string> Sent { get; } = [];
+
+    private Guid? _rankingId;
+    private string? _responsiblePixKey;
+    private decimal? _staffAmount;
+    private string? _rankingContribMode;
+    private decimal? _rankingContribValue;
 }
