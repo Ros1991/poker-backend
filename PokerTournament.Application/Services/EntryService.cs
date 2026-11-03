@@ -1590,7 +1590,11 @@ public class EntryService
         tournament.PlayersRemaining = activeCount;
     }
 
-    private static void RecalculateBalance(TournamentEntry entry, Tournament tournament)
+    /// <summary>
+    /// Devido, saldo e status de pagamento da inscrição a partir dos valores dela e do staff/ranking fixo do torneio.
+    /// Público para o recálculo da edição do torneio (SPEC-20261103-1927) usar a mesma regra. Não toca o TotalPaid.
+    /// </summary>
+    public static void RecalculateBalance(TournamentEntry entry, Tournament tournament)
     {
         // O devido inclui staff + ranking-fixo (mesma fórmula do cadastro), além de
         // buy-in, rebuys e addon. Sem isso, rebuy/addon zeravam o staff/ranking do saldo.

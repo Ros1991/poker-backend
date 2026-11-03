@@ -121,9 +121,10 @@ public class PaymentsController : ControllerBase
     [AllowTokenKind(TokenKinds.Dealer)]
     [HttpGet("pix-suggestions")]
     public async Task<ActionResult<List<PixSuggestionResponse>>> GetPixSuggestions(
-        Guid tournamentId, [FromQuery] decimal amount, CancellationToken ct)
+        Guid tournamentId, [FromQuery] decimal amount, [FromQuery] Guid? entryId, CancellationToken ct)
     {
-        var result = await _paymentService.GetPixSuggestionsAsync(tournamentId, amount, ct);
+        // entryId (SPEC-20261103-1927): marca o custo do qual quem paga é o favorecido (vira abatimento)
+        var result = await _paymentService.GetPixSuggestionsAsync(tournamentId, amount, entryId, ct);
         return Ok(result);
     }
 

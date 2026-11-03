@@ -315,19 +315,63 @@ public class TournamentService
         tournament.ResponsiblePixKey = null;
     }
 
+    public const string FinishedCannotBeEditedMessage = "Torneio finalizado não pode ser editado.";
+
+    public const string CancelledCannotBeEditedMessage = "Torneio cancelado não pode ser editado.";
+
+    public const string StructureLockedMessage =
+        "A estrutura de blinds não muda depois que o torneio começa. Para mudar os níveis, use a aba Blinds do painel.";
+
+    public const string KnockoutLockedMessage =
+        "O formato do torneio (Normal, Knockout ou PKO) não muda depois que o torneio começa.";
+
+    public const string PrizeConfirmedValuesMessage =
+        "A premiação já foi confirmada com o líquido de agora. Para mudar buy-in, rebuy, add-on, staff, ranking ou bounty, " +
+        "desfaça a confirmação na aba Premiação antes.";
+
+    public const string RebuyValueRequiredMessage = "Há jogadores com rebuy: o valor do rebuy não pode ficar zerado.";
+
+    public const string AddonValueRequiredMessage = "Há jogadores com add-on: o valor do add-on não pode ficar zerado.";
+
+    /// <summary>Antes do começo (rascunho ou inscrições abertas): o relógio ligado aqui faz o torneio começar (SPEC-20261103-1927).</summary>
+    public static bool IsBeforeStart(string status) =>
+        status == nameof(TournamentStatus.Draft) || status == nameof(TournamentStatus.OpenForRegistration);
+
+    /// <summary>
+    /// Edição do torneio (SPEC-20261103-1927): vale do rascunho até o intervalo de acerto; finalizado e cancelado → 400.
+    /// Depois de começar (fora do rascunho) a estrutura de blinds e o formato knockout ficam travados. Mudar valores
+    /// (buy-in, rebuy, add-on, staff, contribuição ao ranking, bounty) recalcula o devido de cada inscrição, os custos
+    /// automáticos e os totais do torneio na mesma transação (<see cref="RecalcMoneyAsync"/>); com a premiação confirmada,
+    /// mudar valor é recusado. Os pagamentos já registrados não mudam.
+    /// </summary>
     public async Task<TournamentResponse> UpdateAsync(
-        Guid id, CreateTournamentRequest request, CancellationToken ct = default)
+        Guid id, CreateTournamentRequest request, Guid? updatedBy = null, CancellationToken ct = default)
     {
+        // Uma transação com a trava do torneio (a mesma da inscrição): inscrição simultânea espera o recálculo, e rebuy,
+        // add-on ou pagamento simultâneos caem no xmin (409) em vez de deixar o total desencontrado
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, id, ct);
+
         var tournament = await _db.Tournaments
             .Include(t => t.BlindLevels)
             .FirstOrDefaultAsync(t => t.Id == id, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        if (tournament.Status != nameof(TournamentStatus.Draft))
-            throw new DomainException("Apenas torneios em rascunho podem ser editados.");
+        if (tournament.Status == nameof(TournamentStatus.Finished))
+            throw new DomainException(FinishedCannotBeEditedMessage);
+        if (tournament.Status == nameof(TournamentStatus.Cancelled))
+            throw new DomainException(CancelledCannotBeEditedMessage);
         EnsureValidDealerCount(request.DealerCount);
 
+        // Depois de começar: a estrutura (os níveis se editam na aba Blinds) e o formato knockout não mudam
+        var started = tournament.Status != nameof(TournamentStatus.Draft);
         var previousStructureId = tournament.BlindStructureId;
+        if (started && request.BlindStructureId.HasValue && request.BlindStructureId != previousStructureId)
+            throw new DomainException(StructureLockedMessage);
+        if (started && KnockoutRules.Parse(request.KnockoutType) is { } requestedType && requestedType != tournament.KnockoutType)
+            throw new DomainException(KnockoutLockedMessage);
+
+        var before = MoneyValues.Of(tournament);
         // Queda de plano não apaga nada: sem Payments (Mesa) a edição mantém o que já estava gravado (staff,
         // ranking, contribuição e PIX do dia de um torneio criado no plano pago) e só ignora valores NOVOS da
         // requisição. Torneio criado no Mesa tem tudo nulo e continua nulo.
@@ -336,17 +380,25 @@ public class TournamentService
         var keptKnockout = (tournament.KnockoutType, tournament.BountyAmount);
         var keptTimebankCount = tournament.TimebankCount;
         _mapper.Map(request, tournament);
+        // Começado: o pedido sem a estrutura não a desliga (o Map gravaria null)
+        if (started)
+            tournament.BlindStructureId = previousStructureId;
         // Máximo de add-ons (SPEC-20261027-1311): null = manter; o Map ignora o campo
         tournament.MaxAddons = AddonRules.Resolve(request.MaxAddons, tournament.MaxAddons);
-        // Timebank (SPEC-20261029-1722): null = manter; 0 = desligar. Mudar a quantidade no rascunho reaplica nas inscrições
-        // que já existem (cada uma volta a ter a quantidade nova; 0 ao desligar) — o Map ignora os dois campos
+        // Timebank (SPEC-20261029-1722): null = manter; 0 = desligar — o Map ignora os dois campos. No rascunho, mudar a
+        // quantidade reaplica nas inscrições que já existem (cada uma volta a ter a quantidade nova; 0 ao desligar). Depois de
+        // começar (SPEC-20261103-1927), cada inscrição ganha ou perde a diferença (quem já usou continua com o que usou a
+        // menos), de 0 a 99; desligar zera.
         (tournament.TimebankCount, tournament.TimebankSeconds) = TimebankRules.Resolve(
             request.TimebankCount, request.TimebankSeconds, tournament.TimebankCount, tournament.TimebankSeconds);
         if (tournament.TimebankCount != keptTimebankCount)
         {
             var initial = TimebankRules.Initial(tournament);
+            var delta = initial - (keptTimebankCount ?? 0);
             foreach (var entry in await _db.TournamentEntries.Where(e => e.TournamentId == tournament.Id).ToListAsync(ct))
-                entry.TimebanksRemaining = initial;
+                entry.TimebanksRemaining = !started || initial == 0
+                    ? initial
+                    : Math.Clamp(entry.TimebanksRemaining + delta, 0, TimebankRules.MaxRemaining);
         }
         var hasPayments = await _plans.HasFeatureForHomeGameAsync(tournament.HomeGameId, PlanFeature.Payments, ct);
         if (!hasPayments)
@@ -415,22 +467,196 @@ public class TournamentService
             }
         }
 
-        // Garante custos automáticos caso staff/ranking tenham sido definidos só na edição.
-        await EnsureAutoCostsAsync(tournament, hasPayments, ct);
+        // Garante custos automáticos caso staff/ranking tenham sido definidos só na edição. O de ranking só nasce quando a
+        // configuração do ranking muda: excluído na aba Custos, não volta numa edição qualquer (SPEC-20260717-1321)
+        var createdAutoCosts = await EnsureAutoCostsAsync(
+            tournament, hasPayments, rankingChanged: !before.SameRanking(MoneyValues.Of(tournament)), ct);
 
         // Knockout (SPEC-20261026-1909): null no pedido = manter; o bounty é conferido contra o buy-in/rebuy novos. Mudar
         // formato ou valor num rascunho que já tem inscrições refaz as cabeças e o total — só sem eliminação valendo
-        // (a transferência já feita ficaria com o valor velho).
+        // (a transferência já feita ficaria com o valor velho). Depois de começar, só o valor pode mudar (o tipo foi
+        // conferido acima).
         var changedKnockout = await ApplyKnockoutOnUpdateAsync(tournament, request, keptKnockout, ct);
 
-        // Custos padrão entraram num rascunho (que pode já ter inscrições): totais e ranking % na mesma gravação
-        if (addedDefaultCosts || changedKnockout)
+        var after = MoneyValues.Of(tournament);
+        var moneyChanged = !before.SameMoney(after);
+        // Os prêmios confirmados são % do líquido de agora: mudar valor deixaria a premiação desencontrada
+        if (moneyChanged && tournament.PrizeConfirmed)
+            throw new DomainException(PrizeConfirmedValuesMessage);
+
+        if (moneyChanged || createdAutoCosts.Count > 0)
+        {
+            // Devido de cada inscrição, lançamentos, custos automáticos e totais (SPEC-20261103-1927)
+            var recalculated = await RecalcMoneyAsync(tournament, before, createdAutoCosts, ct);
+            if (moneyChanged)
+                RecordValuesChange(tournament, before, after, recalculated, updatedBy);
+        }
+        else if (addedDefaultCosts || changedKnockout)
+        {
+            // Custos padrão entraram num rascunho (que pode já ter inscrições): totais e ranking % na mesma gravação
             await RecalcTotalsWithPendingAsync(tournament, ct);
+        }
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
 
         return await ToResponseAsync(tournament, ct);
     }
+
+    /// <summary>
+    /// Valores de dinheiro do torneio que mexem no devido dos jogadores ou nos totais (SPEC-20261103-1927). Nulo e zero
+    /// são a mesma coisa (o formulário manda 0 no lugar do nulo); contribuição ao ranking sem modo ou com valor 0 = nenhuma.
+    /// </summary>
+    private sealed record MoneyValues(
+        decimal BuyIn, decimal Rebuy, decimal Addon, decimal Staff, Guid? RankingId, string RankingMode, decimal RankingValue,
+        string KnockoutType, decimal Bounty)
+    {
+        public const string NoRanking = "";
+
+        public static MoneyValues Of(Tournament t)
+        {
+            var hasContribution = t.RankingContribMode is not null && t.RankingContribValue is > 0;
+            return new MoneyValues(
+                t.BuyInAmount, t.RebuyAmount ?? 0m, t.AddonAmount ?? 0m, t.StaffAmount ?? 0m, t.RankingId,
+                hasContribution ? t.RankingContribMode! : NoRanking, hasContribution ? t.RankingContribValue!.Value : 0m,
+                t.KnockoutType, t.BountyAmount ?? 0m);
+        }
+
+        /// <summary>Ranking por jogador cobrado de cada inscrição (o % sai do bolo, não do jogador)</summary>
+        public decimal RankingFixed => RankingMode == "PerPlayer" ? RankingValue : 0m;
+
+        public bool SameRanking(MoneyValues o) =>
+            RankingId == o.RankingId && RankingMode == o.RankingMode && RankingValue == o.RankingValue;
+
+        public bool SameMoney(MoneyValues o) =>
+            BuyIn == o.BuyIn && Rebuy == o.Rebuy && Addon == o.Addon && Staff == o.Staff
+            && RankingMode == o.RankingMode && RankingValue == o.RankingValue
+            && KnockoutType == o.KnockoutType && Bounty == o.Bounty;
+    }
+
+    /// <summary>
+    /// Recálculo do dinheiro depois de mudar valores do torneio (SPEC-20261103-1927). Cada inscrição (jogando ou não) recebe
+    /// o buy-in novo, rebuys × rebuy e add-ons × add-on e passa pelo mesmo <see cref="EntryService.RecalculateBalance"/>
+    /// (devido com staff e ranking fixo, saldo e status; o pago não muda). Os lançamentos de buy-in, rebuy e add-on ainda
+    /// valendo passam a ter o valor novo — o desfazer tira do bolo o valor do lançamento. Bolo = soma dos devidos. Custos
+    /// automáticos pela diferença (o ajuste feito à mão na aba Custos fica): staff + (novo − antigo) × inscrições; ranking por
+    /// jogador idem (recém-criado ou vindo do %, começa de novo: valor × inscrições); ranking %, custos que encolheram, total
+    /// de custos e líquido pela regra de sempre (<see cref="RecalcTotalsWithPendingAsync"/>, com
+    /// <see cref="KnockoutRules.ApplyNet"/>). Devolve quantas inscrições foram recalculadas. Não salva.
+    /// </summary>
+    private async Task<int> RecalcMoneyAsync(
+        Tournament tournament, MoneyValues before, IReadOnlySet<string> createdAutoCosts, CancellationToken ct)
+    {
+        var entries = await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournament.Id)
+            .ToListAsync(ct);
+
+        // Valor zerado com quem já comprou apagaria a dívida sem lançamento para desfazer
+        if (tournament.RebuyAmount is not > 0 && entries.Any(e => e.RebuyCount > 0))
+            throw new DomainException(RebuyValueRequiredMessage);
+        if (tournament.AddonAmount is not > 0 && entries.Any(e => e.AddonCount > 0))
+            throw new DomainException(AddonValueRequiredMessage);
+
+        var rebuy = tournament.RebuyAmount ?? 0m;
+        var addon = tournament.AddonAmount ?? 0m;
+        foreach (var e in entries)
+        {
+            e.BuyInAmount = tournament.BuyInAmount;
+            e.RebuyTotal = e.RebuyCount * rebuy;
+            e.AddonAmount = e.AddonCount > 0 ? e.AddonCount * addon : 0m;
+            EntryService.RecalculateBalance(e, tournament);
+        }
+
+        var charges = await _db.Transactions
+            .Where(t => t.TournamentId == tournament.Id && t.ReversedAt == null
+                     && (t.Type == nameof(TransactionType.BuyIn)
+                         || t.Type == nameof(TransactionType.Rebuy)
+                         || t.Type == nameof(TransactionType.Addon)))
+            .ToListAsync(ct);
+        foreach (var t in charges)
+        {
+            t.Amount = t.Type switch
+            {
+                nameof(TransactionType.BuyIn) => tournament.BuyInAmount,
+                nameof(TransactionType.Rebuy) => rebuy,
+                _ => addon * AddonRules.Units(t), // o antigo "Addon Duplo" vale 2
+            };
+        }
+
+        tournament.TotalPrizePool = entries.Sum(e => e.TotalDue);
+
+        // Custos gravados + os recém-criados pelo EnsureAutoCostsAsync (ainda no Local)
+        await _db.CostExtras.Where(c => c.TournamentId == tournament.Id).LoadAsync(ct);
+        var costs = _db.CostExtras.Local.Where(c => c.TournamentId == tournament.Id).ToList();
+        var after = MoneyValues.Of(tournament);
+        var count = entries.Count;
+
+        if (costs.FirstOrDefault(c => c.CostType == "Staff") is { } staffCost)
+            staffCost.Amount = createdAutoCosts.Contains("Staff")
+                ? after.Staff * count
+                : Math.Max(0m, staffCost.Amount + (after.Staff - before.Staff) * count);
+
+        // Ranking em % é refeito pela fórmula no RecalcTotalsWithPendingAsync
+        if (costs.FirstOrDefault(c => c.CostType == "RankingAccumulated") is { } rankingCost && after.RankingMode != "Percent")
+            rankingCost.Amount = before.RankingMode == "Percent" || createdAutoCosts.Contains("RankingAccumulated")
+                ? after.RankingFixed * count
+                : Math.Max(0m, rankingCost.Amount + (after.RankingFixed - before.RankingFixed) * count);
+
+        await RecalcTotalsWithPendingAsync(tournament, ct);
+        return count;
+    }
+
+    /// <summary>
+    /// Histórico e auditoria da mudança de valores (SPEC-20261103-1927): a atividade visível "Valores do torneio alterados:
+    /// buy-in R$ 100,00 → R$ 120,00 · …" explica por que o devido dos jogadores mudou; o AuditLog guarda o antes e o depois.
+    /// </summary>
+    private void RecordValuesChange(Tournament tournament, MoneyValues before, MoneyValues after, int entries, Guid? userId)
+    {
+        var changes = new List<string>();
+        void Add(string label, decimal from, decimal to)
+        {
+            if (from != to) changes.Add($"{label} {Money(from)} → {Money(to)}");
+        }
+        Add("buy-in", before.BuyIn, after.BuyIn);
+        Add("rebuy", before.Rebuy, after.Rebuy);
+        Add("add-on", before.Addon, after.Addon);
+        Add("staff", before.Staff, after.Staff);
+        if (before.RankingMode != after.RankingMode || before.RankingValue != after.RankingValue)
+            changes.Add($"ranking {RankingText(before)} → {RankingText(after)}");
+        Add("bounty", before.Bounty, after.Bounty);
+
+        if (entries > 0)
+        {
+            var text = $"Valores do torneio alterados: {string.Join(" · ", changes)}. Devido recalculado de "
+                + (entries == 1 ? "1 jogador." : $"{entries} jogadores.");
+            _db.TournamentActivities.Add(new TournamentActivity
+            {
+                TournamentId = tournament.Id,
+                Type = nameof(TournamentActivityType.TournamentValuesChanged),
+                Description = text.Length > 1000 ? text[..997] + "..." : text,
+                CreatedBy = userId
+            });
+        }
+
+        _db.AuditLogs.Add(new AuditLog
+        {
+            EntityType = "Tournament",
+            EntityId = tournament.Id,
+            Action = "ValuesChange",
+            OldValues = System.Text.Json.JsonSerializer.Serialize(before),
+            NewValues = System.Text.Json.JsonSerializer.Serialize(after),
+            UserId = userId,
+            TournamentId = tournament.Id,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+    }
+
+    private static string RankingText(MoneyValues v) => v.RankingMode switch
+    {
+        "PerPlayer" => $"{Money(v.RankingValue)} por jogador",
+        "Percent" => $"{v.RankingValue.ToString("0.##", PtBrNumber)}% do líquido",
+        _ => "sem contribuição"
+    };
 
     /// <summary>
     /// Formato/bounty na edição do rascunho (SPEC-20261026-1909). Devolve true quando mudou (cabeças e total refeitos).
@@ -458,12 +684,16 @@ public class TournamentService
 
     /// <summary>
     /// Cria (idempotente) os custos automáticos de staff/ranking se faltarem. Sem o recurso Payments
-    /// (Mesa) não cria nada — e não mexe nos campos já gravados (queda de plano não apaga nada).
+    /// (Mesa) não cria nada — e não mexe nos campos já gravados (queda de plano não apaga nada). O de ranking só quando
+    /// a configuração do ranking mudou nesta edição (<paramref name="rankingChanged"/>, SPEC-20261103-1927): o custo
+    /// excluído na aba Custos não renasce numa edição qualquer. Devolve os tipos criados (Amount 0, ainda não salvos).
     /// </summary>
-    private async Task EnsureAutoCostsAsync(Tournament tournament, bool hasPayments, CancellationToken ct)
+    private async Task<HashSet<string>> EnsureAutoCostsAsync(
+        Tournament tournament, bool hasPayments, bool rankingChanged, CancellationToken ct)
     {
+        var created = new HashSet<string>();
         if (!hasPayments)
-            return;
+            return created;
 
         var existing = await _db.CostExtras
             .Where(c => c.TournamentId == tournament.Id)
@@ -471,6 +701,7 @@ public class TournamentService
 
         if (tournament.StaffAmount is > 0 && existing.All(c => c.CostType != "Staff"))
         {
+            created.Add("Staff");
             var homeGame = await _db.HomeGames
                 .FirstOrDefaultAsync(h => h.Id == tournament.HomeGameId, ct);
             _db.CostExtras.Add(new CostExtra
@@ -486,10 +717,11 @@ public class TournamentService
             });
         }
 
-        if (tournament.RankingId.HasValue && tournament.RankingContribMode is not null
+        if (rankingChanged && tournament.RankingId.HasValue && tournament.RankingContribMode is not null
             && tournament.RankingContribValue is > 0
             && existing.All(c => c.CostType != "RankingAccumulated"))
         {
+            created.Add("RankingAccumulated");
             _db.CostExtras.Add(new CostExtra
             {
                 TournamentId = tournament.Id,
@@ -499,6 +731,8 @@ public class TournamentService
                 PaymentStatus = nameof(Domain.Enums.PaymentStatus.Pending),
             });
         }
+
+        return created;
     }
 
     /// <summary>Quantidade de dealers do pedido (CP17): null = não informado (vale 1); fora de 0–20 → 400.</summary>
@@ -684,6 +918,20 @@ public class TournamentService
             .FirstOrDefaultAsync(t => t.Id == id, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
+        await ApplyStatusTransitionAsync(tournament, newStatus, userId, ct);
+
+        await _db.SaveChangesAsync(ct);
+        return await ToResponseAsync(tournament, ct);
+    }
+
+    /// <summary>
+    /// A transição de status com as regras, os efeitos e a auditoria (StatusChange), sem salvar — a mesma para o botão do
+    /// painel (<see cref="UpdateStatusAsync"/>) e para o relógio ligado num torneio que ainda não começou (TimerService,
+    /// SPEC-20261103-1927: rascunho → Em andamento também pelo token do dealer). O torneio vem rastreado.
+    /// </summary>
+    public async Task ApplyStatusTransitionAsync(
+        Tournament tournament, string newStatus, Guid? userId, CancellationToken ct = default)
+    {
         if (!Enum.TryParse<TournamentStatus>(newStatus, out var status))
             throw new DomainException($"Status inválido: {newStatus}");
 
@@ -701,8 +949,15 @@ public class TournamentService
         switch (status)
         {
             case TournamentStatus.InProgress:
-                tournament.TimerStartedAt = DateTimeOffset.UtcNow;
-                tournament.IsTimerRunning = true;
+                // Liga o relógio se está parado (do ponto em que parou). Já andando (rascunho com o relógio ligado antes da
+                // SPEC-20261103-1927, ou a volta do intervalo de acerto), não mexe: zerar o início jogaria fora o tempo que
+                // já passou e o relógio voltaria
+                if (!tournament.IsTimerRunning)
+                {
+                    tournament.TimerStartedAt = DateTimeOffset.UtcNow;
+                    tournament.IsTimerRunning = true;
+                    tournament.TimerPausedAt = null;
+                }
                 break;
 
             case TournamentStatus.Finished:
@@ -754,9 +1009,6 @@ public class TournamentService
             TournamentId = tournament.Id,
             CreatedAt = DateTimeOffset.UtcNow
         });
-
-        await _db.SaveChangesAsync(ct);
-        return await ToResponseAsync(tournament, ct);
     }
 
     public const string FinishedCannotBeCancelledMessage = "Torneio finalizado não pode ser cancelado.";

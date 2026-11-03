@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using PokerTournament.Api.Hubs;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
@@ -13,10 +15,12 @@ namespace PokerTournament.Api.Controllers;
 public class TournamentsController : ControllerBase
 {
     private readonly TournamentService _tournamentService;
+    private readonly IHubContext<TournamentHub> _hubContext;
 
-    public TournamentsController(TournamentService tournamentService)
+    public TournamentsController(TournamentService tournamentService, IHubContext<TournamentHub> hubContext)
     {
         _tournamentService = tournamentService;
+        _hubContext = hubContext;
     }
 
     [HttpGet]
@@ -53,7 +57,16 @@ public class TournamentsController : ControllerBase
         Guid homeGameId, Guid id, [FromBody] CreateTournamentRequest request, CancellationToken ct)
     {
         await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
-        var result = await _tournamentService.UpdateAsync(id, request, ct);
+        var result = await _tournamentService.UpdateAsync(id, request, GetUserId(), ct);
+        // Torneio iniciado também se edita (SPEC-20261103-1927): o terminal e as outras telas releem o torneio e o devido
+        // dos jogadores (que muda com os valores). Melhor esforço: a edição já foi gravada
+        try
+        {
+            var group = _hubContext.Clients.Group($"tournament_{id}");
+            await group.SendAsync("TournamentUpdate", new { tournamentId = id, status = result.Status }, ct);
+            await group.SendAsync("EntryUpdate", new { tournamentId = id }, ct);
+        }
+        catch (Exception) { /* sem tempo real, as telas releem sozinhas */ }
         return Ok(result);
     }
 
@@ -81,6 +94,13 @@ public class TournamentsController : ControllerBase
         await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
         var userId = GetUserId();
         var result = await _tournamentService.UpdateStatusAsync(id, request.Status, userId, ct);
+        // O terminal do dealer troca o "Iniciar torneio" pelo Pausar sem esperar a próxima leitura (SPEC-20261103-1927)
+        try
+        {
+            await _hubContext.Clients.Group($"tournament_{id}")
+                .SendAsync("TournamentUpdate", new { tournamentId = id, status = result.Status }, ct);
+        }
+        catch (Exception) { /* melhor esforço */ }
         return Ok(result);
     }
 

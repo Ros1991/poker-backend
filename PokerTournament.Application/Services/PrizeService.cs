@@ -180,6 +180,60 @@ public class PrizeService
         return result;
     }
 
+    public const string NotConfirmedMessage = "A premiação ainda não foi confirmada.";
+
+    public const string UnconfirmFinishedMessage =
+        "Torneio finalizado ou cancelado: a confirmação da premiação não pode mais ser desfeita (dá para editar e salvar de novo).";
+
+    public const string UnconfirmPaidMessage = "Já há prêmio pago neste torneio: a confirmação da premiação não pode ser desfeita.";
+
+    /// <summary>
+    /// Desfaz a confirmação da premiação (SPEC-20261103-1927): é o caminho para mudar buy-in, rebuy, add-on, staff, ranking ou
+    /// bounty de um torneio com a premiação confirmada (os prêmios são % do líquido). Só antes de finalizar e sem prêmio
+    /// pago: tira os prêmios gravados e o valor de prêmio dos jogadores, e a aba Premiação volta a sugerir pelo líquido.
+    /// </summary>
+    public async Task UnconfirmPrizesAsync(Guid tournamentId, Guid? userId = null, CancellationToken ct = default)
+    {
+        var tournament = await _db.Tournaments
+            .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+
+        if (!tournament.PrizeConfirmed)
+            throw new DomainException(NotConfirmedMessage);
+        if (tournament.Status == nameof(TournamentStatus.Finished) || tournament.Status == nameof(TournamentStatus.Cancelled))
+            throw new DomainException(UnconfirmFinishedMessage);
+
+        var prizes = await _db.TournamentPrizes
+            .Where(p => p.TournamentId == tournamentId)
+            .ToListAsync(ct);
+        var entries = await _db.TournamentEntries
+            .Where(e => e.TournamentId == tournamentId && e.PrizeAmount != null)
+            .ToListAsync(ct);
+        if (prizes.Any(p => p.Paid) || entries.Any(e => e.PrizePaid))
+            throw new DomainException(UnconfirmPaidMessage);
+
+        _db.TournamentPrizes.RemoveRange(prizes);
+        foreach (var e in entries)
+            e.PrizeAmount = null;
+
+        tournament.PrizeConfirmed = false;
+        tournament.PrizeConfirmedAt = null;
+
+        _db.AuditLogs.Add(new AuditLog
+        {
+            EntityType = "Tournament",
+            EntityId = tournament.Id,
+            Action = "PrizeUnconfirm",
+            OldValues = $"{{\"Prizes\":{prizes.Count}}}",
+            NewValues = "{\"Prizes\":0}",
+            UserId = userId,
+            TournamentId = tournament.Id,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     public static int SuggestPrizeCount(int totalPlayers)
     {
         return totalPlayers switch

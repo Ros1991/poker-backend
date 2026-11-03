@@ -14,5 +14,7 @@ public enum TournamentActivityType
     TableOpened,        // mesa aberta pela inscrição (e quem mudou para ela) — SPEC-20261023-1214
     TableDeleted,       // mesa sem ninguém sentado excluída pelo organizador (dealer dela liberado) — SPEC-20261027-2133
     TimebankUsed,       // jogador usou um timebank (−1, com os segundos) — SPEC-20261029-1722; desfaz pelo histórico
-    TimebankAdjusted    // dealer/organizador deu ou tirou um timebank (+1/−1) — SPEC-20261029-1722; desfaz pelo histórico
+    TimebankAdjusted,   // dealer/organizador deu ou tirou um timebank (+1/−1) — SPEC-20261029-1722; desfaz pelo histórico
+    TournamentValuesChanged // valores do torneio (buy-in, rebuy, add-on, staff, ranking, bounty) mudaram com o torneio
+                            // valendo e o devido de cada jogador foi recalculado — SPEC-20261103-1927
 }

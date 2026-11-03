@@ -67,6 +67,19 @@ public class PrizesController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Desfaz a confirmação (SPEC-20261103-1927): para mudar os valores do torneio com a premiação já confirmada. Só o
+    /// organizador; 400 em finalizado/cancelado ou com prêmio pago.
+    /// </summary>
+    [HttpPost("unconfirm")]
+    public async Task<ActionResult> Unconfirm(Guid tournamentId, CancellationToken ct)
+    {
+        var claim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
+        Guid? userId = Guid.TryParse(claim?.Value, out var uid) ? uid : null;
+        await _prizeService.UnconfirmPrizesAsync(tournamentId, userId, ct);
+        return Ok(new { message = "Confirmação da premiação desfeita." });
+    }
+
     [HttpPost("{prizeId:guid}/pay")]
     
     public async Task<ActionResult> Pay(Guid tournamentId, Guid prizeId, CancellationToken ct)

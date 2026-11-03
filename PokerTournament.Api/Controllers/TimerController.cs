@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Hubs;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Services;
+using PokerTournament.Domain.Enums;
 
 namespace PokerTournament.Api.Controllers;
 
@@ -33,61 +34,64 @@ public class TimerController : ControllerBase
         return Ok(result);
     }
 
+    // Ligar o relógio de um torneio que ainda não começou (rascunho ou inscrições abertas) começa o torneio
+    // (SPEC-20261103-1927): o status vai para Em andamento e o painel e o terminal ficam sabendo pelo TournamentUpdate
     [HttpPost("start")]
-    
     public async Task<ActionResult> Start(Guid tournamentId, CancellationToken ct)
     {
-        await _timerService.StartTimerAsync(tournamentId, ct);
+        var started = await _timerService.StartTimerAsync(tournamentId, GetUserId(), ct);
         var state = await _timerService.GetTimerStateAsync(tournamentId, ct);
         await NotifyTimerChange(tournamentId, state);
+        if (started) await NotifyTournamentStarted(tournamentId);
         return Ok(state);
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("pause")]
-    
     public async Task<ActionResult> Pause(Guid tournamentId, CancellationToken ct)
     {
-        await _timerService.PauseTimerAsync(tournamentId, ct);
+        var started = await _timerService.PauseTimerAsync(tournamentId, GetUserId(), ct);
         var state = await _timerService.GetTimerStateAsync(tournamentId, ct);
         await NotifyTimerChange(tournamentId, state);
+        if (started) await NotifyTournamentStarted(tournamentId);
         return Ok(state);
     }
 
+    // O "Iniciar torneio" do terminal do dealer chama esta rota (o token do dealer não chega ao start)
     [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("resume")]
-    
     public async Task<ActionResult> Resume(Guid tournamentId, CancellationToken ct)
     {
-        await _timerService.ResumeTimerAsync(tournamentId, ct);
+        var started = await _timerService.ResumeTimerAsync(tournamentId, GetUserId(), ct);
         var state = await _timerService.GetTimerStateAsync(tournamentId, ct);
         await NotifyTimerChange(tournamentId, state);
+        if (started) await NotifyTournamentStarted(tournamentId);
         return Ok(state);
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("next")]
-    
     public async Task<ActionResult<TimerStateResponse>> NextLevel(Guid tournamentId, CancellationToken ct)
     {
         var userId = GetUserId();
-        var state = await _timerService.AdvanceLevelAsync(tournamentId, userId, ct);
+        var (state, started) = await _timerService.AdvanceLevelAsync(tournamentId, userId, ct);
         await _hubContext.Clients
             .Group($"tournament_{tournamentId}")
             .SendAsync("BlindLevelChanged", state, ct);
+        if (started) await NotifyTournamentStarted(tournamentId);
         return Ok(state);
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
     [HttpPost("previous")]
-    
     public async Task<ActionResult<TimerStateResponse>> PreviousLevel(Guid tournamentId, CancellationToken ct)
     {
         var userId = GetUserId();
-        var state = await _timerService.PreviousLevelAsync(tournamentId, userId, ct);
+        var (state, started) = await _timerService.PreviousLevelAsync(tournamentId, userId, ct);
         await _hubContext.Clients
             .Group($"tournament_{tournamentId}")
             .SendAsync("BlindLevelChanged", state, ct);
+        if (started) await NotifyTournamentStarted(tournamentId);
         return Ok(state);
     }
 
@@ -96,6 +100,14 @@ public class TimerController : ControllerBase
         await _hubContext.Clients
             .Group($"tournament_{tournamentId}")
             .SendAsync("TimerStateChanged", state);
+    }
+
+    /// <summary>O torneio passou para Em andamento pelo relógio: painel e terminal releem o torneio (status e botões)</summary>
+    private async Task NotifyTournamentStarted(Guid tournamentId)
+    {
+        await _hubContext.Clients
+            .Group($"tournament_{tournamentId}")
+            .SendAsync("TournamentUpdate", new { tournamentId, status = nameof(TournamentStatus.InProgress) });
     }
 
     private Guid GetUserId()

@@ -91,6 +91,26 @@ public class PaymentService
                 throw new DomainException(DestinationLimitMessage(limited.Description, Math.Max(0m, remaining)));
         }
 
+        // Favorecido pagando para o próprio custo (SPEC-20261103-1927, o "Abater" saiu da tela): é abatimento — quita a
+        // dívida dele contra o que ele tem a receber, sem dinheiro trocar de mãos. Grava como o SettleAgainstCostAsync
+        // (Settlement, "Compensacao"), para o Financeiro continuar mostrando abatimento e não PIX/dinheiro
+        if (CostBeneficiary.IsPlayersOwnCost(pixDestination, entry.Person))
+        {
+            var cost = pixDestination!;
+            var name = EntryService.PlayerDisplayName(entry.Person);
+            if (IsMixedMethod(request.Method))
+                throw new DomainException(OwnCostMixedMessage(name, cost.Description));
+            var owed = entry.TotalDue - entry.TotalPaid;
+            if (owed <= HalfCent)
+                throw new DomainException($"Nada a abater: {name} não tem saldo devedor.");
+            if (request.Amount > owed + HalfCent)
+                throw new DomainException($"{name} deve {Money(owed)}: o abatimento vai até esse valor.");
+
+            ApplySettlement(entry, cost, request.Amount, createdBy);
+            await _db.SaveChangesAsync(ct);
+            return MapEntry(entry);
+        }
+
         var transaction = new Transaction
         {
             TournamentId = tournamentId,
@@ -194,6 +214,26 @@ public class PaymentService
         if (settle <= 0)
             throw new DomainException("Nada a abater (jogador sem saldo devedor ou custo já quitado).");
 
+        ApplySettlement(entry, cost, settle, createdBy);
+
+        await _db.SaveChangesAsync(ct);
+        return MapEntry(entry);
+    }
+
+    /// <summary>
+    /// Pagamento misto com destino no próprio custo do jogador (SPEC-20261103-1927): o abatimento não leva dinheiro.
+    /// </summary>
+    public static string OwnCostMixedMessage(string playerName, string costDescription) =>
+        $"{playerName} é o favorecido de {costDescription}: o valor vira abatimento, sem dinheiro trocar de mãos. " +
+        "Lance sem misto; o que for em dinheiro vai à parte, para o caixa.";
+
+    /// <summary>
+    /// As duas pernas do abatimento (já conferido o valor) + o lançamento Settlement "Compensacao" com a descrição de sempre
+    /// ("Abatimento de &lt;nome&gt; no custo &lt;custo&gt;" — o detalhamento acha o custo excluído por ela). Usado pela rota antiga
+    /// de abatimento e pelo pagamento com destino no próprio custo do favorecido. Não salva.
+    /// </summary>
+    private void ApplySettlement(TournamentEntry entry, CostExtra cost, decimal settle, Guid? createdBy)
+    {
         // Perna 1: quita a dívida do jogador
         entry.TotalPaid += settle;
         entry.Balance = entry.TotalDue - entry.TotalPaid;
@@ -213,18 +253,15 @@ public class PaymentService
         // Trilha de auditoria (reversível pelo estorno, que já trata PixDestinationId)
         _db.Transactions.Add(new Transaction
         {
-            TournamentId = tournamentId,
-            EntryId = entryId,
+            TournamentId = entry.TournamentId,
+            EntryId = entry.Id,
             Type = nameof(TransactionType.Settlement),
             Amount = settle,
             Description = $"Abatimento de {entry.Person.FullName} no custo {cost.Description}",
             PaymentMethod = "Compensacao",
-            PixDestinationId = costExtraId,
+            PixDestinationId = cost.Id,
             CreatedBy = createdBy
         });
-
-        await _db.SaveChangesAsync(ct);
-        return MapEntry(entry);
     }
 
     /// <summary>
@@ -381,8 +418,16 @@ public class PaymentService
     /// receber mais nada. A tela também põe o "Caixa (gestor financeiro)" (sem custo) primeiro.
     /// </summary>
     public async Task<List<PixSuggestionResponse>> GetPixSuggestionsAsync(
-        Guid tournamentId, decimal playerDueAmount, CancellationToken ct = default)
+        Guid tournamentId, decimal playerDueAmount, Guid? entryId = null, CancellationToken ct = default)
     {
+        // Quem está pagando (SPEC-20261103-1927): o custo cujo favorecido é ele vem marcado (vira abatimento na tela)
+        var payer = entryId is { } eid
+            ? await _db.EntriesWithPerson().AsNoTracking()
+                .Where(e => e.Id == eid && e.TournamentId == tournamentId)
+                .Select(e => e.Person)
+                .FirstOrDefaultAsync(ct)
+            : null;
+
         // Pago e status pela regra única (jogadores + caixa, limitado ao valor — revisão geral 2), também para dado antigo
         // que ainda não passou por um recálculo: o que a tela oferece é o que o servidor aceita
         var costs = await _db.CostExtras
@@ -416,7 +461,8 @@ public class PaymentService
                 PixKey = cost.PixKey,
                 Beneficiary = cost.Beneficiary,
                 MatchScore = Math.Max(0, matchScore),
-                SuggestedPixAmount = Math.Max(0m, Math.Min(pendingAmount, playerDueAmount))
+                SuggestedPixAmount = Math.Max(0m, Math.Min(pendingAmount, playerDueAmount)),
+                PayerIsBeneficiary = CostBeneficiary.IsPlayer(cost.Beneficiary, payer)
             });
         }
 

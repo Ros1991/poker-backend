@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Domain.Entities;
+using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
 
 namespace PokerTournament.Application.Services;
@@ -11,10 +12,26 @@ public class TimerService
     public const string LastLevelMessage = "Já está no último nível.";
 
     private readonly IAppDbContext _db;
+    private readonly TournamentService _tournaments;
 
-    public TimerService(IAppDbContext db)
+    public TimerService(IAppDbContext db, TournamentService tournaments)
     {
         _db = db;
+        _tournaments = tournaments;
+    }
+
+    /// <summary>
+    /// Relógio ligado num torneio que ainda não começou (rascunho ou inscrições abertas) = o torneio começou
+    /// (SPEC-20261103-1927): a mesma transição para Em andamento do botão "Iniciar Torneio" do painel (efeitos e auditoria
+    /// StatusChange), também pelo token do dealer. Ela liga o relógio se está parado e não mexe nele se já anda (o rascunho
+    /// com o relógio andando de antes se acerta assim). Devolve true quando o torneio começou agora. Não salva.
+    /// </summary>
+    private async Task<bool> StartTournamentIfNeededAsync(Tournament tournament, Guid? userId, CancellationToken ct)
+    {
+        if (!TournamentService.IsBeforeStart(tournament.Status))
+            return false;
+        await _tournaments.ApplyStatusTransitionAsync(tournament, nameof(TournamentStatus.InProgress), userId, ct);
+        return true;
     }
 
     public async Task<TimerStateResponse> GetTimerStateAsync(Guid tournamentId, CancellationToken ct = default)
@@ -100,25 +117,37 @@ public class TimerService
         };
     }
 
-    public async Task StartTimerAsync(Guid tournamentId, CancellationToken ct = default)
+    /// <summary>
+    /// Liga o relógio; num torneio que ainda não começou, começa o torneio (true). Rascunho com o relógio já andando: só
+    /// acerta o status (sem "Timer já está rodando").
+    /// </summary>
+    public async Task<bool> StartTimerAsync(Guid tournamentId, Guid? userId = null, CancellationToken ct = default)
     {
         var tournament = await GetTournamentAsync(tournamentId, ct);
 
-        if (tournament.IsTimerRunning)
-            throw new DomainException("Timer já está rodando.");
+        var started = await StartTournamentIfNeededAsync(tournament, userId, ct);
+        if (!started)
+        {
+            if (tournament.IsTimerRunning)
+                throw new DomainException("Timer já está rodando.");
 
-        tournament.IsTimerRunning = true;
-        tournament.TimerStartedAt = DateTimeOffset.UtcNow;
+            tournament.IsTimerRunning = true;
+            tournament.TimerStartedAt = DateTimeOffset.UtcNow;
+        }
 
         await _db.SaveChangesAsync(ct);
+        return started;
     }
 
-    public async Task PauseTimerAsync(Guid tournamentId, CancellationToken ct = default)
+    /// <summary>Pausa; num rascunho com o relógio andando, o torneio passa antes para Em andamento (true).</summary>
+    public async Task<bool> PauseTimerAsync(Guid tournamentId, Guid? userId = null, CancellationToken ct = default)
     {
         var tournament = await GetTournamentAsync(tournamentId, ct);
 
         if (!tournament.IsTimerRunning)
             throw new DomainException("Timer não está rodando.");
+
+        var started = await StartTournamentIfNeededAsync(tournament, userId, ct);
 
         if (tournament.TimerStartedAt.HasValue)
         {
@@ -130,23 +159,34 @@ public class TimerService
         tournament.TimerStartedAt = null;
 
         await _db.SaveChangesAsync(ct);
+        return started;
     }
 
-    public async Task ResumeTimerAsync(Guid tournamentId, CancellationToken ct = default)
+    /// <summary>
+    /// Retoma (é o que o terminal do dealer chama, também no "Iniciar torneio"); num torneio que ainda não começou, começa o
+    /// torneio (true), como <see cref="StartTimerAsync"/>.
+    /// </summary>
+    public async Task<bool> ResumeTimerAsync(Guid tournamentId, Guid? userId = null, CancellationToken ct = default)
     {
         var tournament = await GetTournamentAsync(tournamentId, ct);
 
-        if (tournament.IsTimerRunning)
-            throw new DomainException("Timer já está rodando.");
+        var started = await StartTournamentIfNeededAsync(tournament, userId, ct);
+        if (!started)
+        {
+            if (tournament.IsTimerRunning)
+                throw new DomainException("Timer já está rodando.");
 
-        tournament.IsTimerRunning = true;
-        tournament.TimerStartedAt = DateTimeOffset.UtcNow;
-        tournament.TimerPausedAt = null;
+            tournament.IsTimerRunning = true;
+            tournament.TimerStartedAt = DateTimeOffset.UtcNow;
+            tournament.TimerPausedAt = null;
+        }
 
         await _db.SaveChangesAsync(ct);
+        return started;
     }
 
-    public async Task<TimerStateResponse> AdvanceLevelAsync(
+    /// <summary>Próximo nível; num rascunho com o relógio andando, o torneio passa antes para Em andamento (Started).</summary>
+    public async Task<(TimerStateResponse State, bool Started)> AdvanceLevelAsync(
         Guid tournamentId, Guid? userId = null, CancellationToken ct = default)
     {
         // SPEC-20261029-1720 (D2): sem nível depois do atual o "Próximo" é recusado (antes levava a um nível que não
@@ -155,6 +195,8 @@ public class TimerService
 
         if (!levels.Any(l => l.LevelNumber == (tournament.CurrentLevel ?? 0) + 1))
             throw new DomainException(LastLevelMessage);
+
+        var started = tournament.IsTimerRunning && await StartTournamentIfNeededAsync(tournament, userId, ct);
 
         _db.AuditLogs.Add(new AuditLog
         {
@@ -173,16 +215,19 @@ public class TimerService
         tournament.TimerStartedAt = tournament.IsTimerRunning ? DateTimeOffset.UtcNow : null;
 
         await _db.SaveChangesAsync(ct);
-        return await GetTimerStateAsync(tournamentId, ct);
+        return (await GetTimerStateAsync(tournamentId, ct), started);
     }
 
-    public async Task<TimerStateResponse> PreviousLevelAsync(
+    /// <summary>Nível anterior; num rascunho com o relógio andando, o torneio passa antes para Em andamento (Started).</summary>
+    public async Task<(TimerStateResponse State, bool Started)> PreviousLevelAsync(
         Guid tournamentId, Guid? userId = null, CancellationToken ct = default)
     {
         var tournament = await GetTournamentAsync(tournamentId, ct);
 
         if ((tournament.CurrentLevel ?? 1) <= 1)
             throw new DomainException("Já está no primeiro nível.");
+
+        var started = tournament.IsTimerRunning && await StartTournamentIfNeededAsync(tournament, userId, ct);
 
         _db.AuditLogs.Add(new AuditLog
         {
@@ -201,7 +246,7 @@ public class TimerService
         tournament.TimerStartedAt = tournament.IsTimerRunning ? DateTimeOffset.UtcNow : null;
 
         await _db.SaveChangesAsync(ct);
-        return await GetTimerStateAsync(tournamentId, ct);
+        return (await GetTimerStateAsync(tournamentId, ct), started);
     }
 
     private async Task<Tournament> GetTournamentAsync(Guid tournamentId, CancellationToken ct)
