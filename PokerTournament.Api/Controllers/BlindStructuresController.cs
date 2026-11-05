@@ -72,6 +72,9 @@ public class BlindStructuresController : HomeGameScopedControllerBase
             bs.Name,
             bs.Description,
             bs.HomeGameId,
+            // Criação da estrutura: o formulário de torneio novo sugere a mais recente quando o último torneio não tem
+            // estrutura (SPEC-20261105-1708)
+            bs.CreatedAt,
             bs.DefaultBuyIn,
             bs.DefaultRebuy,
             bs.DefaultAddon,
