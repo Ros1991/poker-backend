@@ -2755,6 +2755,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("entry_id");
 
+                    b.Property<bool>("OutsideWindow")
+                        .HasColumnType("boolean")
+                        .HasColumnName("outside_window");
+
                     b.Property<string>("PaymentMethod")
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")

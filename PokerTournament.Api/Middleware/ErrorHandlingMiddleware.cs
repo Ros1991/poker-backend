@@ -45,6 +45,8 @@ public class ErrorHandlingMiddleware
             // Login social (SPEC-20261023-1210): conta desativada → 403; conta confirmada que pede a senha → 409
             AccountDisabledException disabled => (HttpStatusCode.Forbidden, disabled.Message),
             ExternalLoginLinkRequiredException linkRequired => (HttpStatusCode.Conflict, linkRequired.Message),
+            // Rebuy/add-on fora do período sem a confirmação (SPEC-20261105-1707): 409 para o terminal/painel perguntar
+            OutsideWindowException outside => (HttpStatusCode.Conflict, outside.Message),
             // Recusa por plano (SPEC-20261023-1205): ANTES de DomainException (ela herda dela) → 402
             PlanLimitException planLimit => (HttpStatusCode.PaymentRequired, planLimit.Message),
             // Senha errada demais (login/confirmação) ou cadastros demais por IP no dia: ANTES de DomainException
@@ -91,6 +93,20 @@ public class ErrorHandlingMiddleware
                 code = link.Code,
                 ticket = link.Ticket,
                 email = link.Email,
+                message,
+                timestamp = DateTimeOffset.UtcNow
+            }
+            : exception is OutsideWindowException late
+            // 409 do rebuy/add-on fora do período: o site pergunta "<message> Lançar mesmo assim?" e repete o pedido com
+            // confirmOutsideWindow: true
+            ? new
+            {
+                status = (int)statusCode,
+                error = statusCode.ToString(), // "Conflict"
+                code = late.Code,
+                kind = late.Kind,
+                reason = late.Reason,
+                level = late.Level,
                 message,
                 timestamp = DateTimeOffset.UtcNow
             }

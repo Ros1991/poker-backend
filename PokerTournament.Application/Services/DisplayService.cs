@@ -344,6 +344,8 @@ public class DisplayService
                 // Knockout (SPEC-20261026-1909): todos os planos (é o formato do jogo, não o financeiro)
                 BountyHead = e.BountyHead,
                 BountyWon = e.BountyWon,
+                // Timebank (SPEC-20261105-1707): fica null logo abaixo no torneio sem timebank
+                TimebanksRemaining = e.TimebanksRemaining,
             })
             .ToListAsync(ct);
 
@@ -351,6 +353,9 @@ public class DisplayService
         var collected = entries.Sum(e => e.TotalDue);
         foreach (var entry in entries)
         {
+            // Torneio sem timebank: o telão não mostra relógio nenhum (SPEC-20261105-1707)
+            if (t.TimebankCount is null)
+                entry.TimebanksRemaining = null;
             if (!showMoney)
             {
                 entry.Balance = 0;
@@ -444,6 +449,7 @@ public class DisplayService
                 KnockoutType = t.KnockoutType,
                 BountyAmount = t.BountyAmount,
                 TotalBounties = t.TotalBounties,
+                TimebankCount = t.TimebankCount,
                 Plan = plan,
                 ShowBadge = planDefinition.ShowBadge,
                 // O telão decide o conteúdo por aqui (com a chave de emergência desligada, todos os recursos)

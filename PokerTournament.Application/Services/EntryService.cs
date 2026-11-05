@@ -7,6 +7,7 @@ using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Plans;
+using PokerTournament.Application.PlayWindow;
 using PokerTournament.Application.Seating;
 using PokerTournament.Application.Timebank;
 using PokerTournament.Domain.Entities;
@@ -864,16 +865,13 @@ public class EntryService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        if (tournament.Status != nameof(TournamentStatus.Draft)
-            && tournament.Status != nameof(TournamentStatus.OpenForRegistration)
-            && tournament.Status != nameof(TournamentStatus.InProgress))
+        // Intervalo de acerto ("Encerrar Rebuys") também aceita, com a pergunta de fora do período (SPEC-20261105-1707);
+        // finalizado e cancelado continuam recusados
+        if (!OutsideWindowRules.AcceptsLateActions(tournament.Status))
             throw new DomainException("Não é possível registrar rebuy nesta fase do torneio.");
 
         if (!tournament.RebuyAmount.HasValue || tournament.RebuyAmount <= 0)
             throw new DomainException("Rebuy não está habilitado neste torneio.");
-
-        if (tournament.RebuyUntilLevel.HasValue && tournament.CurrentLevel > tournament.RebuyUntilLevel)
-            throw new DomainException("Período de rebuy encerrado.");
 
         var entry = await _db.EntriesWithPerson()
             .FirstOrDefaultAsync(e => e.Id == entryId && e.TournamentId == tournamentId, ct)
@@ -884,6 +882,10 @@ public class EntryService
 
         if (tournament.MaxRebuys.HasValue && tournament.MaxRebuys > 0 && entry.RebuyCount + request.Quantity > tournament.MaxRebuys)
             throw new DomainException($"Limite de rebuys atingido ({tournament.MaxRebuys}).");
+
+        // Rebuy esquecido (SPEC-20261105-1707): depois do "rebuy até o nível N" ou no intervalo de acerto, 409 sem a
+        // confirmação; com ela, lança marcado como fora do período. Por último: o que é recusado de vez não pergunta
+        var outsideWindow = OutsideWindowRules.Check(OutsideWindowRules.ForRebuy(tournament), request.ConfirmOutsideWindow);
 
         entry.RebuyCount += request.Quantity;
         entry.RebuyTotal = entry.RebuyCount * (tournament.RebuyAmount ?? 0);
@@ -899,7 +901,8 @@ public class EntryService
                 Type = nameof(TransactionType.Rebuy),
                 Amount = tournament.RebuyAmount!.Value,
                 Description = $"Rebuy {entry.RebuyCount - request.Quantity + i + 1} - {entry.Person.FullName}",
-                CreatedBy = registeredBy
+                CreatedBy = registeredBy,
+                OutsideWindow = outsideWindow
             });
         }
 
@@ -932,9 +935,8 @@ public class EntryService
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new DomainException("Torneio não encontrado.");
 
-        if (tournament.Status != nameof(TournamentStatus.Draft)
-            && tournament.Status != nameof(TournamentStatus.OpenForRegistration)
-            && tournament.Status != nameof(TournamentStatus.InProgress))
+        // Intervalo de acerto também aceita, com a pergunta de fora do período (SPEC-20261105-1707)
+        if (!OutsideWindowRules.AcceptsLateActions(tournament.Status))
             throw new DomainException("Não é possível registrar addon nesta fase do torneio.");
 
         if (!tournament.AddonAllowed || !tournament.AddonAmount.HasValue || tournament.AddonAmount <= 0)
@@ -949,6 +951,9 @@ public class EntryService
 
         if (tournament.MaxAddons > 0 && entry.AddonCount + quantity > tournament.MaxAddons)
             throw new DomainException(AddonRules.LimitReachedMessage(tournament.MaxAddons));
+
+        // Add-on esquecido (SPEC-20261105-1707): no intervalo de acerto, 409 sem a confirmação; com ela, lança marcado
+        var outsideWindow = OutsideWindowRules.Check(OutsideWindowRules.ForAddon(tournament), request?.ConfirmOutsideWindow == true);
 
         var unit = tournament.AddonAmount!.Value;
         var firstNumber = entry.AddonCount + 1;
@@ -966,7 +971,8 @@ public class EntryService
                 Type = nameof(TransactionType.Addon),
                 Amount = unit,
                 Description = $"Add-on {firstNumber + i} - {entry.Person.FullName}",
-                CreatedBy = registeredBy
+                CreatedBy = registeredBy,
+                OutsideWindow = outsideWindow
             });
         }
 
