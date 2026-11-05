@@ -39,6 +39,7 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Transaction>
         builder.Property(t => t.ReversedAt).HasColumnName("reversed_at");
         builder.Property(t => t.ReversedBy).HasColumnName("reversed_by");
         builder.Property(t => t.ReversalReason).HasColumnName("reversal_reason");
+        builder.Property(t => t.OutsideWindow).HasColumnName("outside_window");
 
         // Relations
         builder.HasOne(t => t.Tournament)

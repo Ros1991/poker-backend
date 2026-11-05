@@ -5,6 +5,7 @@ using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Plans;
+using PokerTournament.Application.PlayWindow;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -500,12 +501,14 @@ public class TournamentHistoryService
             case nameof(TransactionType.BuyIn):
                 return $"Inscrição (buy-in {Money(t.Amount)})";
 
+            // Lançado fora do período, com confirmação (SPEC-20261105-1707): "Rebuy (R$ 50,00) · fora do período"
             case nameof(TransactionType.Rebuy):
-                return $"Rebuy ({Money(t.Amount)})";
+                return $"Rebuy ({Money(t.Amount)}){OutsideWindowSuffix(t)}";
 
             case nameof(TransactionType.Addon):
                 // Cada lançamento é um add-on (SPEC-20261027-1311); o antigo "Addon Duplo - {nome}" vale 2
-                return AddonRules.IsLegacyDouble(t) ? $"2 add-ons ({Money(t.Amount)})" : $"Add-on ({Money(t.Amount)})";
+                return (AddonRules.IsLegacyDouble(t) ? $"2 add-ons ({Money(t.Amount)})" : $"Add-on ({Money(t.Amount)})")
+                    + OutsideWindowSuffix(t);
 
             case nameof(TransactionType.Payment):
                 var text = DescribePayment(t);
@@ -525,6 +528,9 @@ public class TournamentHistoryService
                 return t.Description ?? $"{t.Type}: {Money(t.Amount)}";
         }
     }
+
+    private static string OutsideWindowSuffix(Transaction t) =>
+        t.OutsideWindow ? OutsideWindowRules.HistorySuffix : string.Empty;
 
     private static string DescribePayment(Transaction t)
     {

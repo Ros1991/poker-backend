@@ -81,6 +81,9 @@ public class TvTournamentInfo
     public decimal? BountyAmount { get; set; }
     public decimal TotalBounties { get; set; }
 
+    // Timebank virtual (SPEC-20261105-1707): timebanks de cada jogador no início; null = torneio sem timebank
+    public int? TimebankCount { get; set; }
+
     // SPEC-20261023-1205: plano efetivo do dono e o selo. Mesa = selo + QR da landing; Clube = selo
     // discreto; Liga = sem selo, com a logo do clube (HomeGame.LogoUrl). No Mesa o snapshot já vem sem
     // prêmios, mesas, PIX e saldos — o backend é a fonte, não o CSS.
@@ -121,6 +124,9 @@ public class TvEntry
     // Knockout: cabeça atual (0 depois de eliminado) e bounties ganhos
     public decimal BountyHead { get; set; }
     public decimal BountyWon { get; set; }
+    // Timebank (SPEC-20261105-1707, substitui a D5 de 2026-10-29): quantos o jogador ainda tem; null no torneio sem timebank
+    // (o telão não mostra nada). É só um número, como os rebuys: nada sensível
+    public int? TimebanksRemaining { get; set; }
 }
 
 public class TvTable

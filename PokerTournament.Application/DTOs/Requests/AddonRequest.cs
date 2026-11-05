@@ -7,4 +7,10 @@ namespace PokerTournament.Application.DTOs.Requests;
 public class AddonRequest
 {
     public int Quantity { get; set; } = 1;
+
+    /// <summary>
+    /// Fora do período (SPEC-20261105-1707: intervalo de acerto): sem isto o pedido volta 409 <c>outside_window</c>; com
+    /// true, lança e marca o lançamento como "fora do período" no histórico. Dentro do período não muda nada.
+    /// </summary>
+    public bool ConfirmOutsideWindow { get; set; }
 }

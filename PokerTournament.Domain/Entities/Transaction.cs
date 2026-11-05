@@ -15,6 +15,9 @@ public class Transaction : BaseEntity
     public DateTimeOffset? ReversedAt { get; set; }
     public Guid? ReversedBy { get; set; }
     public string? ReversalReason { get; set; }
+    // Rebuy/add-on lançado fora do período, com a confirmação de quem lançou (SPEC-20261105-1707): depois do "rebuy até o
+    // nível N" ou no intervalo de acerto. Só marca o histórico ("fora do período"); o dinheiro conta igual.
+    public bool OutsideWindow { get; set; }
 
     // Navigation
     public Tournament Tournament { get; set; } = null!;

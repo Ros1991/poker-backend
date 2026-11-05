@@ -72,7 +72,13 @@ public class PaymentsController : ControllerBase
                 t.CashAmount,
                 t.PixDestinationId,
                 t.Description,
-                t.CreatedAt
+                t.CreatedAt,
+                // "Pago" do terminal (SPEC-20261105-1707): como e para quem foi pago — Payment ou Settlement (abatimento) e o
+                // destino (custo e favorecido; sem destino = o caixa)
+                t.Type,
+                PixDestinationDescription = t.PixDestination != null ? t.PixDestination.Description : null,
+                PixDestinationBeneficiary = t.PixDestination != null ? t.PixDestination.Beneficiary : null,
+                PixDestinationIsCashBox = t.PixDestination != null && t.PixDestination.IsCashBox
             })
             .ToListAsync(ct);
         return Ok(payments);
