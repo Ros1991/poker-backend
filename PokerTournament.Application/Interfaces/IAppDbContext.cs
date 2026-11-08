@@ -42,6 +42,8 @@ public interface IAppDbContext
     DbSet<AiUsage> AiUsages { get; }
     // Cache do geocodificador (SPEC-20261108-1634)
     DbSet<GeocodeCacheEntry> GeocodeCache { get; }
+    // Notificações da conta (SPEC-20261108-1635)
+    DbSet<Notification> Notifications { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

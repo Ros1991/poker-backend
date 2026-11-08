@@ -13,11 +13,13 @@ public class TimerService
 
     private readonly IAppDbContext _db;
     private readonly TournamentService _tournaments;
+    private readonly TournamentNotifier _notifier;
 
-    public TimerService(IAppDbContext db, TournamentService tournaments)
+    public TimerService(IAppDbContext db, TournamentService tournaments, TournamentNotifier notifier)
     {
         _db = db;
         _tournaments = tournaments;
+        _notifier = notifier;
     }
 
     /// <summary>
@@ -136,6 +138,8 @@ public class TimerService
         }
 
         await _db.SaveChangesAsync(ct);
+        // O torneio começou pelo relógio: "começou" para as contas vinculadas (SPEC-20261108-1635), já gravado
+        await _notifier.PushPendingAsync(ct);
         return started;
     }
 
@@ -159,6 +163,8 @@ public class TimerService
         tournament.TimerStartedAt = null;
 
         await _db.SaveChangesAsync(ct);
+        // O torneio começou pelo relógio: "começou" para as contas vinculadas (SPEC-20261108-1635), já gravado
+        await _notifier.PushPendingAsync(ct);
         return started;
     }
 
@@ -182,6 +188,8 @@ public class TimerService
         }
 
         await _db.SaveChangesAsync(ct);
+        // O torneio começou pelo relógio: "começou" para as contas vinculadas (SPEC-20261108-1635), já gravado
+        await _notifier.PushPendingAsync(ct);
         return started;
     }
 
@@ -215,6 +223,7 @@ public class TimerService
         tournament.TimerStartedAt = tournament.IsTimerRunning ? DateTimeOffset.UtcNow : null;
 
         await _db.SaveChangesAsync(ct);
+        await _notifier.PushPendingAsync(ct);
         return (await GetTimerStateAsync(tournamentId, ct), started);
     }
 
@@ -246,6 +255,7 @@ public class TimerService
         tournament.TimerStartedAt = tournament.IsTimerRunning ? DateTimeOffset.UtcNow : null;
 
         await _db.SaveChangesAsync(ct);
+        await _notifier.PushPendingAsync(ct);
         return (await GetTimerStateAsync(tournamentId, ct), started);
     }
 

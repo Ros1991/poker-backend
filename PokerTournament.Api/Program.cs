@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
+using PokerTournament.Api.BackgroundServices;
 using PokerTournament.Api.Development;
 using PokerTournament.Api.Geo;
 using PokerTournament.Api.Http;
@@ -220,6 +221,9 @@ builder.Services.AddSingleton<DealerConnectionRegistry>();
 builder.Services.AddSingleton<DealerHubFilter>();
 builder.Services.AddSignalR()
     .AddHubOptions<TournamentHub>(options => options.AddFilter<DealerHubFilter>());
+// Notificações da conta (SPEC-20261108-1635): o sino recebe em tempo real pelo grupo user_{id} do mesmo hub (toda
+// conexão com token de usuário entra nele ao conectar); a camada Application só conhece o INotificationPusher
+builder.Services.AddSingleton<INotificationPusher, SignalRNotificationPusher>();
 
 // Swagger
 builder.Services.AddSwaggerGen(options =>
@@ -353,6 +357,13 @@ builder.Services.AddSingleton(sp => new OidcTokenValidator(
 builder.Services.AddScoped<ExternalLoginEmailService>();
 // E-mails do "Meu perfil" (SPEC-20261023-1211): "Definir sua senha" da conta que só entra pelo Google
 builder.Services.AddScoped<AccountEmailService>();
+// Notificações da conta (SPEC-20261108-1635): gravar + empurrar (NotificationService), "começou"/resultado do torneio
+// para as contas vinculadas (TournamentNotifier) e o e-mail resumo + limpeza das lidas (NotificationDigestService),
+// rodados pelo primeiro hosted service do projeto a cada 10 min (no máximo um e-mail por conta por hora)
+builder.Services.AddScoped<NotificationService>();
+builder.Services.AddScoped<TournamentNotifier>();
+builder.Services.AddScoped<NotificationDigestService>();
+builder.Services.AddHostedService<NotificationDigestJob>();
 
 // Application Services
 builder.Services.AddSingleton<JwtTokenFactory>();
@@ -583,6 +594,10 @@ if (app.Environment.IsDevelopment())
 // Busca por raio e fila de geocodificação para as suítes (SPEC-20261108-1634): rotas SÓ em Development
 if (app.Environment.IsDevelopment())
     app.MapDevelopmentGeoEndpoints();
+// Testes das notificações (criar para uma conta, rodar o e-mail resumo com relógio falso): SÓ em Development e só Admin
+// (SPEC-20261108-1635)
+if (app.Environment.IsDevelopment())
+    app.MapDevelopmentNotificationEndpoints();
 // Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)
 app.MapHub<TournamentHub>("/hubs/tournament", o => o.CloseOnAuthenticationExpiration = true);
 

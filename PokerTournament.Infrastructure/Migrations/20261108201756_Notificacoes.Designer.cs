@@ -12,8 +12,8 @@ using PokerTournament.Infrastructure.Data;
 namespace PokerTournament.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261108201731_EnderecoDoHomeGame")]
-    partial class EnderecoDoHomeGame
+    [Migration("20261108201756_Notificacoes")]
+    partial class Notificacoes
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -1288,89 +1288,12 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.ToTable("email_confirmation_tokens", "public");
                 });
 
-            modelBuilder.Entity("PokerTournament.Domain.Entities.GeocodeCacheEntry", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<bool>("Found")
-                        .HasColumnType("boolean")
-                        .HasColumnName("found");
-
-                    b.Property<double?>("Latitude")
-                        .HasColumnType("double precision")
-                        .HasColumnName("latitude");
-
-                    b.Property<double?>("Longitude")
-                        .HasColumnType("double precision")
-                        .HasColumnName("longitude");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("provider");
-
-                    b.Property<string>("QueryKey")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("query_key");
-
-                    b.Property<string>("ResolvedName")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("resolved_name");
-
-                    b.Property<DateTimeOffset?>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("QueryKey")
-                        .IsUnique()
-                        .HasDatabaseName("ix_geocode_cache_query_key");
-
-                    b.ToTable("geocode_cache", "public");
-                });
-
             modelBuilder.Entity("PokerTournament.Domain.Entities.HomeGame", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    b.Property<string>("AddressVisibility")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasDefaultValue("ApprovedOnly")
-                        .HasColumnName("address_visibility");
-
-                    b.Property<string>("City")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("city");
-
-                    b.Property<string>("Complement")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("complement");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -1396,24 +1319,6 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
-                    b.Property<string>("District")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("district");
-
-                    b.Property<DateTimeOffset?>("GeocodeFailedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("geocode_failed_at");
-
-                    b.Property<string>("GeocodePrecision")
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("geocode_precision");
-
-                    b.Property<DateTimeOffset?>("GeocodedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("geocoded_at");
-
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -1424,10 +1329,6 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_primary");
 
-                    b.Property<double?>("Latitude")
-                        .HasColumnType("double precision")
-                        .HasColumnName("latitude");
-
                     b.Property<string>("Location")
                         .HasColumnType("text")
                         .HasColumnName("location");
@@ -1436,20 +1337,11 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("text")
                         .HasColumnName("logo_url");
 
-                    b.Property<double?>("Longitude")
-                        .HasColumnType("double precision")
-                        .HasColumnName("longitude");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name");
-
-                    b.Property<string>("Number")
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("address_number");
 
                     b.Property<Guid>("OwnerId")
                         .HasColumnType("uuid")
@@ -1462,21 +1354,6 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<string>("PixKey")
                         .HasColumnType("text")
                         .HasColumnName("pix_key");
-
-                    b.Property<string>("PostalCode")
-                        .HasMaxLength(8)
-                        .HasColumnType("character varying(8)")
-                        .HasColumnName("postal_code");
-
-                    b.Property<string>("State")
-                        .HasMaxLength(2)
-                        .HasColumnType("character varying(2)")
-                        .HasColumnName("state");
-
-                    b.Property<string>("Street")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("street");
 
                     b.Property<string>("Timezone")
                         .IsRequired()
@@ -1503,10 +1380,6 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasFilter("deleted_at IS NULL");
 
                     b.HasIndex("OwnerId");
-
-                    b.HasIndex("Latitude", "Longitude")
-                        .HasDatabaseName("ix_home_games_lat_lng")
-                        .HasFilter("latitude IS NOT NULL AND longitude IS NOT NULL");
 
                     b.HasIndex("OwnerId", "Name")
                         .IsUnique()
@@ -1580,6 +1453,73 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDatabaseName("ix_home_game_members_home_game_user");
 
                     b.ToTable("home_game_members", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.Notification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("body");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("EmailedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("emailed_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Link")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("link");
+
+                    b.Property<DateTimeOffset?>("ReadAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("read_at");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("ix_notifications_user_id_created_at");
+
+                    b.HasIndex("UserId", "ReadAt")
+                        .HasDatabaseName("ix_notifications_user_id_read_at");
+
+                    b.ToTable("notifications", "public");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.NotificationLog", b =>
@@ -2980,6 +2920,10 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<DateTimeOffset?>("LastDigestAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_digest_at");
+
                     b.Property<DateTimeOffset?>("LastLoginAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_login_at");
@@ -2988,6 +2932,30 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("nickname");
+
+                    b.Property<bool>("NotifyByEmail")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("notify_by_email");
+
+                    b.Property<bool>("NotifyRequests")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("notify_requests");
+
+                    b.Property<bool>("NotifySocial")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("notify_social");
+
+                    b.Property<bool>("NotifyTournament")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("notify_tournament");
 
                     b.Property<DateTimeOffset?>("OnboardedAt")
                         .HasColumnType("timestamp with time zone")
@@ -3307,6 +3275,17 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Navigation("HomeGame");
 
                     b.Navigation("Person");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.Notification", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.User", "User")
+                        .WithMany("Notifications")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("User");
                 });
@@ -3650,6 +3629,8 @@ namespace PokerTournament.Infrastructure.Migrations
             modelBuilder.Entity("PokerTournament.Domain.Entities.User", b =>
                 {
                     b.Navigation("HomeGameMemberships");
+
+                    b.Navigation("Notifications");
 
                     b.Navigation("OwnedHomeGames");
                 });

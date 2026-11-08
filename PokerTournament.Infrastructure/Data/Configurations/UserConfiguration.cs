@@ -92,6 +92,13 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
 
         builder.Property(u => u.RequestedPlanAt).HasColumnName("requested_plan_at");
 
+        // Notificações (SPEC-20261108-1635): preferências ligadas por padrão e o último e-mail resumo
+        builder.Property(u => u.NotifyByEmail).HasColumnName("notify_by_email").HasDefaultValue(true);
+        builder.Property(u => u.NotifyTournament).HasColumnName("notify_tournament").HasDefaultValue(true);
+        builder.Property(u => u.NotifyRequests).HasColumnName("notify_requests").HasDefaultValue(true);
+        builder.Property(u => u.NotifySocial).HasColumnName("notify_social").HasDefaultValue(true);
+        builder.Property(u => u.LastDigestAt).HasColumnName("last_digest_at");
+
         // Unique email
         builder.HasIndex(u => u.Email)
             .IsUnique()

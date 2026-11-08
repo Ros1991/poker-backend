@@ -44,6 +44,8 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<AiUsage> AiUsages => Set<AiUsage>();
     // Cache do geocodificador (SPEC-20261108-1634)
     public DbSet<GeocodeCacheEntry> GeocodeCache => Set<GeocodeCacheEntry>();
+    // Notificações da conta (SPEC-20261108-1635)
+    public DbSet<Notification> Notifications => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

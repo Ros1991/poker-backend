@@ -21,6 +21,7 @@ public class TournamentService
     private readonly IAppDbContext _db;
     private readonly IMapper _mapper;
     private readonly PlanService _plans;
+    private readonly TournamentNotifier _notifier;
 
     /// <summary>Quantidade de dealers aceita na criação (CP17 da SPEC-20261023-1215).</summary>
     public const int MaxDealerCount = 20;
@@ -33,11 +34,12 @@ public class TournamentService
         NumberDecimalDigits = 2
     };
 
-    public TournamentService(IAppDbContext db, IMapper mapper, PlanService plans)
+    public TournamentService(IAppDbContext db, IMapper mapper, PlanService plans, TournamentNotifier notifier)
     {
         _db = db;
         _mapper = mapper;
         _plans = plans;
+        _notifier = notifier;
     }
 
     /// <summary>
@@ -941,6 +943,8 @@ public class TournamentService
         await ApplyStatusTransitionAsync(tournament, newStatus, userId, ct);
 
         await _db.SaveChangesAsync(ct);
+        // "Começou" / resultado para as contas vinculadas (SPEC-20261108-1635), já gravados junto com o status
+        await _notifier.PushPendingAsync(ct);
         return await ToResponseAsync(tournament, ct);
     }
 
@@ -978,11 +982,17 @@ public class TournamentService
                     tournament.IsTimerRunning = true;
                     tournament.TimerPausedAt = null;
                 }
+                // Começou de verdade (rascunho/inscrições abertas → em andamento): avisa as contas vinculadas
+                // (SPEC-20261108-1635). A volta do intervalo de acerto não é um começo.
+                if (IsBeforeStart(oldStatus))
+                    await _notifier.StageStartedAsync(tournament, ct);
                 break;
 
             case TournamentStatus.Finished:
                 tournament.IsTimerRunning = false;
                 tournament.FirstFinishedAt ??= DateTimeOffset.UtcNow;
+                // Resultado (posição e prêmio) para as contas vinculadas (SPEC-20261108-1635)
+                await _notifier.StageResultAsync(tournament, ct);
                 // Feature ranking: soma o acumulado final no Ranking.AccumulatedPrize (idempotente via snapshot)
                 if (tournament.RankingId.HasValue && tournament.RankingPrizeAccrued is null)
                 {
