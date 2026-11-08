@@ -3341,6 +3341,12 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("show_in_played_with");
 
+                    b.Property<bool>("ShowWhatsappToPlayers")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("show_whatsapp_to_players");
+
                     b.Property<string>("State")
                         .HasMaxLength(2)
                         .HasColumnType("character varying(2)")

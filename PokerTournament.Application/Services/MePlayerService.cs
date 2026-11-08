@@ -905,14 +905,19 @@ public class MePlayerService
         return null;
     }
 
-    /// <summary>Quem responde pelo torneio: quem o criou (se tem WhatsApp), senão o dono do clube. Número só com dígitos e DDI.</summary>
+    /// <summary>
+    /// Quem responde pelo torneio: quem o criou (se tem WhatsApp), senão o dono do clube. Número só com dígitos e DDI.
+    /// Só contas que ligaram "Mostrar meu WhatsApp aos jogadores" (<c>User.ShowWhatsappToPlayers</c>, opt-in da
+    /// SPEC-20261108-1636 pedido pela revisão independente da onda 1): sem ninguém com a opção ligada, o botão
+    /// "Chamar o organizador" não aparece.
+    /// </summary>
     private async Task<(string? Whatsapp, string? Name)> OrganizerAsync(TournamentInfo t, CancellationToken ct)
     {
         var ids = new List<Guid> { t.OwnerId };
         if (t.CreatedBy is { } creator && creator != t.OwnerId)
             ids.Insert(0, creator);
         var users = await _db.Users.AsNoTracking()
-            .Where(u => ids.Contains(u.Id) && u.IsActive)
+            .Where(u => ids.Contains(u.Id) && u.IsActive && u.ShowWhatsappToPlayers)
             .Select(u => new { u.Id, u.FullName, u.Nickname, u.Whatsapp })
             .ToListAsync(ct);
         foreach (var id in ids)

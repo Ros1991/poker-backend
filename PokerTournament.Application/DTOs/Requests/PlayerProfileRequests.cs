@@ -28,4 +28,6 @@ public class UpdatePrivacyRequest
     /// <summary>Friends | FriendsAndOrganizers.</summary>
     public string? MessagesFrom { get; set; }
     public bool? ShowInPlayedWith { get; set; }
+    /// <summary>Mostrar o WhatsApp da conta aos jogadores dos torneios que ela organiza.</summary>
+    public bool? ShowWhatsappToPlayers { get; set; }
 }

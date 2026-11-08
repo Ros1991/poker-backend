@@ -303,7 +303,11 @@ public class PlayerProfileService
         return await _auth.ToProfileAsync(user, ct);
     }
 
-    /// <summary><c>PUT me/privacy</c>: cada controle presente no pedido é validado e gravado; ausente = fica como está.</summary>
+    /// <summary>
+    /// <c>PUT me/privacy</c>: cada controle presente no pedido é validado e gravado; ausente = fica como está. Inclui o
+    /// opt-in <c>ShowWhatsappToPlayers</c> (revisão independente da onda 1): sem ele o "Chamar o organizador" da área do
+    /// jogador não mostra o WhatsApp da conta.
+    /// </summary>
     public async Task<ProfileResponse> UpdatePrivacyAsync(
         Guid userId, UpdatePrivacyRequest request, string? ip, string? userAgent, CancellationToken ct = default)
     {
@@ -337,6 +341,12 @@ public class PlayerProfileService
         {
             user.ShowInPlayedWith = show;
             changed.Add(nameof(user.ShowInPlayedWith));
+        }
+        // Opt-in do WhatsApp para os jogadores (revisão independente da onda 1): MePlayerService.OrganizerAsync lê
+        if (request.ShowWhatsappToPlayers is { } showWhatsapp && user.ShowWhatsappToPlayers != showWhatsapp)
+        {
+            user.ShowWhatsappToPlayers = showWhatsapp;
+            changed.Add(nameof(user.ShowWhatsappToPlayers));
         }
 
         if (changed.Count > 0)

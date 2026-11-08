@@ -113,6 +113,7 @@ public partial class AuthService
             FriendRequestsFrom = user.FriendRequestsFrom,
             MessagesFrom = user.MessagesFrom,
             ShowInPlayedWith = user.ShowInPlayedWith,
+            ShowWhatsappToPlayers = user.ShowWhatsappToPlayers,
         };
     }
 

@@ -53,6 +53,11 @@ public class User : BaseEntity
     public string FriendRequestsFrom { get; set; } = nameof(Enums.FriendRequestsFrom.PlayedWith);
     public string MessagesFrom { get; set; } = nameof(Enums.MessagesFrom.Friends);
     public bool ShowInPlayedWith { get; set; } = true;
+    /// <summary>
+    /// Opt-in (revisão independente da onda 1): o WhatsApp da conta aparece como "Chamar o organizador" na área do
+    /// jogador dos torneios que ela criou (ou dos clubes de que é dona). Padrão desligado: é o telefone pessoal.
+    /// </summary>
+    public bool ShowWhatsappToPlayers { get; set; }
 
     // Navigation
     public ICollection<HomeGame> OwnedHomeGames { get; set; } = [];

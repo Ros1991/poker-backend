@@ -54,6 +54,8 @@ public class ProfileResponse
     public string MessagesFrom { get; set; } = "Friends";
     /// <summary>Aparecer no "jogou com você" dos outros (e ver o próprio).</summary>
     public bool ShowInPlayedWith { get; set; } = true;
+    /// <summary>Mostrar o WhatsApp da conta aos jogadores dos torneios que ela organiza ("Chamar o organizador"). Padrão falso.</summary>
+    public bool ShowWhatsappToPlayers { get; set; }
 }
 
 /// <summary><c>GET/POST/DELETE me/logins</c>: formas de entrar na conta.</summary>

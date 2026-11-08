@@ -149,7 +149,10 @@ public class MyTournamentLiveResponse : MyTournamentResponse
     public MyTableResponse? Table { get; set; }
     /// <summary>Bolha: quantos faltam para a premiação e quanto paga cada posição (só com Prizes e torneio acontecendo).</summary>
     public MyBubbleResponse? Bubble { get; set; }
-    /// <summary>WhatsApp (só dígitos, com DDI) de quem responde pelo torneio — quem o criou, senão o dono do clube; null sem WhatsApp cadastrado.</summary>
+    /// <summary>
+    /// WhatsApp (só dígitos, com DDI) de quem responde pelo torneio — quem o criou, senão o dono do clube; null sem
+    /// WhatsApp cadastrado ou sem o opt-in "Mostrar meu WhatsApp aos jogadores" (SPEC-20261108-1636).
+    /// </summary>
     public string? OrganizerWhatsapp { get; set; }
     public string? OrganizerName { get; set; }
     /// <summary>Quem a conta eliminou (nome público), da mais recente para a mais antiga.</summary>

@@ -12,7 +12,7 @@ using PokerTournament.Infrastructure.Data;
 namespace PokerTournament.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261108215819_PerfilDoJogador")]
+    [Migration("20261108222336_PerfilDoJogador")]
     partial class PerfilDoJogador
     {
         /// <inheritdoc />
@@ -3343,6 +3343,12 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(true)
                         .HasColumnName("show_in_played_with");
+
+                    b.Property<bool>("ShowWhatsappToPlayers")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("show_whatsapp_to_players");
 
                     b.Property<string>("State")
                         .HasMaxLength(2)

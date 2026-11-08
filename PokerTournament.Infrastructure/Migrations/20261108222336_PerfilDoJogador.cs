@@ -4,14 +4,7 @@
 
 namespace PokerTournament.Infrastructure.Migrations
 {
-    /// <summary>
-    /// Perfil público do jogador e privacidade (SPEC-20261108-1636): handle único da URL, cidade/UF, bio e os quatro
-    /// controles de privacidade em <c>users</c>. O handle nasce nulo, o backfill em PL/pgSQL dá um a cada conta
-    /// existente (idempotente: só <c>handle IS NULL</c>) com a MESMA regra do <c>HandleGenerator</c> — apelido, senão
-    /// primeiro nome; minúsculas sem acento; tudo que não é letra/número vira hífen; vazio → "jogador"; curto ou
-    /// reservado → "jogador-&lt;base&gt;"; colisão → "-2", "-3"…; conta anonimizada (<c>…@excluida.invalid</c>) →
-    /// "excluida-&lt;12 hex do id&gt;" — e só então a coluna vira NOT NULL com o índice único.
-    /// </summary>
+    /// <inheritdoc />
     public partial class PerfilDoJogador : Migration
     {
         /// <inheritdoc />
@@ -39,13 +32,12 @@ namespace PokerTournament.Infrastructure.Migrations
                 nullable: false,
                 defaultValue: "PlayedWith");
 
-            // Nasce nula: o backfill abaixo preenche e depois a coluna vira NOT NULL
             migrationBuilder.AddColumn<string>(
                 name: "handle",
                 table: "users",
                 type: "character varying(30)",
                 maxLength: 30,
-                nullable: true);
+                nullable: true); // nasce nula: o backfill abaixo preenche e depois a coluna vira NOT NULL
 
             migrationBuilder.AddColumn<string>(
                 name: "messages_from",
@@ -70,14 +62,21 @@ namespace PokerTournament.Infrastructure.Migrations
                 nullable: false,
                 defaultValue: true);
 
+            migrationBuilder.AddColumn<bool>(
+                name: "show_whatsapp_to_players",
+                table: "users",
+                type: "boolean",
+                nullable: false,
+                defaultValue: false);
+
             migrationBuilder.AddColumn<string>(
                 name: "state",
                 table: "users",
                 type: "character varying(2)",
                 maxLength: 2,
                 nullable: true);
-
-            // Backfill: um handle para cada conta sem handle (idempotente), as mais antigas primeiro (ficam com a base limpa)
+            // Backfill: um handle para cada conta sem handle (idempotente), as mais antigas primeiro (ficam com a base limpa).
+            // MESMA regra do HandleGenerator: se mudar lá, mude aqui.
             migrationBuilder.Sql("""
                 DO $$
                 DECLARE
@@ -175,6 +174,10 @@ namespace PokerTournament.Infrastructure.Migrations
 
             migrationBuilder.DropColumn(
                 name: "show_in_played_with",
+                table: "users");
+
+            migrationBuilder.DropColumn(
+                name: "show_whatsapp_to_players",
                 table: "users");
 
             migrationBuilder.DropColumn(

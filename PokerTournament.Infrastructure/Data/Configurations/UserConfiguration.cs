@@ -144,6 +144,11 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .HasColumnName("show_in_played_with")
             .HasDefaultValue(true);
 
+        // Opt-in do WhatsApp do organizador para os jogadores (revisão independente da onda 1): padrão desligado
+        builder.Property(u => u.ShowWhatsappToPlayers)
+            .HasColumnName("show_whatsapp_to_players")
+            .HasDefaultValue(false);
+
         // Unique email
         builder.HasIndex(u => u.Email)
             .IsUnique()
