@@ -40,6 +40,8 @@ public interface IAppDbContext
     DbSet<AiModelPrice> AiModelPrices { get; }
     DbSet<AiFeature> AiFeatures { get; }
     DbSet<AiUsage> AiUsages { get; }
+    // Cache do geocodificador (SPEC-20261108-1634)
+    DbSet<GeocodeCacheEntry> GeocodeCache { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

@@ -41,6 +41,34 @@ public class HomeGameResponse
     public int TournamentCount { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
+    // Endereço e coordenadas (SPEC-20261108-1634). Quem gerencia (canManage) recebe tudo. Para os outros o controller
+    // (HomeGamesController.ApplyAddressVisibility) deixa só cidade, UF e bairro — e rua, número e complemento quando a
+    // visibilidade é Public; latitude, longitude, geocodedAt, geocodePrecision e geocodeStatus nunca saem para eles.
+    /// <summary>CEP só com os 8 dígitos.</summary>
+    public string? PostalCode { get; set; }
+    public string? Street { get; set; }
+    public string? Number { get; set; }
+    public string? Complement { get; set; }
+    /// <summary>Bairro.</summary>
+    public string? District { get; set; }
+    public string? City { get; set; }
+    /// <summary>UF (2 letras).</summary>
+    public string? State { get; set; }
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+    public DateTimeOffset? GeocodedAt { get; set; }
+    /// <summary>"Address" | "Street" | "PostalCode" (nível que achou as coordenadas).</summary>
+    public string? GeocodePrecision { get; set; }
+    /// <summary>
+    /// Só para quem gerencia: "none" (sem endereço geocodificável), "pending" (na fila), "located" (coordenadas gravadas)
+    /// ou "failed" (não achado / desistiu — salvar o endereço de novo tenta outra vez).
+    /// </summary>
+    public string? GeocodeStatus { get; set; }
+    /// <summary>"ApprovedOnly" (padrão) | "Public".</summary>
+    public string AddressVisibility { get; set; } = "ApprovedOnly";
+    /// <summary>Tem CEP ou cidade (o aviso "Complete o endereço do clube" do Início some quando é true).</summary>
+    public bool HasAddress { get; set; }
+
     // Plano EFETIVO do dono (SPEC-20261023-1205) e os recursos que ele libera neste home game:
     // é por eles que o frontend decide cadeado (e não pelo plano de quem está logado).
     // Preenchidos pelo controller via PlanService depois do Map (não passam pelo MappingProfile).

@@ -65,6 +65,8 @@ public class InicioHomeGame
     public string OwnerPlan { get; set; } = string.Empty;
     /// <summary>Torneios do home game, sem cancelados (a mesma contagem do GET HomeGames).</summary>
     public int TournamentCount { get; set; }
+    /// <summary>Tem CEP ou cidade (SPEC-20261108-1634): sem isso, quem gerencia vê o aviso "Complete o endereço do clube".</summary>
+    public bool HasAddress { get; set; }
     /// <summary>Os 5 torneios mais recentes pela data (sem cancelados).</summary>
     public List<InicioTournament> Recent { get; set; } = [];
     /// <summary>Próximo torneio: o primeiro ainda não finalizado (rascunho ou iniciado) pela data.</summary>

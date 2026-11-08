@@ -42,6 +42,8 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<AiModelPrice> AiModelPrices => Set<AiModelPrice>();
     public DbSet<AiFeature> AiFeatures => Set<AiFeature>();
     public DbSet<AiUsage> AiUsages => Set<AiUsage>();
+    // Cache do geocodificador (SPEC-20261108-1634)
+    public DbSet<GeocodeCacheEntry> GeocodeCache => Set<GeocodeCacheEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

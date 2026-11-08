@@ -37,9 +37,21 @@ public class MappingProfile : Profile
             .ForMember(d => d.IsNameDefault, o => o.Ignore())
             .ForMember(d => d.DisplayName, o => o.Ignore())
             // SPEC-20261029-1724: depende de quem está logado (HomeGamesController.ApplyCanManageAsync)
-            .ForMember(d => d.CanManage, o => o.Ignore());
-        // Sem IsPrimary no pedido: criar/editar nunca mexe no principal pelo corpo (SPEC-20261029-1723)
-        CreateMap<CreateHomeGameRequest, HomeGame>();
+            .ForMember(d => d.CanManage, o => o.Ignore())
+            // SPEC-20261108-1634: derivados do endereço, preenchidos pelo controller (ApplyAddress)
+            .ForMember(d => d.GeocodeStatus, o => o.Ignore())
+            .ForMember(d => d.HasAddress, o => o.Ignore());
+        // Sem IsPrimary no pedido: criar/editar nunca mexe no principal pelo corpo (SPEC-20261029-1723).
+        // Endereço (SPEC-20261108-1634) fora do Map: HomeGameAddress.Apply normaliza, valida e zera as coordenadas
+        CreateMap<CreateHomeGameRequest, HomeGame>()
+            .ForMember(d => d.PostalCode, o => o.Ignore())
+            .ForMember(d => d.Street, o => o.Ignore())
+            .ForMember(d => d.Number, o => o.Ignore())
+            .ForMember(d => d.Complement, o => o.Ignore())
+            .ForMember(d => d.District, o => o.Ignore())
+            .ForMember(d => d.City, o => o.Ignore())
+            .ForMember(d => d.State, o => o.Ignore())
+            .ForMember(d => d.AddressVisibility, o => o.Ignore());
 
         // HomeGameMember
         CreateMap<HomeGameMember, HomeGameMemberResponse>()

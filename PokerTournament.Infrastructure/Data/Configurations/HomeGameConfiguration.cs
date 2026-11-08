@@ -60,6 +60,31 @@ public class HomeGameConfiguration : IEntityTypeConfiguration<HomeGame>
             .HasColumnName("is_primary")
             .IsRequired();
 
+        // Endereço estruturado e coordenadas (SPEC-20261108-1634)
+        builder.Property(h => h.PostalCode).HasColumnName("postal_code").HasMaxLength(8);
+        builder.Property(h => h.Street).HasColumnName("street").HasMaxLength(200);
+        builder.Property(h => h.Number).HasColumnName("address_number").HasMaxLength(20);
+        builder.Property(h => h.Complement).HasColumnName("complement").HasMaxLength(100);
+        builder.Property(h => h.District).HasColumnName("district").HasMaxLength(100);
+        builder.Property(h => h.City).HasColumnName("city").HasMaxLength(100);
+        builder.Property(h => h.State).HasColumnName("state").HasMaxLength(2);
+        builder.Property(h => h.Latitude).HasColumnName("latitude");
+        builder.Property(h => h.Longitude).HasColumnName("longitude");
+        builder.Property(h => h.GeocodedAt).HasColumnName("geocoded_at");
+        builder.Property(h => h.GeocodePrecision).HasColumnName("geocode_precision").HasMaxLength(20);
+        builder.Property(h => h.GeocodeFailedAt).HasColumnName("geocode_failed_at");
+        builder.Property(h => h.AddressVisibility)
+            .HasColumnName("address_visibility")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue(nameof(Domain.Enums.AddressVisibility.ApprovedOnly));
+
+        // Busca por raio (GeoDistance.Nearby): o filtro por caixa de latitude/longitude usa este índice; só quem tem
+        // coordenadas entra
+        builder.HasIndex(h => new { h.Latitude, h.Longitude })
+            .HasFilter("latitude IS NOT NULL AND longitude IS NOT NULL")
+            .HasDatabaseName("ix_home_games_lat_lng");
+
         // Nome único POR DONO entre os não excluídos (revisão geral do programa, ondas 7–9): donos diferentes podem
         // repetir o nome; o mesmo dono recebe 400 "Você já tem um home game chamado X." (HomeGamesController, também na
         // corrida). O índice antigo ix_home_games_name era do banco inteiro e o 2º grupo com o mesmo nome levava 500.

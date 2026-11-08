@@ -65,6 +65,7 @@ public class InicioService
                 h.OwnerId,
                 OwnerName = h.Owner.FullName,
                 MemberAdmin = h.Members.Any(m => m.UserId == userId && m.IsAdmin),
+                HasAddress = h.PostalCode != null || h.City != null, // SPEC-20261108-1634
             })
             .ToListAsync(ct);
 
@@ -114,6 +115,7 @@ public class InicioService
                 OwnerName = h.OwnerName,
                 OwnerPlan = ownerPlan,
                 TournamentCount = counts.GetValueOrDefault(h.Id),
+                HasAddress = h.HasAddress,
             };
 
             var tournaments = _db.Tournaments.AsNoTracking().Where(t => t.HomeGameId == h.Id);

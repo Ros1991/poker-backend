@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.Common;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
+using PokerTournament.Application.Geo;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Services;
@@ -27,6 +28,10 @@ namespace PokerTournament.Api.Controllers;
 /// isPrimary, isNameDefault e displayName (null no principal de dono Mesa). Criar outro só na Liga (o principal não conta
 /// no limite; Mesa e Clube → 402); o PUT renomeia o principal (é o "nome do clube" no Clube/Liga); o DELETE recusa o
 /// principal (400).
+/// Endereço (SPEC-20261108-1634): criar/editar e o PUT {id}/address passam por <see cref="HomeGameAddress.Apply"/>
+/// (CEP só dígitos, UF válida, visibilidade) e, se o lugar mudou, zeram as coordenadas e enfileiram a geocodificação
+/// (<see cref="GeocodingQueue"/>, em segundo plano — salvar nunca espera o Nominatim). Nas respostas, quem não gerencia
+/// recebe só cidade/UF/bairro (endereço completo quando Public) e nunca as coordenadas (ApplyAddress).
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -35,14 +40,16 @@ public class HomeGamesController : HomeGameScopedControllerBase
 {
     private readonly IMapper _mapper;
     private readonly PlanService _plans;
+    private readonly GeocodingQueue _geocoding;
 
-    public HomeGamesController(IAppDbContext db, IMapper mapper, PlanService plans) : base(db)
+    public HomeGamesController(IAppDbContext db, IMapper mapper, PlanService plans, GeocodingQueue geocoding) : base(db)
     {
         _mapper = mapper;
         _plans = plans;
+        _geocoding = geocoding;
     }
 
-    // Map + contagens + plano efetivo do dono (ownerPlan/planFeatures) + nome exibido do principal
+    // Map + contagens + plano efetivo do dono (ownerPlan/planFeatures) + nome exibido do principal + endereço visível
     private async Task<HomeGameResponse> ToResponseAsync(HomeGame homeGame, CancellationToken ct)
     {
         var response = _mapper.Map<HomeGameResponse>(homeGame);
@@ -50,7 +57,39 @@ public class HomeGamesController : HomeGameScopedControllerBase
         await ApplyCanManageAsync([response], ct);
         await _plans.ApplyOwnerPlanAsync([response], ct);
         await HomeGamePrimary.ApplyAsync(_db, [response], ct);
+        ApplyAddress(response, homeGame);
         return response;
+    }
+
+    /// <summary>
+    /// Endereço na resposta (SPEC-20261108-1634, decisão 4), DEPOIS do <see cref="ApplyCanManageAsync"/>: quem gerencia
+    /// recebe tudo, com o <c>geocodeStatus</c>; para os outros ficam cidade, UF e bairro — e rua, número e complemento
+    /// quando a visibilidade é Public —, sem CEP, coordenadas nem estado da geocodificação (a distância é calculada no
+    /// servidor pela SPEC-20261108-1639).
+    /// </summary>
+    private static void ApplyAddress(HomeGameResponse response, HomeGame homeGame)
+    {
+        response.HasAddress = HomeGameAddress.HasAddress(homeGame);
+        if (response.CanManage)
+        {
+            response.GeocodeStatus = homeGame.Latitude is not null ? "located"
+                : !HomeGameAddress.IsGeocodable(homeGame) ? "none"
+                : homeGame.GeocodeFailedAt is not null ? "failed"
+                : "pending";
+            return;
+        }
+        response.Latitude = null;
+        response.Longitude = null;
+        response.GeocodedAt = null;
+        response.GeocodePrecision = null;
+        response.GeocodeStatus = null;
+        response.PostalCode = null;
+        if (homeGame.AddressVisibility != nameof(AddressVisibility.Public))
+        {
+            response.Street = null;
+            response.Number = null;
+            response.Complement = null;
+        }
     }
 
     /// <summary>
@@ -123,6 +162,8 @@ public class HomeGamesController : HomeGameScopedControllerBase
         await ApplyCanManageAsync(responses, ct);
         await _plans.ApplyOwnerPlanAsync(responses, ct);
         await HomeGamePrimary.ApplyAsync(_db, responses, ct);
+        for (var i = 0; i < responses.Count; i++)
+            ApplyAddress(responses[i], homeGames[i]);
         return Ok(responses);
     }
 
@@ -158,6 +199,8 @@ public class HomeGamesController : HomeGameScopedControllerBase
         homeGame.IsPrimary = becomesPrimary;
         homeGame.PixKey = PixKeyNormalizer.NormalizeForWrite(request.PixKey, request.PixKeyType);
         homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
+        // Endereço (SPEC-20261108-1634): normalizado e validado; com endereço, geocodifica em segundo plano
+        var hasAddress = HomeGameAddress.Apply(homeGame, request);
 
         // Nome único por dono (trava por dono + checagem; a corrida que escapar cai no índice → mesma mensagem)
         await HomeGameNames.EnsureAvailableAsync(_db, userId, homeGame.Name, exceptId: null, ct);
@@ -165,6 +208,8 @@ public class HomeGamesController : HomeGameScopedControllerBase
         _db.HomeGames.Add(homeGame);
         await SaveNameCheckedAsync(homeGame.Name, ct);
         await tx.CommitAsync(ct);
+        if (hasAddress)
+            _geocoding.Enqueue(homeGame.Id);
 
         return CreatedAtAction(nameof(GetById), new { id = homeGame.Id },
             await ToResponseAsync(homeGame, ct));
@@ -193,9 +238,37 @@ public class HomeGamesController : HomeGameScopedControllerBase
         // Chave nova no formato do DICT; a MESMA chave antiga que não normaliza fica como está (seção escondida no Mesa)
         homeGame.PixKey = PixKeyNormalizer.NormalizeForUpdate(request.PixKey, request.PixKeyType, currentPixKey);
         homeGame.PixBeneficiary = NullIfEmpty(request.PixBeneficiary);
+        // Endereço (SPEC-20261108-1634): o lugar mudou → coordenadas zeradas e geocodificação em segundo plano
+        var addressChanged = HomeGameAddress.Apply(homeGame, request);
         await HomeGameNames.EnsureAvailableAsync(_db, homeGame.OwnerId, homeGame.Name, exceptId: homeGame.Id, ct);
         await SaveNameCheckedAsync(homeGame.Name, ct);
         await tx.CommitAsync(ct);
+        if (addressChanged)
+            _geocoding.Enqueue(homeGame.Id);
+
+        return Ok(await ToResponseAsync(homeGame, ct));
+    }
+
+    /// <summary>
+    /// Só o endereço (SPEC-20261108-1634): a seção "Onde você joga" do Meu perfil (plano Mesa, sem Configurações) salva
+    /// por aqui sem reenviar nome, PIX e valores padrão. Mesma regra do PUT: só o dono (404 inexistente, 403 outro).
+    /// CEP fora de formato, UF ou visibilidade inválidas → 400. O lugar mudou → coordenadas zeradas e geocodificação em
+    /// segundo plano (<c>geocodeStatus: "pending"</c> na resposta).
+    /// </summary>
+    [HttpPut("{id:guid}/address")]
+    public async Task<ActionResult<HomeGameResponse>> UpdateAddress(
+        Guid id, [FromBody] HomeGameAddressRequest request, CancellationToken ct)
+    {
+        var homeGame = await _db.HomeGames.FirstOrDefaultAsync(h => h.Id == id, ct);
+        if (homeGame is null)
+            return HomeGameNotFound();
+        if (homeGame.OwnerId != GetUserId())
+            return Forbid();
+
+        var addressChanged = HomeGameAddress.Apply(homeGame, request);
+        await _db.SaveChangesAsync(ct);
+        if (addressChanged)
+            _geocoding.Enqueue(homeGame.Id);
 
         return Ok(await ToResponseAsync(homeGame, ct));
     }

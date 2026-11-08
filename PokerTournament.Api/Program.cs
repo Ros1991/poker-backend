@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using PokerTournament.Api.Authorization;
 using PokerTournament.Api.Development;
+using PokerTournament.Api.Geo;
 using PokerTournament.Api.Http;
+using PokerTournament.Application.Geo;
 using PokerTournament.Application.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -410,6 +412,20 @@ builder.Services.AddScoped<AiFeatureService>();
 // Cache curto do ranking público (link compartilhado por WhatsApp)
 builder.Services.AddMemoryCache();
 
+// Endereço e geocodificação do home game (SPEC-20261108-1634): CEP pelo ViaCEP no servidor (cache em memória) e
+// coordenadas pelo Nominatim em segundo plano — fila única (GeocodingQueue + GeocodingWorker), 1 pedido por segundo,
+// cache em geocode_cache, 3 tentativas. Seção Geo do appsettings (Geo__ViaCepBaseUrl, Geo__NominatimBaseUrl,
+// Geo__RetryDelaysSeconds…): as suítes apontam as URLs para um servidor falso local.
+builder.Services.Configure<GeoOptions>(builder.Configuration.GetSection(GeoOptions.SectionName));
+builder.Services.AddHttpClient(ViaCepClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddHttpClient(NominatimGeocoder.HttpClientName,
+    c => c.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue<int?>("Geo:GeocodeTimeoutSeconds") ?? 10));
+builder.Services.AddSingleton<ViaCepClient>();
+builder.Services.AddSingleton<IGeocoder, NominatimGeocoder>();
+builder.Services.AddSingleton<GeocodingQueue>();
+builder.Services.AddScoped<HomeGameGeocoder>();
+builder.Services.AddHostedService<GeocodingWorker>();
+
 // Controllers
 // SEC-01: filtro global de isolamento multi-tenant (Security:EnforceTenantIsolation, default true)
 builder.Services.AddControllers(options =>
@@ -564,6 +580,9 @@ if (app.Environment.IsDevelopment())
 // Testes do serviço de IA contra o servidor falso da Anthropic: rotas SÓ em Development e só Admin (SPEC-20261027-1312)
 if (app.Environment.IsDevelopment())
     app.MapDevelopmentAiEndpoints();
+// Busca por raio e fila de geocodificação para as suítes (SPEC-20261108-1634): rotas SÓ em Development
+if (app.Environment.IsDevelopment())
+    app.MapDevelopmentGeoEndpoints();
 // Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)
 app.MapHub<TournamentHub>("/hubs/tournament", o => o.CloseOnAuthenticationExpiration = true);
 
