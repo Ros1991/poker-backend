@@ -251,6 +251,8 @@ public partial class AuthService
                 {
                     FullName = fullName,
                     Nickname = nickname,
+                    // Apelido da URL do perfil público (SPEC-20261108-1636): do apelido, senão do primeiro nome
+                    Handle = await HandleGenerator.NextAvailableAsync(_db, nickname, fullName, ct),
                     Email = email, // sempre em minúsculas no banco
                     Whatsapp = whatsapp,
                     PasswordHash = pending.PasswordHash,

@@ -135,9 +135,12 @@ public partial class AuthService
                 if (existing is null)
                 {
                     // (3) Conta nova: confirmada, sem senha, plano Mesa (default), nome e foto do provedor
+                    var fullName = NameFrom(identity.Name, email);
                     user = new User
                     {
-                        FullName = NameFrom(identity.Name, email),
+                        FullName = fullName,
+                        // Apelido da URL do perfil público (SPEC-20261108-1636): do primeiro nome (o Google não traz apelido)
+                        Handle = await HandleGenerator.NextAvailableAsync(_db, null, fullName, ct),
                         Email = email,
                         PasswordHash = null,
                         PhotoUrl = SafePicture(identity.Picture),

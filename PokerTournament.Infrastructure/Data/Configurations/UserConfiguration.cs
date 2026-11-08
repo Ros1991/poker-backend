@@ -99,6 +99,51 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.NotifySocial).HasColumnName("notify_social").HasDefaultValue(true);
         builder.Property(u => u.LastDigestAt).HasColumnName("last_digest_at");
 
+        // Perfil público e privacidade (SPEC-20261108-1636): handle único (minúsculas; a aplicação normaliza antes de
+        // gravar), cidade/UF/bio e os quatro controles com os padrões conservadores (D12)
+        builder.Property(u => u.Handle)
+            .HasColumnName("handle")
+            .IsRequired()
+            .HasMaxLength(30);
+
+        builder.HasIndex(u => u.Handle)
+            .IsUnique()
+            .HasDatabaseName("ix_users_handle");
+
+        builder.Property(u => u.City)
+            .HasColumnName("city")
+            .HasMaxLength(100);
+
+        builder.Property(u => u.State)
+            .HasColumnName("state")
+            .HasMaxLength(2);
+
+        builder.Property(u => u.Bio)
+            .HasColumnName("bio")
+            .HasMaxLength(200);
+
+        builder.Property(u => u.ProfileVisibility)
+            .HasColumnName("profile_visibility")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue("Everyone");
+
+        builder.Property(u => u.FriendRequestsFrom)
+            .HasColumnName("friend_requests_from")
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasDefaultValue("PlayedWith");
+
+        builder.Property(u => u.MessagesFrom)
+            .HasColumnName("messages_from")
+            .IsRequired()
+            .HasMaxLength(30)
+            .HasDefaultValue("Friends");
+
+        builder.Property(u => u.ShowInPlayedWith)
+            .HasColumnName("show_in_played_with")
+            .HasDefaultValue(true);
+
         // Unique email
         builder.HasIndex(u => u.Email)
             .IsUnique()

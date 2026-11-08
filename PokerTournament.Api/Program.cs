@@ -379,6 +379,11 @@ builder.Services.AddScoped<DealerAccessService>();
 builder.Services.AddScoped<PlayerLinkRequestService>();
 builder.Services.AddScoped<HomeGameDeletionService>(); // SPEC-20261026-1126: excluir home game em cascata
 builder.Services.AddScoped<InicioService>(); // SPEC-20261029-1724: GET me/inicio
+// Perfil público e privacidade (SPEC-20261108-1636): a costura de amizade nasce nula (a SPEC-20261108-1637 troca só
+// esta linha), o perfil (players/{handle}, me/public-profile, me/privacy) e o "jogou com você" (me/played-with)
+builder.Services.AddScoped<IFriendshipLookup, NoFriendshipLookup>();
+builder.Services.AddScoped<PlayerProfileService>();
+builder.Services.AddScoped<PlayedWithService>();
 builder.Services.AddScoped<MePlayerService>(); // SPEC-20261029-1726: área do jogador (me/player, me/tournaments)
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();

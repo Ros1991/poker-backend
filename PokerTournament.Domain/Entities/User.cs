@@ -38,6 +38,22 @@ public class User : BaseEntity
     public bool NotifySocial { get; set; } = true;
     public DateTimeOffset? LastDigestAt { get; set; }
 
+    // Perfil público e privacidade (SPEC-20261108-1636). Handle = apelido único da URL (/jogador/{handle}), minúsculas,
+    // 3–30 caracteres [a-z0-9-], gerado do apelido/nome no cadastro (HandleGenerator) e editável no Meu perfil; a
+    // migration PerfilDoJogador deu um a cada conta existente. Cidade/UF e bio são do perfil (nada de geocodificar aqui:
+    // a SPEC-20261108-1639 geocodifica cidade/UF na busca). Os controles guardam nameof dos enums; padrões conservadores
+    // (D12): perfil para todos, pedido de amizade de quem jogou comigo, mensagem só de amigos, aparecer em "jogou com você".
+    public string Handle { get; set; } = string.Empty;
+    public string? City { get; set; }
+    /// <summary>UF com 2 letras maiúsculas (a mesma lista do endereço do home game).</summary>
+    public string? State { get; set; }
+    /// <summary>Até 200 caracteres.</summary>
+    public string? Bio { get; set; }
+    public string ProfileVisibility { get; set; } = nameof(Enums.ProfileVisibility.Everyone);
+    public string FriendRequestsFrom { get; set; } = nameof(Enums.FriendRequestsFrom.PlayedWith);
+    public string MessagesFrom { get; set; } = nameof(Enums.MessagesFrom.Friends);
+    public bool ShowInPlayedWith { get; set; } = true;
+
     // Navigation
     public ICollection<HomeGame> OwnedHomeGames { get; set; } = [];
     public ICollection<HomeGameMember> HomeGameMemberships { get; set; } = [];

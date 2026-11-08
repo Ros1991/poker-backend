@@ -43,6 +43,9 @@ public static class HomeGameAddress
         "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO",
     };
 
+    /// <summary>UF válida (2 letras maiúsculas da lista). O perfil do jogador (SPEC-20261108-1636) usa a mesma lista.</summary>
+    public static bool IsState(string uf) => States.Contains(uf);
+
     public static AddressSnapshot Snapshot(HomeGame homeGame) =>
         new(homeGame.PostalCode, homeGame.Street, homeGame.Number, homeGame.District, homeGame.City, homeGame.State);
 

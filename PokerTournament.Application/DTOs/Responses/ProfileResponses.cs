@@ -38,6 +38,22 @@ public class ProfileResponse
     /// <summary>Plano pago pedido (Clube|Liga) e quando — o plano em si só muda pelo Admin.</summary>
     public string? RequestedPlan { get; set; }
     public DateTimeOffset? RequestedPlanAt { get; set; }
+
+    // Perfil público e privacidade (SPEC-20261108-1636): PUT me/public-profile e PUT me/privacy devolvem este mesmo DTO
+    /// <summary>Apelido da URL do perfil público (<c>/jogador/{handle}</c>), único, minúsculas.</summary>
+    public string Handle { get; set; } = string.Empty;
+    public string? City { get; set; }
+    /// <summary>UF (2 letras).</summary>
+    public string? State { get; set; }
+    public string? Bio { get; set; }
+    /// <summary>Everyone | Friends | Nobody.</summary>
+    public string ProfileVisibility { get; set; } = "Everyone";
+    /// <summary>Everyone | PlayedWith | Nobody (vale a partir da SPEC-20261108-1637).</summary>
+    public string FriendRequestsFrom { get; set; } = "PlayedWith";
+    /// <summary>Friends | FriendsAndOrganizers (vale a partir da SPEC-20261108-1638).</summary>
+    public string MessagesFrom { get; set; } = "Friends";
+    /// <summary>Aparecer no "jogou com você" dos outros (e ver o próprio).</summary>
+    public bool ShowInPlayedWith { get; set; } = true;
 }
 
 /// <summary><c>GET/POST/DELETE me/logins</c>: formas de entrar na conta.</summary>

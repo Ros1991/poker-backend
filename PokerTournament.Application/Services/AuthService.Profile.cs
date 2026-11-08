@@ -104,6 +104,15 @@ public partial class AuthService
             PhotoFromProvider = IsProviderPhoto(user.PhotoUrl),
             RequestedPlan = user.RequestedPlan,
             RequestedPlanAt = user.RequestedPlanAt,
+            // Perfil público e privacidade (SPEC-20261108-1636, PlayerProfileService grava)
+            Handle = user.Handle,
+            City = user.City,
+            State = user.State,
+            Bio = user.Bio,
+            ProfileVisibility = user.ProfileVisibility,
+            FriendRequestsFrom = user.FriendRequestsFrom,
+            MessagesFrom = user.MessagesFrom,
+            ShowInPlayedWith = user.ShowInPlayedWith,
         };
     }
 
@@ -593,6 +602,11 @@ public partial class AuthService
             user.Nickname = null;
             user.Whatsapp = null;
             user.PhotoUrl = null;
+            // Perfil público (SPEC-20261108-1636): o handle antigo fica livre e cidade/bio somem
+            user.Handle = HandleGenerator.ForDeletedAccount(user.Id);
+            user.City = null;
+            user.State = null;
+            user.Bio = null;
             user.Email = $"conta-excluida-{user.Id:N}@excluida.invalid";
             user.PasswordHash = null;
             user.RefreshToken = null;
