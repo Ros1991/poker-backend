@@ -8,6 +8,7 @@ using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Geo;
 using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Pix;
+using PokerTournament.Application.Plans;
 using PokerTournament.Application.Services;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
@@ -41,12 +42,48 @@ public class HomeGamesController : HomeGameScopedControllerBase
     private readonly IMapper _mapper;
     private readonly PlanService _plans;
     private readonly GeocodingQueue _geocoding;
+    private readonly ILogger<HomeGamesController> _logger;
 
-    public HomeGamesController(IAppDbContext db, IMapper mapper, PlanService plans, GeocodingQueue geocoding) : base(db)
+    public HomeGamesController(IAppDbContext db, IMapper mapper, PlanService plans, GeocodingQueue geocoding, ILogger<HomeGamesController> logger) : base(db)
     {
         _mapper = mapper;
         _plans = plans;
         _geocoding = geocoding;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Aviso "Complete o endereço do clube" no sino (SPEC-20261108-1634, com o tipo AddressIncomplete da
+    /// SPEC-20261108-1635): quando o dono salva o clube sem CEP nem cidade (criar ou editar), no máximo um por semana
+    /// por home game — editar o nome três vezes não repete o aviso. O link leva para onde o endereço se completa:
+    /// Configurações (Clube/Liga) ou "Onde você joga" no Meu perfil (principal de dono Mesa). Falha aqui só vai para o
+    /// log: o home game já foi salvo.
+    /// </summary>
+    private async Task NotifyAddressIncompleteAsync(HomeGame homeGame, NotificationService notifications, CancellationToken ct)
+    {
+        if (HomeGameAddress.HasAddress(homeGame))
+            return;
+        try
+        {
+            var ownerPlan = await _plans.GetUserEffectivePlanAsync(homeGame.OwnerId, ct);
+            var link = homeGame.IsPrimary && ownerPlan == PlanCatalog.Mesa
+                ? "/meu-perfil#onde-voce-joga"
+                : $"/home-games/{homeGame.Id}/configuracoes";
+            var kind = nameof(NotificationKind.AddressIncomplete);
+            var since = DateTimeOffset.UtcNow.AddDays(-7);
+            var recent = await _db.Notifications.AsNoTracking()
+                .AnyAsync(n => n.UserId == homeGame.OwnerId && n.Kind == kind && n.Link == link && n.CreatedAt > since, ct);
+            if (recent)
+                return;
+            await notifications.NotifyAsync(homeGame.OwnerId, NotificationKind.AddressIncomplete,
+                "Complete o endereço do clube",
+                "Com o CEP e o número, o clube entra no mapa e os seus torneios podem aparecer para quem joga por perto.",
+                link, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Não consegui avisar o endereço incompleto do home game {HomeGameId}", homeGame.Id);
+        }
     }
 
     // Map + contagens + plano efetivo do dono (ownerPlan/planFeatures) + nome exibido do principal + endereço visível
@@ -185,7 +222,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
     [HttpPost]
     public async Task<ActionResult<HomeGameResponse>> Create(
-        [FromBody] CreateHomeGameRequest request, CancellationToken ct)
+        [FromBody] CreateHomeGameRequest request, [FromServices] NotificationService notifications, CancellationToken ct)
     {
         var userId = GetUserId();
 
@@ -210,6 +247,8 @@ public class HomeGamesController : HomeGameScopedControllerBase
         await tx.CommitAsync(ct);
         if (hasAddress)
             _geocoding.Enqueue(homeGame.Id);
+        else
+            await NotifyAddressIncompleteAsync(homeGame, notifications, ct);
 
         return CreatedAtAction(nameof(GetById), new { id = homeGame.Id },
             await ToResponseAsync(homeGame, ct));
@@ -217,7 +256,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
 
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<HomeGameResponse>> Update(
-        Guid id, [FromBody] CreateHomeGameRequest request, CancellationToken ct)
+        Guid id, [FromBody] CreateHomeGameRequest request, [FromServices] NotificationService notifications, CancellationToken ct)
     {
         var userId = GetUserId();
 
@@ -245,6 +284,7 @@ public class HomeGamesController : HomeGameScopedControllerBase
         await tx.CommitAsync(ct);
         if (addressChanged)
             _geocoding.Enqueue(homeGame.Id);
+        await NotifyAddressIncompleteAsync(homeGame, notifications, ct);
 
         return Ok(await ToResponseAsync(homeGame, ct));
     }
