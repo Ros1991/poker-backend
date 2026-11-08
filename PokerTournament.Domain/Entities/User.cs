@@ -30,8 +30,16 @@ public class User : BaseEntity
     public DateTimeOffset? RequestedPlanAt { get; set; }
     public string? RefreshToken { get; set; }
     public DateTimeOffset? RefreshTokenExpiresAt { get; set; }
+    // Notificações (SPEC-20261108-1635): canal e categorias. Categoria desligada = a notificação nem é criada; e-mail
+    // desligado = o sino continua, só o resumo por e-mail para. LastDigestAt limita o resumo a um por hora.
+    public bool NotifyByEmail { get; set; } = true;
+    public bool NotifyTournament { get; set; } = true;
+    public bool NotifyRequests { get; set; } = true;
+    public bool NotifySocial { get; set; } = true;
+    public DateTimeOffset? LastDigestAt { get; set; }
 
     // Navigation
     public ICollection<HomeGame> OwnedHomeGames { get; set; } = [];
     public ICollection<HomeGameMember> HomeGameMemberships { get; set; } = [];
+    public ICollection<Notification> Notifications { get; set; } = [];
 }

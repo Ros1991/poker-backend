@@ -22,13 +22,16 @@ public class EntryService
     private readonly IMapper _mapper;
     private readonly IWhatsAppProvider _whatsApp;
     private readonly PlanService _plans;
+    private readonly TournamentNotifier _notifier;
 
-    public EntryService(IAppDbContext db, IMapper mapper, IWhatsAppProvider whatsApp, PlanService plans)
+    public EntryService(
+        IAppDbContext db, IMapper mapper, IWhatsAppProvider whatsApp, PlanService plans, TournamentNotifier notifier)
     {
         _db = db;
         _mapper = mapper;
         _whatsApp = whatsApp;
         _plans = plans;
+        _notifier = notifier;
     }
 
     // Inscrição sem "buy-in pago" (SPEC-20261023-1213, F15): toda inscrição nasce Pendente (TotalPaid 0, Balance =
@@ -1292,6 +1295,10 @@ public class EntryService
                         tournament.RankingPrizeAccrued = accrued;
                         tournament.RankingAccruedAt = DateTimeOffset.UtcNow;
                     }
+
+                    // Resultado para as contas vinculadas (SPEC-20261108-1635): a posição do campeão e do vice já estão
+                    // nas inscrições rastreadas; grava na mesma transação e o tempo real sai depois do commit
+                    await _notifier.StageResultAsync(tournament, ct);
                 }
             }
 
@@ -1316,6 +1323,7 @@ public class EntryService
 
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
+            await _notifier.PushPendingAsync(ct);
 
             // Gerar WhatsApp link
             string? whatsAppLink = null;

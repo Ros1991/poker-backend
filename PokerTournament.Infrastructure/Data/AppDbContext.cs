@@ -42,6 +42,8 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<AiModelPrice> AiModelPrices => Set<AiModelPrice>();
     public DbSet<AiFeature> AiFeatures => Set<AiFeature>();
     public DbSet<AiUsage> AiUsages => Set<AiUsage>();
+    // Notificações da conta (SPEC-20261108-1635)
+    public DbSet<Notification> Notifications => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

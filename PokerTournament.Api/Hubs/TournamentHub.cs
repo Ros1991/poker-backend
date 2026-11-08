@@ -107,8 +107,25 @@ public class TournamentHub : Hub
                 return;
             }
         }
+        // Conta logada (SPEC-20261108-1635): toda conexão com token de usuário (sem o claim kind) entra no grupo
+        // user_{id} ao conectar — sem JoinTournament — e recebe as notificações da conta em tempo real
+        // (NotificationCreated). O token de dealer não entra: não tem conta.
+        else if (TryGetUserId(Context.User, out var userId))
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, NotificationGroups.ForUser(userId));
+        }
 
         await base.OnConnectedAsync();
+    }
+
+    /// <summary>Id da conta de um token de usuário (sem o claim kind). False para token de escopo restrito (dealer).</summary>
+    private static bool TryGetUserId(ClaimsPrincipal? user, out Guid userId)
+    {
+        userId = Guid.Empty;
+        if (user is null || !string.IsNullOrEmpty(user.FindFirst(TokenKinds.ClaimType)?.Value))
+            return false;
+        var sub = user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? user.FindFirst("sub")?.Value;
+        return Guid.TryParse(sub, out userId);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)

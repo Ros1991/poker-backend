@@ -40,6 +40,8 @@ public interface IAppDbContext
     DbSet<AiModelPrice> AiModelPrices { get; }
     DbSet<AiFeature> AiFeatures { get; }
     DbSet<AiUsage> AiUsages { get; }
+    // Notificações da conta (SPEC-20261108-1635)
+    DbSet<Notification> Notifications { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
