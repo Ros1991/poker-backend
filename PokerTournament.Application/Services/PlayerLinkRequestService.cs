@@ -22,7 +22,8 @@ namespace PokerTournament.Application.Services;
 /// Notificações (SPEC-20261108-1635): <c>PlayerLinkRequested</c> para quem gerencia o home game ao criar o pedido;
 /// <c>PlayerLinkAnswered</c> para a conta na aprovação/recusa. Histórico do torneio: <c>PlayerLinked</c>,
 /// <c>PlayerLinkDeclined</c> e <c>PlayerUnlinked</c> (sem desfazer). Soltar o vínculo (<see cref="UnlinkPersonAsync"/>)
-/// volta <c>Person.UserId</c> a null; a área do jogador deixa de mostrar aquele clube.
+/// volta <c>Person.UserId</c> a null (e tira do cadastro o e-mail que tinha sido copiado da conta, para o vínculo não
+/// voltar sozinho pelo e-mail); a área do jogador deixa de mostrar aquele clube.
 /// </para>
 /// Quem chama confere o acesso: convite por quem acessa o torneio (TenantAccessFilter); lista/aprovar/recusar/soltar por
 /// quem GERENCIA o home game (HomeGameAccess.CanManageAsync); claim por qualquer conta logada (token de dealer não chega).
@@ -139,7 +140,9 @@ public class PlayerLinkRequestService
                 .Select(p => new InvitePlayerResponse
                 {
                     PersonId = p.Id,
-                    DisplayName = string.IsNullOrWhiteSpace(p.Nickname) ? p.FullName : p.Nickname!,
+                    // Nome público (apelido, senão "João S."), como na página pública do ranking: a página do convite é
+                    // anônima e não pode expor o nome completo de quem não tem conta (revisão independente da onda 1).
+                    DisplayName = RankingLeaderboardService.PublicName(p.Nickname, p.FullName),
                     PhotoUrl = p.PhotoUrl,
                 })
                 .OrderBy(p => p.DisplayName, StringComparer.CurrentCultureIgnoreCase)
@@ -384,7 +387,8 @@ public class PlayerLinkRequestService
         }
         else
         {
-            suffix = $" · o cadastro já tinha o e-mail {person.Email} (mantido)";
+            // O e-mail fica só no pedido (visível a quem gerencia); a descrição da atividade chega ao dealer por QR.
+            suffix = " · o cadastro já tinha outro e-mail (mantido)";
             request.Message = $"cadastro já tinha outro e-mail ({person.Email}), mantido";
         }
         request.PersonId = person.Id;
@@ -516,8 +520,14 @@ public class PlayerLinkRequestService
         var origin = await _db.PlayerLinkRequests.AsNoTracking()
             .Where(r => r.PersonId == personId && r.UserId == userId && r.Status == Approved)
             .OrderByDescending(r => r.DecidedAt)
-            .Select(r => new { r.TournamentId })
+            .Select(r => new { r.TournamentId, r.EmailCopied })
             .FirstOrDefaultAsync(ct);
+        // Revisão independente da onda 1: o e-mail copiado da conta na aprovação sai junto com o vínculo. Se ficasse,
+        // PlayerLinkService.LinkUserAsync religaria o cadastro sozinho na próxima (re)confirmação ou reativação da conta
+        // e o "soltar" não duraria. Só o e-mail que veio da conta: um e-mail digitado pelo organizador fica.
+        var removeCopiedEmail = origin?.EmailCopied == true
+            && person.User is not null
+            && string.Equals(person.Email, person.User.Email, StringComparison.OrdinalIgnoreCase);
         if (origin is not null)
         {
             var entryId = await _db.TournamentEntries.AsNoTracking()
@@ -530,11 +540,14 @@ public class PlayerLinkRequestService
                 TournamentId = origin.TournamentId,
                 EntryId = entryId,
                 Type = nameof(TournamentActivityType.PlayerUnlinked),
-                Description = $"Vínculo de {EntryService.PlayerDisplayName(person)} com a conta de {who} desfeito",
+                Description = $"Vínculo de {EntryService.PlayerDisplayName(person)} com a conta de {who} desfeito"
+                    + (removeCopiedEmail ? " (e-mail copiado da conta removido do cadastro)" : string.Empty),
                 CreatedBy = actorId,
             });
         }
 
+        if (removeCopiedEmail)
+            person.Email = null;
         person.UserId = null;
         person.User = null;
         await _db.SaveChangesAsync(ct);

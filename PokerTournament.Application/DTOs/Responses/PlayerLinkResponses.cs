@@ -17,7 +17,10 @@ public class TournamentInviteResponse
 public class InvitePlayerResponse
 {
     public Guid PersonId { get; set; }
-    /// <summary>Apelido, senão o nome completo.</summary>
+    /// <summary>
+    /// Nome público (apelido, senão primeiro nome e inicial), a mesma regra da página pública do ranking. Nunca o nome
+    /// completo: a página do convite é anônima.
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
     public string? PhotoUrl { get; set; }
 }

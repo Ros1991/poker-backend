@@ -37,21 +37,18 @@ namespace PokerTournament.Infrastructure.Migrations
                     table.ForeignKey(
                         name: "FK_player_link_requests_persons_person_id",
                         column: x => x.person_id,
-                        principalSchema: "public",
                         principalTable: "persons",
                         principalColumn: "id",
                         onDelete: ReferentialAction.SetNull);
                     table.ForeignKey(
                         name: "FK_player_link_requests_tournaments_tournament_id",
                         column: x => x.tournament_id,
-                        principalSchema: "public",
                         principalTable: "tournaments",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_player_link_requests_users_user_id",
                         column: x => x.user_id,
-                        principalSchema: "public",
                         principalTable: "users",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
@@ -77,7 +74,6 @@ namespace PokerTournament.Infrastructure.Migrations
                     table.ForeignKey(
                         name: "FK_tournament_invites_tournaments_tournament_id",
                         column: x => x.tournament_id,
-                        principalSchema: "public",
                         principalTable: "tournaments",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
