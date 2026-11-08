@@ -65,6 +65,7 @@ public class EntriesController : ControllerBase
     {
         var userId = GetUserId();
         var result = await _entryService.RegisterEntryAsync(tournamentId, request, userId, ct);
+        await NotifyEntriesChangedAsync(tournamentId, result.Id);
         return CreatedAtAction(nameof(GetAll), new { tournamentId }, result);
     }
 
@@ -81,6 +82,7 @@ public class EntriesController : ControllerBase
     {
         var userId = GetUserId();
         var result = await _entryService.RegisterEntriesBulkAsync(tournamentId, request, userId, ct);
+        await NotifyEntriesChangedAsync(tournamentId, null);
         return Ok(result);
     }
 
@@ -92,6 +94,7 @@ public class EntriesController : ControllerBase
     {
         var userId = GetUserId();
         var result = await _entryService.RegisterRebuyAsync(tournamentId, entryId, request, userId, ct);
+        await NotifyEntriesChangedAsync(tournamentId, entryId);
         return Ok(result);
     }
 
@@ -104,6 +107,7 @@ public class EntriesController : ControllerBase
         var userId = GetUserId();
         // SPEC-20261027-1311: { quantity } (1 a 10, até o máximo do torneio); sem corpo = 1 add-on
         var result = await _entryService.RegisterAddonAsync(tournamentId, entryId, request, userId, ct);
+        await NotifyEntriesChangedAsync(tournamentId, entryId);
         return Ok(result);
     }
 
@@ -118,6 +122,7 @@ public class EntriesController : ControllerBase
         // O link do WhatsApp carrega o telefone do jogador: não vai para o dealer por QR
         if (IsScopedToken())
             result.WhatsAppLink = null;
+        await NotifyEntriesChangedAsync(tournamentId, entryId);
         return Ok(result);
     }
 
@@ -144,6 +149,7 @@ public class EntriesController : ControllerBase
     {
         var userId = GetUserId();
         var result = await _entryService.UndoEliminationAsync(tournamentId, entryId, userId, ct);
+        await NotifyEntriesChangedAsync(tournamentId, entryId);
         return Ok(result);
     }
 
@@ -175,6 +181,24 @@ public class EntriesController : ControllerBase
             StripContact(result.Entry.Person);
         await NotifyEntryAsync(tournamentId, result.Entry);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Evento SignalR "EntryUpdate" ao grupo do torneio (SPEC-20261108-1633) depois de inscrição, rebuy, add-on, eliminação
+    /// e desfazer eliminação: o terminal do jogador (e o painel/terminal abertos) recarregam na hora, sem esperar a
+    /// consulta periódica. Só ids — nada de contato nem dinheiro. Melhor esforço: falha vai para o log.
+    /// </summary>
+    private async Task NotifyEntriesChangedAsync(Guid tournamentId, Guid? entryId)
+    {
+        try
+        {
+            await _hub.Clients.Group($"tournament_{tournamentId}")
+                .SendAsync("EntryUpdate", new { tournamentId, entryId }, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Não foi possível avisar o torneio {TournamentId} da mudança de inscrição", tournamentId);
+        }
     }
 
     /// <summary>

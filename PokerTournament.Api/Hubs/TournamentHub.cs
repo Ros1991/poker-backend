@@ -38,6 +38,10 @@ public class TournamentHub : Hub
     // Conta logada (SPEC-20261029-2316): só entra no grupo de torneio a que tem acesso — Admin do sistema, dono ou
     // membro do home game do torneio, a mesma regra do TenantAccessFilter das rotas REST. Antes qualquer conta entrava
     // no grupo de qualquer torneio sabendo o id.
+    // SPEC-20261108-1633 (D2): também entra quem JOGA o torneio — conta com inscrição cujo jogador está vinculado a ela
+    // (Person.UserId), em qualquer status (eliminado inclusive): o terminal do jogador (/meus-torneios/:id) recebe o
+    // relógio, as mesas e as inscrições em tempo real. O grupo é só leitura (o hub não tem método de escrita; as rotas
+    // REST continuam com o TenantAccessFilter), e os eventos não levam contato nem dinheiro de ninguém.
     public async Task JoinTournament(Guid tournamentId)
     {
         var user = Context.User;
@@ -62,8 +66,9 @@ public class TournamentHub : Hub
 
     /// <summary>
     /// Conta logada (token de usuário): a regra do <see cref="HomeGameAccess.CanAccessAsync"/> (Admin do sistema, dono ou
-    /// membro do home game do torneio). O torneio é procurado também entre os excluídos logicamente, como no
-    /// TenantAccessFilter; torneio que nunca existiu recusa (não há grupo útil).
+    /// membro do home game do torneio) OU inscrição vinculada à conta naquele torneio (SPEC-20261108-1633, D2). O torneio
+    /// é procurado também entre os excluídos logicamente, como no TenantAccessFilter; torneio que nunca existiu recusa
+    /// (não há grupo útil).
     /// </summary>
     private async Task<bool> UserCanJoinAsync(ClaimsPrincipal? user, Guid tournamentId)
     {
@@ -79,7 +84,16 @@ public class TournamentHub : Hub
         if (!Guid.TryParse(userIdText, out var userId)) return false;
 
         var isAdmin = user?.FindFirst(ClaimTypes.Role)?.Value == "Admin";
-        return await HomeGameAccess.CanAccessAsync(_db, homeGameId.Value, userId, isAdmin, ct);
+        if (await HomeGameAccess.CanAccessAsync(_db, homeGameId.Value, userId, isAdmin, ct))
+            return true;
+
+        // Inscrito vinculado (D2): o mesmo conjunto que a área do jogador lê (MePlayerService.MyEntries) — jogador removido
+        // do cadastro continua inscrito (IgnoreQueryFilters), torneio excluído não conta
+        return await _db.TournamentEntries
+            .IgnoreQueryFilters()
+            .AnyAsync(e => e.TournamentId == tournamentId
+                && e.Person.UserId == userId
+                && e.Tournament.DeletedAt == null, ct);
     }
 
     public async Task LeaveTournament(Guid tournamentId)

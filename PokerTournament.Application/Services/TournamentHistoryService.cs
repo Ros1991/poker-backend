@@ -494,7 +494,8 @@ public class TournamentHistoryService
         return $"Inscrição excluída: {EntryService.PlayerDisplayName(entry.Person)} ({summary})";
     }
 
-    private static string DescribeTransaction(Transaction t)
+    /// <summary>Texto de uma transação no histórico (também na área do jogador, SPEC-20261108-1633). Exige <c>PixDestination</c> carregado quando houver.</summary>
+    public static string DescribeTransaction(Transaction t)
     {
         switch (t.Type)
         {

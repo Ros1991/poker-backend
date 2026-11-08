@@ -44,15 +44,23 @@ public class RankingLeaderboardService
         _plans = plans;
     }
 
-    public async Task<RankingStandings> ComputeAsync(Ranking ranking, CancellationToken ct = default)
+    public async Task<RankingStandings> ComputeAsync(Ranking ranking, CancellationToken ct = default) =>
+        Compute(ranking, await LoadAsync(ranking, ct));
+
+    /// <summary>
+    /// Etapas (torneios Finished do ranking) e inscrições pontuáveis, carregadas uma vez — a área do jogador
+    /// (SPEC-20261108-1633) calcula a classificação várias vezes sobre os mesmos dados (a posição "depois de cada
+    /// torneio" é a classificação só com as etapas até aquele torneio).
+    /// </summary>
+    public async Task<RankingData> LoadAsync(Ranking ranking, CancellationToken ct = default)
     {
         var stages = await _db.Tournaments
             .Where(t => t.RankingId == ranking.Id && t.Status == nameof(TournamentStatus.Finished))
-            .Select(t => new { t.Id, t.Name, t.Date })
+            .Select(t => new RankingStage(t.Id, t.Name, t.Date))
             .ToListAsync(ct);
 
         if (stages.Count == 0)
-            return new RankingStandings([], 0, []);
+            return new RankingData(stages, []);
 
         var stageIds = stages.Select(s => s.Id).ToList();
 
@@ -64,6 +72,22 @@ public class RankingLeaderboardService
                      && e.FinalPosition != null
                      && ScoredStatuses.Contains(e.Status))
             .ToListAsync(ct);
+
+        return new RankingData(stages, entries);
+    }
+
+    /// <summary>
+    /// Classificação sobre os dados carregados. <paramref name="stageIds"/> restringe às etapas informadas (null = todas):
+    /// o descarte e as faltas valem só sobre elas, como se o ranking parasse ali.
+    /// </summary>
+    public RankingStandings Compute(Ranking ranking, RankingData data, IReadOnlySet<Guid>? stageIds = null)
+    {
+        var stages = stageIds is null ? data.Stages : data.Stages.Where(s => stageIds.Contains(s.Id)).ToList();
+        if (stages.Count == 0)
+            return new RankingStandings([], 0, []);
+
+        var included = stages.Select(s => s.Id).ToHashSet();
+        var entries = stageIds is null ? data.Entries : data.Entries.Where(e => included.Contains(e.TournamentId)).ToList();
 
         var playerCounts = entries
             .GroupBy(e => e.TournamentId)
@@ -170,8 +194,17 @@ public class RankingLeaderboardService
         if (ranking is null)
             return null;
 
-        var standings = await ComputeAsync(ranking, ct);
+        return await BuildPublicAsync(ranking, await ComputeAsync(ranking, ct), ct);
+    }
 
+    /// <summary>
+    /// O DTO público de um ranking (exige <c>HomeGame</c> carregado) a partir de uma classificação já calculada. A área do
+    /// jogador (SPEC-20261108-1633) usa o mesmo DTO: o que o jogador vê dos outros é exatamente o que a página pública
+    /// /r/{slug} mostra (apelido, foto, pontos, etapas), nunca mais que isso.
+    /// </summary>
+    public async Task<PublicRankingResponse> BuildPublicAsync(
+        Ranking ranking, RankingStandings standings, CancellationToken ct = default)
+    {
         // Etapas identificadas pela ordem (1..N), NUNCA pelo Id do torneio: com o Id,
         // o endpoint anônimo do telão (display/tournaments/{id}) devolve nome completo
         // e prêmio em R$ de cada premiado.
@@ -192,7 +225,7 @@ public class RankingLeaderboardService
 
         return new PublicRankingResponse
         {
-            Slug = ranking.Slug!,
+            Slug = ranking.Slug ?? string.Empty,
             Name = ranking.Name,
             Season = ranking.Season,
             HomeGameName = ranking.HomeGame.Name,
@@ -239,9 +272,12 @@ public class RankingLeaderboardService
         };
     }
 
-    // Apelido; sem apelido, primeiro nome + inicial do último sobrenome
-    // ("João Carlos da Silva" → "João S."), nunca o nome completo.
-    private static string PublicName(Person person)
+    /// <summary>
+    /// Nome público de um jogador: apelido; sem apelido, primeiro nome + inicial do último sobrenome
+    /// ("João Carlos da Silva" → "João S."), nunca o nome completo. É o nome que a página pública e a área do jogador
+    /// (SPEC-20261108-1633: ranking, mesa, eliminações) mostram dos OUTROS jogadores.
+    /// </summary>
+    public static string PublicName(Person person)
     {
         if (!string.IsNullOrWhiteSpace(person.Nickname))
             return person.Nickname;
@@ -254,6 +290,10 @@ public class RankingLeaderboardService
             _ => $"{parts[0]} {char.ToUpperInvariant(parts[^1][0])}.",
         };
     }
+
+    /// <summary>A mesma regra de <see cref="PublicName(Person)"/> sobre apelido e nome soltos (projeções do EF).</summary>
+    public static string PublicName(string? nickname, string fullName) =>
+        PublicName(new Person { Nickname = nickname, FullName = fullName });
 
     private static List<PositionPoints>? ParseTable(Ranking ranking)
     {
@@ -312,6 +352,11 @@ public class RankingLeaderboardService
         public decimal Points { get; set; }
     }
 }
+
+/// <summary>Etapas e inscrições pontuáveis de um ranking carregadas uma vez (<see cref="RankingLeaderboardService.LoadAsync"/>).</summary>
+public sealed record RankingData(IReadOnlyList<RankingStage> Stages, IReadOnlyList<TournamentEntry> Entries);
+
+public sealed record RankingStage(Guid Id, string Name, DateTimeOffset Date);
 
 public sealed record RankingStandings(
     IReadOnlyList<RankingStageInfo> Stages,

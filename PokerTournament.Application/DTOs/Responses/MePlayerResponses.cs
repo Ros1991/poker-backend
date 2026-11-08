@@ -28,6 +28,13 @@ public class MePlayerSummaryResponse
     public List<MyTournamentResponse> Recent { get; set; } = [];
     /// <summary>Torneios iniciados (inscrições abertas, em andamento ou rebuys finalizados) em que a conta está inscrita.</summary>
     public List<MyTournamentResponse> Live { get; set; } = [];
+    /// <summary>
+    /// Próximo torneio dos clubes onde a conta joga (SPEC-20261108-1633): o agendado/com inscrições abertas mais próximo,
+    /// de hoje em diante, mesmo que a conta ainda não esteja inscrita. Null sem nenhum.
+    /// </summary>
+    public MyNextTournamentResponse? NextTournament { get; set; }
+    /// <summary>Posição atual da conta em cada ranking de que participa (SPEC-20261108-1633); vazio sem ranking.</summary>
+    public List<MyRankingPositionResponse> Rankings { get; set; } = [];
 }
 
 public class MePlayerHomeGame
@@ -86,6 +93,20 @@ public class MyTournamentResponse
     public decimal? PrizeAmount { get; set; }
     /// <summary>Bounties ganhos (só no torneio com bounty; null no Normal).</summary>
     public decimal? BountyWon { get; set; }
+
+    // Ranking (SPEC-20261108-1633): só em torneio de ranking não excluído
+    public Guid? RankingId { get; set; }
+    public string? RankingName { get; set; }
+    /// <summary>Pontos que a conta fez neste torneio no ranking (null: sem ranking, torneio não terminado ou sem posição).</summary>
+    public decimal? RankingPoints { get; set; }
+    /// <summary>Posição da conta no ranking logo DEPOIS deste torneio (classificação só com as etapas até ele).</summary>
+    public int? RankingPositionAfter { get; set; }
+    /// <summary>Quantos jogadores o ranking tinha depois deste torneio.</summary>
+    public int? RankingPlayersAfter { get; set; }
+    /// <summary>Quem eliminou a conta (nome público: apelido, ou primeiro nome + inicial), se registrado.</summary>
+    public string? EliminatedByName { get; set; }
+    /// <summary>Quantos jogadores a conta eliminou neste torneio (eliminações valendo).</summary>
+    public int EliminationsCount { get; set; }
 }
 
 /// <summary>
@@ -110,6 +131,29 @@ public class MyTournamentLiveResponse : MyTournamentResponse
     /// <summary>Bounty na cabeça da conta agora (só no torneio com bounty).</summary>
     public decimal? BountyHead { get; set; }
     public DateTimeOffset? EliminatedAt { get; set; }
+
+    // ---- SPEC-20261108-1633: terminal do jogador
+    /// <summary>Hora do servidor na resposta (o celular conta o "você está no tempo" a partir dela).</summary>
+    public DateTimeOffset ServerNow { get; set; }
+    /// <summary>Timebanks por jogador no torneio (null = torneio sem timebank).</summary>
+    public int? TimebankCount { get; set; }
+    public int? TimebankSeconds { get; set; }
+    /// <summary>Timebanks que a conta ainda tem (null = torneio sem timebank).</summary>
+    public int? TimebanksRemaining { get; set; }
+    /// <summary>
+    /// "Você está no tempo": até quando vale o timebank que o dealer acabou de registrar para a conta — só quando o último
+    /// uso de timebank do torneio (não desfeito, ainda dentro dos segundos) é de uma inscrição dela. Null fora disso.
+    /// </summary>
+    public DateTimeOffset? OnTheClockUntil { get; set; }
+    /// <summary>A mesa da conta com os lugares (D3: apelido/foto dos demais, lugar vazio; nada de dinheiro). Só com Tables, sentado e jogando.</summary>
+    public MyTableResponse? Table { get; set; }
+    /// <summary>Bolha: quantos faltam para a premiação e quanto paga cada posição (só com Prizes e torneio acontecendo).</summary>
+    public MyBubbleResponse? Bubble { get; set; }
+    /// <summary>WhatsApp (só dígitos, com DDI) de quem responde pelo torneio — quem o criou, senão o dono do clube; null sem WhatsApp cadastrado.</summary>
+    public string? OrganizerWhatsapp { get; set; }
+    public string? OrganizerName { get; set; }
+    /// <summary>Quem a conta eliminou (nome público), da mais recente para a mais antiga.</summary>
+    public List<MyEliminationResponse> Eliminations { get; set; } = [];
 }
 
 public class MyBlindLevel
@@ -120,4 +164,117 @@ public class MyBlindLevel
     public int Ante { get; set; }
     public int DurationMinutes { get; set; }
     public bool IsBreak { get; set; }
+}
+
+/// <summary>A mesa da conta (SPEC-20261108-1633, D3): lugares de 1 a MaxSeats; nos ocupados, o nome público e a foto.</summary>
+public class MyTableResponse
+{
+    public Guid TableId { get; set; }
+    public int TableNumber { get; set; }
+    public string? TableName { get; set; }
+    public int MaxSeats { get; set; }
+    public int? MySeat { get; set; }
+    public List<MyTableSeatResponse> Seats { get; set; } = [];
+}
+
+public class MyTableSeatResponse
+{
+    public int SeatNumber { get; set; }
+    public bool IsMe { get; set; }
+    /// <summary>Null = lugar livre.</summary>
+    public string? DisplayName { get; set; }
+    public string? PhotoUrl { get; set; }
+}
+
+/// <summary>Bolha (SPEC-20261108-1633): os prêmios confirmados ou, sem confirmação, a sugestão que a aba Premiação mostra.</summary>
+public class MyBubbleResponse
+{
+    public bool Confirmed { get; set; }
+    public int PrizeCount { get; set; }
+    public int PlayersRemaining { get; set; }
+    /// <summary>Quantas eliminações faltam para todo mundo que sobrar estar na premiação (0 = já estão).</summary>
+    public int PlacesToMoney { get; set; }
+    public bool InTheMoney { get; set; }
+    public List<MyPrizePositionResponse> Prizes { get; set; } = [];
+}
+
+public class MyPrizePositionResponse
+{
+    public int Position { get; set; }
+    public decimal Amount { get; set; }
+}
+
+public class MyEliminationResponse
+{
+    public string DisplayName { get; set; } = string.Empty;
+    public int? Position { get; set; }
+    public DateTimeOffset At { get; set; }
+}
+
+/// <summary>
+/// GET me/tournaments/{id}/history (SPEC-20261108-1633): os lançamentos das inscrições da conta no torneio — inscrição,
+/// rebuys, add-ons, pagamentos, prêmio pago, a eliminação dela e as que ela fez, mesa/lugar e timebank — do mais recente
+/// para o mais antigo. Nada das inscrições dos outros.
+/// </summary>
+public class MyHistoryItemResponse
+{
+    /// <summary>BuyIn, Rebuy, Addon, Payment, Settlement, PrizePayment, Elimination, Knockout (a que a conta fez) ou o tipo da atividade.</summary>
+    public string Kind { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public decimal? Amount { get; set; }
+    public DateTimeOffset At { get; set; }
+    /// <summary>Desfeito/estornado depois (continua na lista, riscado).</summary>
+    public bool Undone { get; set; }
+}
+
+/// <summary>Próximo torneio dos clubes onde a conta joga (SPEC-20261108-1633).</summary>
+public class MyNextTournamentResponse
+{
+    public Guid TournamentId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateTimeOffset Date { get; set; }
+    /// <summary>Draft ou OpenForRegistration.</summary>
+    public string Status { get; set; } = string.Empty;
+    public Guid HomeGameId { get; set; }
+    public string HomeGameLabel { get; set; } = string.Empty;
+    public decimal BuyInAmount { get; set; }
+    /// <summary>Nome da estrutura de blinds (null = níveis próprios do torneio ou sem estrutura).</summary>
+    public string? StructureName { get; set; }
+    /// <summary>Bairro e cidade do clube ("Bela Vista, São Paulo"); null sem endereço. Nunca a rua.</summary>
+    public string? LocationSummary { get; set; }
+    /// <summary>A conta já está inscrita nele.</summary>
+    public bool Registered { get; set; }
+}
+
+/// <summary>Posição da conta num ranking de que participa (números da temporada, SPEC-20261108-1633).</summary>
+public class MyRankingPositionResponse
+{
+    public Guid RankingId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Season { get; set; }
+    public Guid HomeGameId { get; set; }
+    public string HomeGameLabel { get; set; } = string.Empty;
+    /// <summary>Null enquanto a conta não pontuou em nenhuma etapa terminada.</summary>
+    public int? Position { get; set; }
+    public int PlayerCount { get; set; }
+    public decimal TotalPoints { get; set; }
+    public int TotalStages { get; set; }
+}
+
+/// <summary>
+/// GET me/rankings e me/rankings/{id} (SPEC-20261108-1633): o ranking como a página pública /r/{slug} o mostra (apelido,
+/// foto, pontos e etapas de todo mundo — é público dentro do clube) mais a posição e os pontos da própria conta.
+/// </summary>
+public class MyRankingResponse : PublicRankingResponse
+{
+    public Guid RankingId { get; set; }
+    public Guid HomeGameId { get; set; }
+    public string HomeGameLabel { get; set; } = string.Empty;
+    /// <summary>Os jogadores (cadastros) da conta neste clube — as linhas dela na classificação.</summary>
+    public List<Guid> MyPersonIds { get; set; } = [];
+    /// <summary>Melhor posição da conta na classificação (null sem etapa pontuada).</summary>
+    public int? MyPosition { get; set; }
+    public decimal MyTotalPoints { get; set; }
+    public decimal MyDiscardedPoints { get; set; }
+    public int MyTournamentsPlayed { get; set; }
 }
