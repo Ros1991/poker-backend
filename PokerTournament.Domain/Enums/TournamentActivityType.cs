@@ -15,6 +15,9 @@ public enum TournamentActivityType
     TableDeleted,       // mesa sem ninguém sentado excluída pelo organizador (dealer dela liberado) — SPEC-20261027-2133
     TimebankUsed,       // jogador usou um timebank (−1, com os segundos) — SPEC-20261029-1722; desfaz pelo histórico
     TimebankAdjusted,   // dealer/organizador deu ou tirou um timebank (+1/−1) — SPEC-20261029-1722; desfaz pelo histórico
-    TournamentValuesChanged // valores do torneio (buy-in, rebuy, add-on, staff, ranking, bounty) mudaram com o torneio
-                            // valendo e o devido de cada jogador foi recalculado — SPEC-20261103-1927
+    TournamentValuesChanged, // valores do torneio (buy-in, rebuy, add-on, staff, ranking, bounty) mudaram com o torneio
+                             // valendo e o devido de cada jogador foi recalculado — SPEC-20261103-1927
+    PlayerLinked,           // pedido "sou eu" aprovado: jogador vinculado à conta (e-mail copiado ou mantido) — SPEC-20261108-1632
+    PlayerLinkDeclined,     // pedido "sou eu" recusado pelo organizador — SPEC-20261108-1632
+    PlayerUnlinked          // vínculo jogador ↔ conta desfeito pelo organizador ou pelo Admin — SPEC-20261108-1632
 }

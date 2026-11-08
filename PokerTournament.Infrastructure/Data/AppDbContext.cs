@@ -46,6 +46,9 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<GeocodeCacheEntry> GeocodeCache => Set<GeocodeCacheEntry>();
     // Notificações da conta (SPEC-20261108-1635)
     public DbSet<Notification> Notifications => Set<Notification>();
+    // Convite do torneio e pedidos de vínculo "sou eu" (SPEC-20261108-1632)
+    public DbSet<TournamentInvite> TournamentInvites => Set<TournamentInvite>();
+    public DbSet<PlayerLinkRequest> PlayerLinkRequests => Set<PlayerLinkRequest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
