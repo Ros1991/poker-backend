@@ -15,8 +15,10 @@ namespace PokerTournament.Application.Services;
 /// Perfil público do jogador e privacidade (SPEC-20261108-1636, plano §3, D4 e D12).
 /// <para>
 /// <b>Leitura</b> (<c>GET players/{handle}</c>): a dona vê tudo; terceiro vê conforme <c>ProfileVisibility</c> —
-/// <c>Everyone</c> completo, <c>Friends</c> completo só para amigo (<see cref="IFriendshipLookup"/>; até a
-/// SPEC-20261108-1637 ninguém é amigo), <c>Nobody</c> só foto e apelido (<c>isPrivate</c>). Bloqueado em qualquer
+/// <c>Everyone</c> completo, <c>Friends</c> completo só para amigo (<see cref="IFriendshipLookup"/>, a
+/// <see cref="FriendshipService"/> desde a SPEC-20261108-1637), <c>Nobody</c> só foto e apelido (<c>isPrivate</c>). A
+/// relação de quem vê (pedir/aceitar/amigos), a contagem de amigos e os amigos em comum vêm da mesma SPEC — contagem e
+/// "em comum" só quando quem vê pode ver o perfil completo. Bloqueado em qualquer
 /// sentido → null (404, como handle inexistente: não diz que a conta existe). <c>?preview=stranger</c> aplica a regra
 /// como para um desconhecido (a pré-visualização "como os outros veem" do Meu perfil).
 /// </para>
@@ -63,13 +65,16 @@ public class PlayerProfileService
 
     private readonly IAppDbContext _db;
     private readonly IFriendshipLookup _friends;
+    private readonly FriendshipService _friendships;
     private readonly PlanService _plans;
     private readonly AuthService _auth;
 
-    public PlayerProfileService(IAppDbContext db, IFriendshipLookup friends, PlanService plans, AuthService auth)
+    public PlayerProfileService(
+        IAppDbContext db, IFriendshipLookup friends, FriendshipService friendships, PlanService plans, AuthService auth)
     {
         _db = db;
         _friends = friends;
+        _friendships = friendships;
         _plans = plans;
         _auth = auth;
     }
@@ -131,6 +136,9 @@ public class PlayerProfileService
             IsPreview = isOwner && previewAsStranger,
             IsPrivate = !canSeeFull,
         };
+        // A relação com quem vê (SPEC-20261108-1637) vem até no perfil privado; na pré-visualização não faz sentido
+        if (!previewAsStranger)
+            response.Friendship = await _friendships.GetRelationAsync(viewerId, user.Id, ct);
         if (!canSeeFull)
             return response;
 
@@ -139,9 +147,16 @@ public class PlayerProfileService
         response.Bio = user.Bio;
         response.CommonHomeGames = await CommonHomeGamesAsync(user.Id, viewerId, ct);
         response.Season = await SeasonStatsAsync(user.Id, ct);
-        // Conquistas (SPEC futura) e amigos (SPEC-20261108-1637): placeholders
+        // Amigos (SPEC-20261108-1637): contagem e em comum só para quem vê o perfil completo
+        response.FriendCount = await _friendships.CountFriendsAsync(user.Id, ct);
+        if (!isOwner)
+        {
+            var (mutual, total) = await _friendships.MutualFriendsAsync(viewerId, user.Id, ct);
+            response.MutualFriends = mutual;
+            response.MutualFriendCount = total;
+        }
+        // Conquistas (SPEC futura): placeholder
         response.Achievements = null;
-        response.FriendCount = null;
         return response;
     }
 

@@ -47,6 +47,8 @@ public interface IAppDbContext
     // Convite do torneio e pedidos de vínculo "sou eu" (SPEC-20261108-1632)
     DbSet<TournamentInvite> TournamentInvites { get; }
     DbSet<PlayerLinkRequest> PlayerLinkRequests { get; }
+    // Amigos, pedidos e bloqueios (SPEC-20261108-1637)
+    DbSet<Friendship> Friendships { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

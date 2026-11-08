@@ -21,6 +21,10 @@ public enum NotificationKind
     PlayerLinkAnswered,
     /// <summary>Organizador sem CEP no home game (tipo pronto; a SPEC-20261108-1634 dispara).</summary>
     AddressIncomplete,
+    /// <summary>Alguém pediu a sua amizade (SPEC-20261108-1637; link /amigos?aba=pedidos). Categoria Social.</summary>
+    FriendRequestReceived,
+    /// <summary>Quem você pediu aceitou (SPEC-20261108-1637; link para o perfil dele). Categoria Social. A recusa NÃO notifica.</summary>
+    FriendRequestAccepted,
 }
 
 /// <summary>Categoria de preferência do Meu perfil: cada tipo cai numa delas (NotifyTournament, NotifyRequests, NotifySocial).</summary>

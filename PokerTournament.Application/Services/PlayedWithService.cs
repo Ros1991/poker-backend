@@ -11,7 +11,8 @@ namespace PokerTournament.Application.Services;
 /// mesma, só quando os DOIS lados estão com <c>ShowInPlayedWith</c> ligado — com a própria opção desligada a lista
 /// vem vazia (o Início esconde o bloco). Bloqueados (<see cref="IFriendshipLookup"/>) saem. Por conta: quantos
 /// torneios em comum e a data do mais recente; ordem por vezes e depois por data. Só foto, apelido/primeiro nome,
-/// handle e cidade — nada de nome completo, e-mail ou dinheiro. Sugestão de amizade a partir da SPEC-20261108-1637.
+/// handle e cidade — nada de nome completo, e-mail ou dinheiro. Cada cartão traz a relação com quem vê
+/// (<c>friendshipStatus</c>, <c>canRequestFriendship</c> — SPEC-20261108-1637) para o botão "Adicionar".
 /// </summary>
 public class PlayedWithService
 {
@@ -20,11 +21,13 @@ public class PlayedWithService
 
     private readonly IAppDbContext _db;
     private readonly IFriendshipLookup _friends;
+    private readonly FriendshipService _friendships;
 
-    public PlayedWithService(IAppDbContext db, IFriendshipLookup friends)
+    public PlayedWithService(IAppDbContext db, IFriendshipLookup friends, FriendshipService friendships)
     {
         _db = db;
         _friends = friends;
+        _friendships = friendships;
     }
 
     public async Task<List<PlayedWithResponse>> ListAsync(Guid userId, int limit, CancellationToken ct = default)
@@ -76,6 +79,9 @@ public class PlayedWithService
             .Select(u => new { u.Id, u.Handle, u.Nickname, u.FullName, u.PhotoUrl, u.City, u.State })
             .ToDictionaryAsync(u => u.Id, ct);
 
+        // A relação com quem vê (SPEC-20261108-1637), de uma vez para todos os candidatos
+        var relations = await _friendships.GetRelationsAsync(userId, ids, ct);
+
         var result = new List<PlayedWithResponse>(take);
         foreach (var r in ranked)
         {
@@ -85,6 +91,7 @@ public class PlayedWithService
                 continue;
             if (await _friends.IsBlockedAsync(userId, r.UserId, ct))
                 continue;
+            relations.TryGetValue(r.UserId, out var relation);
             result.Add(new PlayedWithResponse
             {
                 Id = u.Id,
@@ -95,6 +102,9 @@ public class PlayedWithService
                 State = u.State,
                 TimesPlayed = r.Times,
                 LastPlayedAt = r.Last,
+                FriendshipStatus = relation?.Status ?? FriendshipState.None,
+                FriendshipId = relation?.FriendshipId,
+                CanRequestFriendship = relation?.CanRequest ?? false,
             });
         }
         return result;

@@ -2,9 +2,10 @@ namespace PokerTournament.Application.Interfaces;
 
 /// <summary>
 /// Costura única entre o perfil público / "jogou com você" (SPEC-20261108-1636) e a amizade (SPEC-20261108-1637).
-/// Aqui nasce com a implementação nula (<see cref="Services.NoFriendshipLookup"/>: ninguém é amigo, ninguém está
-/// bloqueado); a SPEC de amigos só troca o registro no <c>Program.cs</c>. Quem lê a regra: <c>PlayerProfileService</c>
-/// (visibilidade <c>Friends</c> e o 404 do bloqueio) e <c>PlayedWithService</c> (bloqueado não aparece).
+/// Nasceu com uma implementação nula; desde a SPEC-20261108-1637 é o <see cref="Services.FriendshipService"/>
+/// (registrado no <c>Program.cs</c>). Quem lê a regra: <c>PlayerProfileService</c> (visibilidade <c>Friends</c> e o 404
+/// do bloqueio), <c>PlayedWithService</c> (bloqueado não aparece) e, na SPEC-20261108-1638, as mensagens
+/// (<see cref="IsBlockedAsync"/> é o ÚNICO ponto a consultar: bloqueio encerra e esconde a conversa).
 /// </summary>
 public interface IFriendshipLookup
 {

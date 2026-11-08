@@ -1,6 +1,6 @@
 namespace PokerTournament.Application.DTOs.Responses;
 
-// Perfil público do jogador e "jogou com você" (SPEC-20261108-1636). REGRA: nada de nome completo, e-mail, WhatsApp,
+// Perfil público do jogador e "jogou com você" (SPEC-20261108-1636; amizade na SPEC-20261108-1637). REGRA: nada de nome completo, e-mail, WhatsApp,
 // documento ou dinheiro (prêmio, buy-in, saldo) de terceiros — nem como campo nulo. Quem acrescentar campo aqui confere
 // a suíte api-1636.js (ela lista as chaves do JSON).
 
@@ -33,8 +33,18 @@ public class PlayerProfileResponse
     public PlayerSeasonStats? Season { get; set; }
     /// <summary>Conquistas: null até a SPEC de conquistas (a tela mostra "em breve").</summary>
     public List<string>? Achievements { get; set; }
-    /// <summary>Amigos: null até a SPEC-20261108-1637 (a tela esconde a contagem).</summary>
+    /// <summary>Quantos amigos a conta tem (SPEC-20261108-1637); null no perfil privado (respeita a visibilidade).</summary>
     public int? FriendCount { get; set; }
+    /// <summary>Amigos em comum com quem vê (até 6, SPEC-20261108-1637); vazio no perfil privado e no próprio perfil.</summary>
+    public List<FriendUserResponse> MutualFriends { get; set; } = [];
+    /// <summary>Total de amigos em comum (a lista acima pode estar cortada); 0 no perfil privado.</summary>
+    public int MutualFriendCount { get; set; }
+    /// <summary>
+    /// A relação de quem vê com o perfil (SPEC-20261108-1637): Self | None | RequestSent | RequestReceived | Friends, o
+    /// id do pedido pendente e se pode pedir agora. Vem também no perfil privado (a amizade é o caminho para ver o perfil
+    /// "só amigos"). Null só na pré-visualização.
+    /// </summary>
+    public ProfileFriendshipResponse? Friendship { get; set; }
 }
 
 public class PlayerProfileHomeGame
@@ -76,4 +86,10 @@ public class PlayedWithResponse
     public int TimesPlayed { get; set; }
     /// <summary>Data do torneio em comum mais recente.</summary>
     public DateTimeOffset LastPlayedAt { get; set; }
+    /// <summary>Relação com quem vê (SPEC-20261108-1637): None | RequestSent | RequestReceived | Friends.</summary>
+    public string FriendshipStatus { get; set; } = FriendshipState.None;
+    /// <summary>Id do pedido pendente (aceitar/cancelar); null fora de RequestSent/RequestReceived.</summary>
+    public Guid? FriendshipId { get; set; }
+    /// <summary>Quem vê pode pedir amizade agora (botão "Adicionar" no cartão).</summary>
+    public bool CanRequestFriendship { get; set; }
 }

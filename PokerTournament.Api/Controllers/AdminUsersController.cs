@@ -20,11 +20,13 @@ namespace PokerTournament.Api.Controllers;
 public class AdminUsersController : ControllerBase
 {
     private readonly AdminUserService _admin;
+    private readonly FriendshipService _friends;
     private readonly IMapper _mapper;
 
-    public AdminUsersController(AdminUserService admin, IMapper mapper)
+    public AdminUsersController(AdminUserService admin, FriendshipService friends, IMapper mapper)
     {
         _admin = admin;
+        _friends = friends;
         _mapper = mapper;
     }
 
@@ -52,6 +54,17 @@ public class AdminUsersController : ControllerBase
     {
         var detail = await _admin.GetDetailAsync(id, ct);
         return detail is null ? UserNotFound() : Ok(detail);
+    }
+
+    /// <summary>
+    /// Bloqueios da conta para suporte (SPEC-20261108-1637): os que ela fez (<c>made</c>) e os que sofreu
+    /// (<c>received</c>), com a outra conta e a data. Só leitura: desbloquear é da própria pessoa.
+    /// </summary>
+    [HttpGet("{id:guid}/blocks")]
+    public async Task<ActionResult<AdminUserBlocksResponse>> GetBlocks(Guid id, CancellationToken ct)
+    {
+        var detail = await _admin.GetDetailAsync(id, ct);
+        return detail is null ? UserNotFound() : Ok(await _friends.AdminBlocksAsync(id, ct));
     }
 
     /// <summary>Editar dados e papel (sem senha). E-mail de outra conta → 409; Admin se rebaixando ou último Admin → 400.</summary>

@@ -49,6 +49,8 @@ public class AppDbContext : DbContext, IAppDbContext
     // Convite do torneio e pedidos de vínculo "sou eu" (SPEC-20261108-1632)
     public DbSet<TournamentInvite> TournamentInvites => Set<TournamentInvite>();
     public DbSet<PlayerLinkRequest> PlayerLinkRequests => Set<PlayerLinkRequest>();
+    // Amigos, pedidos e bloqueios (SPEC-20261108-1637)
+    public DbSet<Friendship> Friendships => Set<Friendship>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
