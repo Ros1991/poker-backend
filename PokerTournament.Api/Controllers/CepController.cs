@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using PokerTournament.Application.DTOs.Responses;
 using PokerTournament.Application.Geo;
 
@@ -24,9 +25,12 @@ public class CepController : ControllerBase
 
     /// <summary>
     /// 200 com rua/bairro/cidade/UF; 400 CEP fora de formato (não são 8 dígitos); 404 CEP não encontrado (a tela libera
-    /// preencher à mão); 503 ViaCEP fora do ar (idem).
+    /// preencher à mão); 503 ViaCEP fora do ar (idem). Limite de 10/min por conta (política "user-lookup"): sem ele,
+    /// qualquer conta usaria a API como proxy do ViaCEP e poderia fazer o IP do servidor ser bloqueado por ele
+    /// (revisão independente da onda 1).
     /// </summary>
     [HttpGet("{cep}")]
+    [EnableRateLimiting("user-lookup")]
     [ProducesResponseType(typeof(CepResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
