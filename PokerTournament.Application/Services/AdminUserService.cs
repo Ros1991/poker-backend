@@ -259,6 +259,23 @@ public class AdminUserService
             })
             .ToListAsync(ct);
 
+        // Jogadores vinculados à conta (SPEC-20261108-1632): pelo e-mail, por "sou eu" ou por "vincular membro"
+        var linkedPlayers = await _db.Persons.AsNoTracking()
+            .Where(p => p.UserId == id)
+            .OrderBy(p => p.HomeGame.Name)
+            .ThenBy(p => p.FullName)
+            .Select(p => new AdminUserLinkedPlayer
+            {
+                PersonId = p.Id,
+                FullName = p.FullName,
+                Nickname = p.Nickname,
+                Email = p.Email,
+                PhotoUrl = p.PhotoUrl,
+                HomeGameId = p.HomeGameId,
+                HomeGameName = p.HomeGame.Name,
+            })
+            .ToListAsync(ct);
+
         // O filtro global tira os home games excluídos (o membro de um home game excluído some daqui)
         var memberships = await _db.HomeGameMembers.AsNoTracking()
             .Where(m => m.UserId == id)
@@ -340,6 +357,7 @@ public class AdminUserService
                 .ToList(),
             OwnedHomeGames = owned,
             Memberships = memberships,
+            LinkedPlayers = linkedPlayers,
             Plan = new UserPlanResponse
             {
                 Plan = PlanCatalog.Normalize(user.Plan) ?? PlanCatalog.Mesa,

@@ -44,6 +44,9 @@ public interface IAppDbContext
     DbSet<GeocodeCacheEntry> GeocodeCache { get; }
     // Notificações da conta (SPEC-20261108-1635)
     DbSet<Notification> Notifications { get; }
+    // Convite do torneio e pedidos de vínculo "sou eu" (SPEC-20261108-1632)
+    DbSet<TournamentInvite> TournamentInvites { get; }
+    DbSet<PlayerLinkRequest> PlayerLinkRequests { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

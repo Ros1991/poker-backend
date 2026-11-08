@@ -375,6 +375,8 @@ builder.Services.AddScoped<PasswordResetService>();
 // Administração geral (SPEC-20261023-1206): api/v1/admin/users
 builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<DealerAccessService>();
+// Vínculo pelo jogador (SPEC-20261108-1632): convite do torneio (QR/link), pedidos "sou eu" e aprovação do organizador
+builder.Services.AddScoped<PlayerLinkRequestService>();
 builder.Services.AddScoped<HomeGameDeletionService>(); // SPEC-20261026-1126: excluir home game em cascata
 builder.Services.AddScoped<InicioService>(); // SPEC-20261029-1724: GET me/inicio
 builder.Services.AddScoped<MePlayerService>(); // SPEC-20261029-1726: área do jogador (me/player, me/tournaments)

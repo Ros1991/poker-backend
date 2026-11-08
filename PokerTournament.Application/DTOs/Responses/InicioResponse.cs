@@ -22,6 +22,11 @@ public class InicioResponse
     /// pessoas em que ela é membro (por nome). Só os ativos, como o GET HomeGames.
     /// </summary>
     public List<InicioHomeGame> HomeGames { get; set; } = [];
+    /// <summary>
+    /// Pedidos de vínculo "sou eu" aguardando (SPEC-20261108-1632) nos torneios dos home games que a conta gerencia, o
+    /// mais antigo primeiro — aprova/recusa dali mesmo.
+    /// </summary>
+    public List<InicioLinkRequest> LinkRequests { get; set; } = [];
 }
 
 public class InicioTournament

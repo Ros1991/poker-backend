@@ -82,6 +82,8 @@ public class AdminUserDetailResponse
     // Home games
     public List<AdminUserOwnedHomeGame> OwnedHomeGames { get; set; } = [];
     public List<AdminUserMembership> Memberships { get; set; } = [];
+    /// <summary>Jogadores (em qualquer home game) vinculados a esta conta (SPEC-20261108-1632); o Admin solta pelo DELETE Persons/{id}/user-link.</summary>
+    public List<AdminUserLinkedPlayer> LinkedPlayers { get; set; } = [];
 
     // Plano
     public UserPlanResponse Plan { get; set; } = new();

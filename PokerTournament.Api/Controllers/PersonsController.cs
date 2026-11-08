@@ -30,11 +30,33 @@ public class PersonsController : HomeGameScopedControllerBase
 {
     private readonly IMapper _mapper;
     private readonly PhotoService _photos;
+    private readonly PlayerLinkRequestService _links;
 
-    public PersonsController(IAppDbContext db, IMapper mapper, PhotoService photos) : base(db)
+    public PersonsController(IAppDbContext db, IMapper mapper, PhotoService photos, PlayerLinkRequestService links) : base(db)
     {
         _mapper = mapper;
         _photos = photos;
+        _links = links;
+    }
+
+    /// <summary>
+    /// Solta o vínculo do jogador com a conta (SPEC-20261108-1632): <c>Person.UserId</c> volta a null, a área do jogador
+    /// deixa de mostrar este clube e a foto volta a ser a do cadastro. Só quem GERENCIA o home game (dono, membro
+    /// administrador ou Admin do sistema — a ficha da conta na Administração usa esta mesma rota). Histórico do torneio
+    /// de origem do vínculo registra <c>PlayerUnlinked</c>. Devolve a pessoa já sem a conta.
+    /// </summary>
+    [HttpDelete("{id:guid}/user-link")]
+    public async Task<ActionResult<PersonResponse>> UnlinkUser(Guid id, CancellationToken ct)
+    {
+        var homeGameId = await _db.Persons.Where(p => p.Id == id).Select(p => (Guid?)p.HomeGameId).FirstOrDefaultAsync(ct);
+        if (homeGameId is null)
+            return NotFound(new { message = "Jogador não encontrado." });
+        if (!await CanManageAsync(homeGameId.Value, ct))
+            return Forbidden();
+        var person = await _links.UnlinkPersonAsync(id, GetUserId(), ct);
+        if (person is null)
+            return NotFound(new { message = "Jogador não encontrado." });
+        return Ok(_mapper.Map<PersonResponse>(person));
     }
 
     /// <summary>
