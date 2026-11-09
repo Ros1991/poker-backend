@@ -56,6 +56,9 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<ConversationMember> ConversationMembers => Set<ConversationMember>();
     public DbSet<ChatMessage> Messages => Set<ChatMessage>();
     public DbSet<Report> Reports => Set<Report>();
+    // Torneios públicos: pedidos de vaga/reservas e o lembrete do dia (SPEC-20261108-1639)
+    public DbSet<TournamentJoinRequest> TournamentJoinRequests => Set<TournamentJoinRequest>();
+    public DbSet<TournamentReminder> TournamentReminders => Set<TournamentReminder>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

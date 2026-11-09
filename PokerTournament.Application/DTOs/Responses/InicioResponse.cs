@@ -27,6 +27,11 @@ public class InicioResponse
     /// mais antigo primeiro — aprova/recusa dali mesmo.
     /// </summary>
     public List<InicioLinkRequest> LinkRequests { get; set; } = [];
+    /// <summary>
+    /// Pedidos de vaga aguardando (SPEC-20261108-1639) nos torneios públicos dos home games que a conta gerencia, o mais
+    /// antigo primeiro — aprova/recusa dali mesmo.
+    /// </summary>
+    public List<InicioJoinRequest> JoinRequests { get; set; } = [];
 }
 
 public class InicioTournament

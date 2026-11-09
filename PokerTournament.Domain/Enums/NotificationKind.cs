@@ -31,6 +31,18 @@ public enum NotificationKind
     /// é atualizada em vez de nascer outra).
     /// </summary>
     MessageReceived,
+    /// <summary>Organizador: alguém pediu vaga num torneio público do home game que ele gerencia (SPEC-20261108-1639; link para o painel). Categoria Requests.</summary>
+    JoinRequestReceived,
+    /// <summary>Interessado: a vaga foi reservada (SPEC-20261108-1639; link para Meus torneios). Categoria Torneio.</summary>
+    JoinRequestApproved,
+    /// <summary>Interessado: o pedido foi recusado, ou a reserva removida pelo organizador (SPEC-20261108-1639). Categoria Torneio.</summary>
+    JoinRequestDeclined,
+    /// <summary>Interessado: as vagas acabaram e o pedido entrou na lista de espera (SPEC-20261108-1639). Categoria Torneio.</summary>
+    JoinRequestWaitlisted,
+    /// <summary>Interessado: saiu da espera e a vaga ficou reservada (SPEC-20261108-1639). Categoria Torneio.</summary>
+    JoinRequestPromoted,
+    /// <summary>Lembrete no dia do torneio, para reservas aprovadas e inscritos vinculados — uma vez por conta e torneio (SPEC-20261108-1639). Categoria Torneio.</summary>
+    TournamentReminder,
 }
 
 /// <summary>Categoria de preferência do Meu perfil: cada tipo cai numa delas (NotifyTournament, NotifyRequests, NotifySocial).</summary>

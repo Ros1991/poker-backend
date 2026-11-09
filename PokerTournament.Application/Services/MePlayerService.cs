@@ -79,15 +79,18 @@ public class MePlayerService
     private readonly TimerService _timer;
     private readonly RankingLeaderboardService _leaderboard;
     private readonly PrizeService _prizes;
+    private readonly JoinRequestService _joins;
 
     public MePlayerService(
-        IAppDbContext db, PlanService plans, TimerService timer, RankingLeaderboardService leaderboard, PrizeService prizes)
+        IAppDbContext db, PlanService plans, TimerService timer, RankingLeaderboardService leaderboard, PrizeService prizes,
+        JoinRequestService joins)
     {
         _db = db;
         _plans = plans;
         _timer = timer;
         _leaderboard = leaderboard;
         _prizes = prizes;
+        _joins = joins;
     }
 
     // ------------------------------------------------------------------ consultas públicas
@@ -121,6 +124,9 @@ public class MePlayerService
             .GroupBy(t => t.HomeGameId)
             .Select(g => new MePlayerHomeGame { Id = g.Key, Label = g.First().HomeGameLabel, TournamentCount = g.Count() })
             .ToList();
+
+        // "Próximos" (SPEC-20261108-1639): pedidos de vaga abertos e inscrições futuras — também para quem ainda não jogou
+        summary.Upcoming = await _joins.UpcomingAsync(userId, ct);
 
         if (tournaments.Count > 0)
         {

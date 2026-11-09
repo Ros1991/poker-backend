@@ -391,11 +391,16 @@ builder.Services.AddScoped<IFriendshipLookup>(sp => sp.GetRequiredService<Friend
 // "jogou com você" (me/played-with)
 builder.Services.AddScoped<PlayerProfileService>();
 builder.Services.AddScoped<PlayedWithService>();
-// Mensagens 1 para 1 e denúncias (SPEC-20261108-1638). A costura ITournamentRequestLookup (conversa organizador ↔
-// interessado pelo pedido de vaga) nasce NULA: a SPEC-20261108-1639 troca pela implementação real
+// Mensagens 1 para 1 e denúncias (SPEC-20261108-1638)
 builder.Services.AddScoped<ChatService>();
 builder.Services.AddScoped<ReportService>();
-builder.Services.AddSingleton<ITournamentRequestLookup, NullTournamentRequestLookup>();
+// Torneios públicos, "perto de mim" e pedido de vaga (SPEC-20261108-1639). O JoinRequestService É a costura
+// ITournamentRequestLookup que a SPEC-20261108-1638 deixou nula: a conversa organizador ↔ interessado abre pelo pedido aberto
+builder.Services.AddScoped<JoinRequestService>();
+builder.Services.AddScoped<ITournamentRequestLookup>(sp => sp.GetRequiredService<JoinRequestService>());
+builder.Services.AddScoped<PublicTournamentService>();
+builder.Services.AddScoped<NearbyTournamentsService>();
+builder.Services.AddScoped<TournamentReminderService>(); // lembrete do dia, no tick do NotificationDigestJob
 builder.Services.AddScoped<MePlayerService>(); // SPEC-20261029-1726: área do jogador (me/player, me/tournaments)
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();

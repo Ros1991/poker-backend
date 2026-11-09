@@ -350,6 +350,25 @@ public class EntryService
             .ToList();
     }
 
+    /// <summary>
+    /// Reservas de vaga (SPEC-20261108-1639): a inscrição de um jogador com reserva aprovada ainda na fila grava
+    /// <c>EntryId</c> na reserva (ela sai da fila "Reservas"; desfazer a inscrição a devolve pela FK SetNull). Rastreado,
+    /// sem salvar — vai no SaveChanges de quem chama.
+    /// </summary>
+    private async Task CloseReservationsAsync(Guid tournamentId, IReadOnlyCollection<TournamentEntry> entries, CancellationToken ct)
+    {
+        if (entries.Count == 0)
+            return;
+        var personIds = entries.Select(e => e.PersonId).ToList();
+        var approved = nameof(JoinRequestStatus.Approved);
+        var reservations = await _db.TournamentJoinRequests
+            .Where(r => r.TournamentId == tournamentId && r.PersonId != null && personIds.Contains(r.PersonId.Value)
+                && r.Status == approved && r.EntryId == null)
+            .ToListAsync(ct);
+        foreach (var reservation in reservations)
+            reservation.EntryId = entries.First(e => e.PersonId == reservation.PersonId).Id;
+    }
+
     /// <summary>Nome exibido no terminal/histórico: apelido, senão o nome completo.</summary>
     public static string PlayerDisplayName(Person? person) =>
         person is null
@@ -470,6 +489,10 @@ public class EntryService
         tournament.TotalBounties += bounty;
         // Nunca volta a false: o rascunho que já teve inscrição não devolve a vaga do limite semanal ao ser excluído
         tournament.HadEntries = true;
+
+        // Reserva de vaga (SPEC-20261108-1639): inscrever o jogador reservado fecha a reserva (sai da fila "Reservas");
+        // desfazer a inscrição a devolve (FK SetNull). Vale para qualquer caminho de inscrição (painel, terminal, lote)
+        await CloseReservationsAsync(tournamentId, [entry], ct);
 
         // Registrar transação de buy-in
         _db.Transactions.Add(new Transaction
@@ -614,6 +637,10 @@ public class EntryService
         await BumpAutoCostAsync(tournamentId, "Staff", staffPart * toCreate.Count, ct);
         await BumpAutoCostAsync(tournamentId, "RankingAccumulated", rankingFixedPart * toCreate.Count, ct);
         await RecalcAutoCostsAndTotals(tournament, ct);
+
+        // Reservas de vaga (SPEC-20261108-1639): o "Inscrever" da fila Reservas passa por aqui — a inscrição do jogador
+        // reservado fecha a reserva (o mesmo que a inscrição individual faz)
+        await CloseReservationsAsync(tournamentId, createdEntries, ct);
 
         await _db.SaveChangesAsync(ct);
 

@@ -35,6 +35,11 @@ public class MePlayerSummaryResponse
     public MyNextTournamentResponse? NextTournament { get; set; }
     /// <summary>Posição atual da conta em cada ranking de que participa (SPEC-20261108-1633); vazio sem ranking.</summary>
     public List<MyRankingPositionResponse> Rankings { get; set; } = [];
+    /// <summary>
+    /// "Próximos" (SPEC-20261108-1639): torneios futuros com pedido de vaga aberto (aguardando, reservado, na espera) ou
+    /// inscrição vinculada ainda não começada, por data. Endereço completo e "Como chegar" só com reserva/inscrição.
+    /// </summary>
+    public List<MyUpcomingTournamentResponse> Upcoming { get; set; } = [];
 }
 
 public class MePlayerHomeGame

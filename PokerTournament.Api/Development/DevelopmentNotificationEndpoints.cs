@@ -47,5 +47,13 @@ public static class DevelopmentNotificationEndpoints
             var cleaned = await digest.CleanupAsync(now, ct);
             return Results.Ok(new { now, sent = result.Sent, failed = result.Failed, cleaned, emails = result.Emails });
         });
+
+        // Lembrete do dia do torneio (SPEC-20261108-1639) com relógio falso: o job só roda a cada 10 min e a partir das 8 h
+        group.MapPost("/reminders", async (DigestRequest? request, TournamentReminderService reminders, CancellationToken ct) =>
+        {
+            var now = request?.Now ?? DateTimeOffset.UtcNow;
+            var sent = await reminders.RunAsync(now, ct);
+            return Results.Ok(new { now, sent });
+        });
     }
 }

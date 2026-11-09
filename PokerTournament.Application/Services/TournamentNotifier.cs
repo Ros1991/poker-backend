@@ -34,7 +34,10 @@ public class TournamentNotifier
 
     public static string MyTournamentLink(Guid tournamentId) => $"/meus-torneios/{tournamentId}";
 
-    /// <summary>O torneio passou a Em andamento (de rascunho ou inscrições abertas): avisa cada conta vinculada.</summary>
+    /// <summary>
+    /// O torneio passou a Em andamento (de rascunho ou inscrições abertas): avisa cada conta vinculada — e, desde a
+    /// SPEC-20261108-1639, também quem tem reserva aprovada ainda não inscrita (chegou e vai entrar).
+    /// </summary>
     public async Task StageStartedAsync(Tournament tournament, CancellationToken ct = default)
     {
         var userIds = await _db.TournamentEntries
@@ -42,8 +45,14 @@ public class TournamentNotifier
             .Select(e => e.Person.UserId!.Value)
             .Distinct()
             .ToListAsync(ct);
+        var approved = nameof(JoinRequestStatus.Approved);
+        var reserved = await _db.TournamentJoinRequests
+            .Where(r => r.TournamentId == tournament.Id && r.Status == approved && r.EntryId == null)
+            .Select(r => r.UserId)
+            .Distinct()
+            .ToListAsync(ct);
         await _notifications.StageAsync(
-            userIds,
+            userIds.Concat(reserved),
             NotificationKind.TournamentStarted,
             $"{tournament.Name} começou",
             "Boa sorte! Acompanhe o relógio e a sua ficha ao vivo.",

@@ -48,6 +48,16 @@ public sealed class NotificationDigestJob : BackgroundService
             using var scope = _scopes.CreateScope();
             var digest = scope.ServiceProvider.GetRequiredService<NotificationDigestService>();
             var now = DateTimeOffset.UtcNow;
+            // Lembrete do dia do torneio (SPEC-20261108-1639) ANTES do resumo: o aviso novo já pode entrar no e-mail
+            // desta rodada quando passar dos 5 min — e um erro nele não derruba o resumo
+            try
+            {
+                await scope.ServiceProvider.GetRequiredService<TournamentReminderService>().RunAsync(now, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Erro no lembrete do dia do torneio");
+            }
             await digest.RunAsync(now, ct);
             var cleaned = await digest.CleanupAsync(now, ct);
             if (cleaned > 0)

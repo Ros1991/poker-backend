@@ -54,6 +54,9 @@ public interface IAppDbContext
     DbSet<ConversationMember> ConversationMembers { get; }
     DbSet<ChatMessage> Messages { get; }
     DbSet<Report> Reports { get; }
+    // Torneios públicos: pedidos de vaga/reservas e o lembrete do dia (SPEC-20261108-1639)
+    DbSet<TournamentJoinRequest> TournamentJoinRequests { get; }
+    DbSet<TournamentReminder> TournamentReminders { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);

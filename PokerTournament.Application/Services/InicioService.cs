@@ -34,12 +34,14 @@ public class InicioService
     private readonly IAppDbContext _db;
     private readonly PlanService _plans;
     private readonly PlayerLinkRequestService _links;
+    private readonly JoinRequestService _joins;
 
-    public InicioService(IAppDbContext db, PlanService plans, PlayerLinkRequestService links)
+    public InicioService(IAppDbContext db, PlanService plans, PlayerLinkRequestService links, JoinRequestService joins)
     {
         _db = db;
         _plans = plans;
         _links = links;
+        _joins = joins;
     }
 
     /// <summary>Null = conta inexistente.</summary>
@@ -180,6 +182,8 @@ public class InicioService
 
         // Pedidos de vínculo "sou eu" aguardando nos home games que a conta gerencia (SPEC-20261108-1632)
         response.LinkRequests = await _links.ListPendingForAccountAsync(userId, isSystemAdmin, ct);
+        // Pedidos de vaga aguardando nos torneios públicos dos home games que a conta gerencia (SPEC-20261108-1639)
+        response.JoinRequests = await _joins.ListPendingForAccountAsync(userId, isSystemAdmin, ct);
 
         return response;
     }

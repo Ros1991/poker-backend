@@ -2615,6 +2615,12 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsPublic")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_public");
+
                     b.Property<bool>("IsTimerRunning")
                         .HasColumnType("boolean")
                         .HasColumnName("is_timer_running");
@@ -2634,6 +2640,10 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<int>("MaxAddons")
                         .HasColumnType("integer")
                         .HasColumnName("max_addons");
+
+                    b.Property<int?>("MaxPlayers")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_players");
 
                     b.Property<int?>("MaxRebuys")
                         .HasColumnType("integer")
@@ -2664,6 +2674,16 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<DateTimeOffset?>("PrizeConfirmedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("prize_confirmed_at");
+
+                    b.Property<string>("PublicDescription")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("public_description");
+
+                    b.Property<string>("PublicSlug")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("public_slug");
 
                     b.Property<int?>("PunctualityBonusChips")
                         .HasColumnType("integer")
@@ -2728,6 +2748,12 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Property<Guid?>("SettlementClosedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("settlement_closed_by");
+
+                    b.Property<bool>("ShowOrganizerWhatsapp")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("show_organizer_whatsapp");
 
                     b.Property<decimal?>("StaffAmount")
                         .HasColumnType("decimal(10,2)")
@@ -2817,11 +2843,20 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.HasIndex("HomeGameId")
                         .HasDatabaseName("ix_tournaments_home_game_id");
 
+                    b.HasIndex("PublicSlug")
+                        .IsUnique()
+                        .HasDatabaseName("ux_tournaments_public_slug")
+                        .HasFilter("public_slug IS NOT NULL");
+
                     b.HasIndex("RankingId")
                         .HasDatabaseName("ix_tournaments_ranking_id");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_tournaments_status");
+
+                    b.HasIndex("IsPublic", "Date")
+                        .HasDatabaseName("ix_tournaments_public_date")
+                        .HasFilter("is_public");
 
                     b.ToTable("tournaments", "public", t =>
                         {
@@ -3255,6 +3290,95 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.ToTable("tournament_invites", "public");
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentJoinRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<Guid?>("DecidedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by");
+
+                    b.Property<Guid?>("EntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entry_id");
+
+                    b.Property<string>("Message")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message");
+
+                    b.Property<Guid?>("PersonId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("person_id");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TournamentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tournament_id");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<int?>("WaitlistPosition")
+                        .HasColumnType("integer")
+                        .HasColumnName("waitlist_position");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EntryId")
+                        .HasDatabaseName("ix_tournament_join_requests_entry_id");
+
+                    b.HasIndex("PersonId")
+                        .HasDatabaseName("ix_tournament_join_requests_person_id");
+
+                    b.HasIndex("TournamentId", "Status")
+                        .HasDatabaseName("ix_tournament_join_requests_tournament_id_status");
+
+                    b.HasIndex("TournamentId", "UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_tournament_join_requests_open")
+                        .HasFilter("status IN ('Pending','Approved','Waitlisted')");
+
+                    b.HasIndex("UserId", "Status")
+                        .HasDatabaseName("ix_tournament_join_requests_user_id_status");
+
+                    b.ToTable("tournament_join_requests", "public", t =>
+                        {
+                            t.HasCheckConstraint("ck_tournament_join_requests_status", "status IN ('Pending','Approved','Waitlisted','Declined','Cancelled')");
+                        });
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentPrize", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3318,6 +3442,50 @@ namespace PokerTournament.Infrastructure.Migrations
                         .HasDatabaseName("ix_tournament_prizes_tournament_position");
 
                     b.ToTable("tournament_prizes", "public");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentReminder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("SentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.Property<Guid>("TournamentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tournament_id");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("TournamentId", "UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_tournament_reminders_tournament_user");
+
+                    b.ToTable("tournament_reminders", "public");
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentTable", b =>
@@ -4301,6 +4469,39 @@ namespace PokerTournament.Infrastructure.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentJoinRequest", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.TournamentEntry", "Entry")
+                        .WithMany()
+                        .HasForeignKey("EntryId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PokerTournament.Domain.Entities.Person", "Person")
+                        .WithMany()
+                        .HasForeignKey("PersonId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PokerTournament.Domain.Entities.Tournament", "Tournament")
+                        .WithMany()
+                        .HasForeignKey("TournamentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PokerTournament.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Entry");
+
+                    b.Navigation("Person");
+
+                    b.Navigation("Tournament");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentPrize", b =>
                 {
                     b.HasOne("PokerTournament.Domain.Entities.TournamentEntry", "Entry")
@@ -4317,6 +4518,21 @@ namespace PokerTournament.Infrastructure.Migrations
                     b.Navigation("Entry");
 
                     b.Navigation("Tournament");
+                });
+
+            modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentReminder", b =>
+                {
+                    b.HasOne("PokerTournament.Domain.Entities.Tournament", null)
+                        .WithMany()
+                        .HasForeignKey("TournamentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PokerTournament.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("PokerTournament.Domain.Entities.TournamentTable", b =>

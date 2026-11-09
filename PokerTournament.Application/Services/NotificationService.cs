@@ -45,9 +45,13 @@ public class NotificationService
     public static NotificationCategory CategoryOf(NotificationKind kind) => kind switch
     {
         NotificationKind.TournamentStarted or NotificationKind.TournamentFinished
-            or NotificationKind.ResultPublished or NotificationKind.TournamentInvite => NotificationCategory.Tournament,
+            or NotificationKind.ResultPublished or NotificationKind.TournamentInvite
+            // Pedido de vaga (SPEC-20261108-1639): a resposta ao interessado e o lembrete do dia são "do torneio"
+            or NotificationKind.JoinRequestApproved or NotificationKind.JoinRequestDeclined
+            or NotificationKind.JoinRequestWaitlisted or NotificationKind.JoinRequestPromoted
+            or NotificationKind.TournamentReminder => NotificationCategory.Tournament,
         NotificationKind.PlayerLinkRequested or NotificationKind.PlayerLinkAnswered
-            or NotificationKind.AddressIncomplete => NotificationCategory.Requests,
+            or NotificationKind.AddressIncomplete or NotificationKind.JoinRequestReceived => NotificationCategory.Requests,
         _ => NotificationCategory.Social,
     };
 
