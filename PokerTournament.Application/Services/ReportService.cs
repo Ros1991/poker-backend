@@ -12,19 +12,28 @@ namespace PokerTournament.Application.Services;
 /// <summary>
 /// Denúncias (SPEC-20261108-1638, D11). Quem denuncia precisa ser membro da conversa; a denúncia leva a conta denunciada
 /// (quem enviou a mensagem, ou a outra conta da conversa), o motivo da lista fixa, os detalhes e a CÓPIA do texto no
-/// momento da denúncia — a mensagem denunciada, ou as últimas mensagens do denunciado na conversa. A Administração lista
-/// (<see cref="ListAsync"/>, mais recentes primeiro, filtro por situação) e marca como revisada (<see cref="ReviewAsync"/>,
-/// com AuditLog). Ninguém é avisado da denúncia.
+/// momento da denúncia — a mensagem denunciada, ou as últimas mensagens (não apagadas) do denunciado na conversa. A
+/// Administração lista (<see cref="ListAsync"/>, mais recentes primeiro, filtro por situação) e marca como revisada
+/// (<see cref="ReviewAsync"/>, com AuditLog). Ninguém é avisado da denúncia.
+/// <para>
+/// Revisão da onda 2: mensagem já apagada não pode ser denunciada (400 — B1; o texto apagado não é copiado) e há limites
+/// (B2, 429 <see cref="TooManyReportsException"/>): a mesma mensagem, ou a mesma conversa inteira, uma vez por dia por
+/// denunciante, e no máximo <see cref="MaxReportsPerDay"/> denúncias por dia por conta.
+/// </para>
 /// </summary>
 public class ReportService
 {
     public const int ConversationSnapshotMessages = 10;
+    public const int MaxReportsPerDay = 10;
     public const string ReportNotFoundMessage = "Denúncia não encontrada.";
     public const string TargetRequiredMessage = "Informe a mensagem ou a conversa denunciada.";
     public const string InvalidReasonMessage = "Motivo da denúncia inválido.";
     public const string DetailsTooLongMessage = "Os detalhes podem ter no máximo 500 caracteres.";
     public const string OwnMessageMessage = "Você não pode denunciar a sua própria mensagem.";
+    public const string DeletedMessageMessage = "Esta mensagem já foi apagada e não pode mais ser denunciada.";
     public const string ReviewedAction = "ReportReviewed";
+
+    private static readonly TimeSpan DayWindow = TimeSpan.FromHours(24);
 
     private readonly IAppDbContext _db;
 
@@ -33,7 +42,10 @@ public class ReportService
         _db = db;
     }
 
-    /// <summary><c>POST reports</c>. Null = conversa/mensagem inexistente ou de outra conta (404); 400 com motivo inválido.</summary>
+    /// <summary>
+    /// <c>POST reports</c>. Null = conversa/mensagem inexistente ou de outra conta (404); 400 com motivo inválido, mensagem
+    /// própria ou já apagada; 429 nos limites do dia.
+    /// </summary>
     public async Task<ReportResponse?> CreateAsync(Guid userId, CreateReportRequest request, CancellationToken ct = default)
     {
         if (!Enum.TryParse<ReportReason>((request.Reason ?? string.Empty).Trim(), ignoreCase: true, out var reason) || !Enum.IsDefined(reason))
@@ -50,12 +62,15 @@ public class ReportService
         {
             var message = await _db.Messages.AsNoTracking()
                 .Where(m => m.Id == messageId && (m.Conversation.UserLowId == userId || m.Conversation.UserHighId == userId))
-                .Select(m => new { m.Id, m.ConversationId, m.SenderId, m.Body, m.SentAt })
+                .Select(m => new { m.Id, m.ConversationId, m.SenderId, m.Body, m.SentAt, m.DeletedAt })
                 .FirstOrDefaultAsync(ct);
             if (message is null || (request.ConversationId is { } cid && cid != message.ConversationId))
                 return null;
             if (message.SenderId == userId)
                 throw new DomainException(OwnMessageMessage);
+            // B1: o texto apagado não sai do banco por uma denúncia feita depois
+            if (message.DeletedAt is not null)
+                throw new DomainException(DeletedMessageMessage);
             report.ConversationId = message.ConversationId;
             report.MessageId = message.Id;
             report.ReportedUserId = message.SenderId;
@@ -72,8 +87,9 @@ public class ReportService
             var otherId = conversation.UserLowId == userId ? conversation.UserHighId : conversation.UserLowId;
             report.ConversationId = conversation.Id;
             report.ReportedUserId = otherId;
+            // B1: só o que ainda está visível na conversa entra na cópia
             var last = await _db.Messages.AsNoTracking()
-                .Where(m => m.ConversationId == conversation.Id && m.SenderId == otherId)
+                .Where(m => m.ConversationId == conversation.Id && m.SenderId == otherId && m.DeletedAt == null)
                 .OrderByDescending(m => m.SentAt)
                 .Take(ConversationSnapshotMessages)
                 .Select(m => new { m.Body, m.SentAt })
@@ -84,10 +100,37 @@ public class ReportService
                 : Cut(string.Join("\n", last.Select(m => $"[{NotificationDigestEmail.FormatWhen(m.SentAt)}] {m.Body}")), Report.ReportedTextMaxLength);
         }
 
+        await EnsureLimitsAsync(userId, report.MessageId, report.ConversationId, ct);
         _db.Reports.Add(report);
         await _db.SaveChangesAsync(ct);
         return new ReportResponse { Id = report.Id, Status = report.Status, CreatedAt = report.CreatedAt };
     }
+
+    /// <summary>
+    /// B2: a mesma mensagem (ou a mesma conversa inteira, sem mensagem) denunciada de novo pelo mesmo denunciante em
+    /// menos de 24 h → 429 "já denunciou"; mais de <see cref="MaxReportsPerDay"/> denúncias nas últimas 24 h → 429 com
+    /// quanto esperar. Contado no banco, como os limites das mensagens.
+    /// </summary>
+    private async Task EnsureLimitsAsync(Guid userId, Guid? messageId, Guid? conversationId, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var since = now - DayWindow;
+        var mine = await _db.Reports.AsNoTracking()
+            .Where(r => r.ReporterId == userId && r.CreatedAt > since)
+            .OrderBy(r => r.CreatedAt)
+            .Select(r => new { r.MessageId, r.ConversationId, r.CreatedAt })
+            .ToListAsync(ct);
+        var duplicate = messageId is not null
+            ? mine.FirstOrDefault(r => r.MessageId == messageId)
+            : mine.FirstOrDefault(r => r.MessageId == null && r.ConversationId == conversationId);
+        if (duplicate is not null)
+            throw new TooManyReportsException(RetryAfter(duplicate.CreatedAt, now), duplicate: true);
+        if (mine.Count >= MaxReportsPerDay)
+            throw new TooManyReportsException(RetryAfter(mine[0].CreatedAt, now), duplicate: false);
+    }
+
+    private static int RetryAfter(DateTimeOffset earliest, DateTimeOffset now) =>
+        Math.Max(1, (int)Math.Ceiling((earliest + DayWindow - now).TotalSeconds));
 
     /// <summary><c>GET admin/reports?status=open|reviewed|all&amp;page=&amp;pageSize=</c>: mais recentes primeiro (20 por página, máx. 100).</summary>
     public async Task<PaginatedResponse<AdminReportResponse>> ListAsync(string? status, int page, int pageSize, CancellationToken ct = default)

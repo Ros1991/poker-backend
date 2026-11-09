@@ -24,8 +24,14 @@ public record DeleteMessageResult(Guid ConversationId, Guid MessageId, Guid Othe
 /// com <c>MessagesFrom = FriendsAndOrganizers</c> de quem recebe, também o dono ou membro administrador de um home game em
 /// que quem recebe tem jogador vinculado (<c>Person.UserId</c>). Bloqueio em qualquer sentido responde como se a conta não
 /// existisse (null → 404) em tudo: abrir, listar, ler, enviar. Uma conversa direta por par; reabrir devolve a existente.
+/// <b>A regra vale enquanto a conversa durar</b> (revisão da onda 2, M1): desfazer a amizade ou mudar <c>MessagesFrom</c>
+/// encerra a conversa — <see cref="SendAsync"/>, <see cref="OpenDirectAsync"/> e <see cref="CanOpenDirectAsync"/>
+/// reaplicam a regra (<see cref="ConversationClosedException"/>, 400 com <c>code: conversation_closed</c>); ler continua.
+/// <b>Motivo genérico</b> (B3): quem não vê o perfil (<c>ProfileVisibility</c> Nobody, ou Friends sem amizade) recebe só
+/// "não recebe mensagens de você", nunca a preferência de mensagens de quem recebe.
 /// <b>Conversa de pedido de vaga</b> (<see cref="OpenForTournamentRequestAsync"/>): organizador e interessado, sem
-/// amizade, enquanto o pedido existir (<see cref="ITournamentRequestLookup"/> — nula até a SPEC-20261108-1639).
+/// amizade, enquanto o pedido existir (<see cref="ITournamentRequestLookup"/> — nula até a SPEC-20261108-1639); fechado
+/// o pedido, enviar também é recusado.
 /// </para>
 /// <para>
 /// <b>Limites</b> (contados no banco): 60 mensagens por hora por conta e 20 conversas novas por dia, respondidos com 429
@@ -54,6 +60,13 @@ public class ChatService
     public const string BodyTooLongMessage = "A mensagem pode ter no máximo 2.000 caracteres.";
     public const string InactiveRecipientMessage = "Esta conta não está mais ativa.";
     public const string OpenNeedsTargetMessage = "Informe a conta (userId) ou o pedido de vaga (tournamentRequestId).";
+    /// <summary>B3: para quem não vê o perfil de quem recebe, sem revelar a preferência de mensagens dele.</summary>
+    public const string PrivateRecipientMessage = "Este jogador não recebe mensagens de você.";
+    /// <summary>M1: a conversa direta existe, mas a regra deixou de valer (amizade desfeita ou MessagesFrom mudou).</summary>
+    public const string ConversationClosedMessage =
+        "Vocês não são mais amigos, ou este jogador mudou quem pode mandar mensagem a ele. Peça a amizade de novo para continuar a conversa.";
+    /// <summary>M1: a conversa do pedido de vaga existe, mas o pedido não está mais em aberto.</summary>
+    public const string RequestClosedMessage = "O pedido de vaga deste torneio não está mais em aberto, e esta conversa foi encerrada.";
     public const string RaceMessage = "A conversa acabou de ser criada. Recarregue a página.";
     public const string DeletedAccountName = "Conta excluída";
 
@@ -98,7 +111,7 @@ public class ChatService
             throw new DomainException(SelfMessage);
         var other = await _db.Users.AsNoTracking()
             .Where(u => u.Id == otherUserId)
-            .Select(u => new { u.Id, u.IsActive, u.EmailConfirmedAt, u.MessagesFrom })
+            .Select(u => new { u.Id, u.IsActive, u.EmailConfirmedAt, u.MessagesFrom, u.ProfileVisibility })
             .FirstOrDefaultAsync(ct);
         if (other is null || await _friends.IsBlockedAsync(userId, otherUserId, ct))
             return null;
@@ -110,11 +123,17 @@ public class ChatService
             .Select(c => c.Id)
             .FirstOrDefaultAsync(ct);
         if (existing != Guid.Empty)
+        {
+            // M1: a conversa existe, mas a regra tem que valer ainda (conta inativa: devolve para ler; enviar recusa)
+            if (other.IsActive && other.EmailConfirmedAt is not null
+                && await CannotOpenReasonAsync(userId, otherUserId, other.MessagesFrom, other.ProfileVisibility, ct) is not null)
+                throw new ConversationClosedException(ConversationClosedMessage);
             return new OpenConversationResponse { Conversation = (await GetAsync(userId, existing, ct))!, Created = false };
+        }
 
         if (!other.IsActive || other.EmailConfirmedAt is null)
             throw new DomainException(InactiveRecipientMessage);
-        var reason = await CannotOpenReasonAsync(userId, otherUserId, other.MessagesFrom, ct);
+        var reason = await CannotOpenReasonAsync(userId, otherUserId, other.MessagesFrom, other.ProfileVisibility, ct);
         if (reason is not null)
             throw new DomainException(reason);
 
@@ -123,8 +142,10 @@ public class ChatService
     }
 
     /// <summary>
-    /// <c>GET me/conversations/with/{userId}</c>: o botão "Enviar mensagem" do perfil. Sem criar nada: diz se pode abrir
-    /// (ou se a conversa já existe) e, se não pode, o motivo. Conta inexistente ou bloqueada → não pode, sem motivo.
+    /// <c>GET me/conversations/with/{userId}</c>: o botão "Enviar mensagem" do perfil e a caixa de envio da conversa. Sem
+    /// criar nada: diz se pode abrir (ou se a conversa já existe) e, se não pode, o motivo. Conta inexistente ou bloqueada
+    /// → não pode, sem motivo. Conversa existente com a regra já inválida (M1) → <c>canOpen false</c> com o id dela e o
+    /// motivo de conversa encerrada.
     /// </summary>
     public async Task<CanMessageResponse> CanOpenDirectAsync(Guid userId, Guid otherUserId, CancellationToken ct = default)
     {
@@ -133,7 +154,7 @@ public class ChatService
             return response;
         var other = await _db.Users.AsNoTracking()
             .Where(u => u.Id == otherUserId && u.IsActive && u.EmailConfirmedAt != null)
-            .Select(u => new { u.MessagesFrom })
+            .Select(u => new { u.MessagesFrom, u.ProfileVisibility })
             .FirstOrDefaultAsync(ct);
         if (other is null || await _friends.IsBlockedAsync(userId, otherUserId, ct))
             return response;
@@ -144,25 +165,50 @@ public class ChatService
             .Where(c => c.Type == direct && c.UserLowId == low && c.UserHighId == high)
             .Select(c => (Guid?)c.Id)
             .FirstOrDefaultAsync(ct);
+        var reason = await CannotOpenReasonAsync(userId, otherUserId, other.MessagesFrom, other.ProfileVisibility, ct);
         if (existing is not null)
-            return new CanMessageResponse { CanOpen = true, ConversationId = existing };
-
-        var reason = await CannotOpenReasonAsync(userId, otherUserId, other.MessagesFrom, ct);
+            return new CanMessageResponse { CanOpen = reason is null, ConversationId = existing, Reason = reason is null ? null : ConversationClosedMessage };
         return new CanMessageResponse { CanOpen = reason is null, Reason = reason };
     }
 
-    /// <summary>Null quando pode abrir conversa direta; senão a mensagem do motivo (pela privacidade de quem recebe).</summary>
-    private async Task<string?> CannotOpenReasonAsync(Guid senderId, Guid recipientId, string recipientPreference, CancellationToken ct)
+    /// <summary>
+    /// Null quando pode abrir conversa direta; senão a mensagem do motivo. Amigos sempre podem; com
+    /// <c>FriendsAndOrganizers</c>, o organizador do clube também. Quem não vê o perfil de quem recebe
+    /// (<paramref name="recipientVisibility"/> diferente de Everyone — aqui já se sabe que não são amigos) recebe o motivo
+    /// genérico (B3), sem a preferência de mensagens.
+    /// </summary>
+    private async Task<string?> CannotOpenReasonAsync(
+        Guid senderId, Guid recipientId, string recipientPreference, string recipientVisibility, CancellationToken ct)
     {
         if (await _friends.AreFriendsAsync(senderId, recipientId, ct))
             return null;
-        if (recipientPreference == nameof(MessagesFrom.FriendsAndOrganizers))
+        var organizersToo = recipientPreference == nameof(MessagesFrom.FriendsAndOrganizers);
+        if (organizersToo && await IsOrganizerOfAsync(senderId, recipientId, ct))
+            return null;
+        if (recipientVisibility != nameof(ProfileVisibility.Everyone))
+            return PrivateRecipientMessage;
+        return organizersToo ? OnlyFriendsAndOrganizersMessage : OnlyFriendsMessage;
+    }
+
+    /// <summary>
+    /// M1: a conversa só continua enquanto a regra de abrir valer. Direta: a mesma regra de <see cref="CannotOpenReasonAsync"/>
+    /// (amizade, ou organizador liberado). Pedido de vaga: o pedido ainda em aberto (qualquer um dos dois pode ser o
+    /// organizador). Recusa com <see cref="ConversationClosedException"/> (400, <c>conversation_closed</c>).
+    /// </summary>
+    private async Task EnsureStillOpenAsync(
+        Conversation conversation, Guid senderId, Guid otherId, string otherPreference, string otherVisibility, CancellationToken ct)
+    {
+        if (conversation.Type == nameof(ConversationType.TournamentRequest))
         {
-            if (await IsOrganizerOfAsync(senderId, recipientId, ct))
-                return null;
-            return OnlyFriendsAndOrganizersMessage;
+            var tournamentId = conversation.TournamentId ?? Guid.Empty;
+            var open = await _requests.HasOpenRequestAsync(tournamentId, otherId, senderId, ct)
+                || await _requests.HasOpenRequestAsync(tournamentId, senderId, otherId, ct);
+            if (!open)
+                throw new ConversationClosedException(RequestClosedMessage);
+            return;
         }
-        return OnlyFriendsMessage;
+        if (await CannotOpenReasonAsync(senderId, otherId, otherPreference, otherVisibility, ct) is not null)
+            throw new ConversationClosedException(ConversationClosedMessage);
     }
 
     /// <summary>
@@ -327,14 +373,17 @@ public class ChatService
         };
     }
 
-    /// <summary><c>GET me/conversations/unread-count</c>: quantas conversas têm mensagem da outra conta depois de "lida até".</summary>
+    /// <summary>
+    /// <c>GET me/conversations/unread-count</c>: quantas conversas têm mensagem da outra conta depois de "lida até".
+    /// Mensagem apagada (pelo autor, ou pela exclusão da conta dele — A2) não conta como não lida.
+    /// </summary>
     public async Task<int> CountUnreadConversationsAsync(Guid userId, CancellationToken ct = default)
     {
         var blocked = (await _friends.BlockedUserIdsAsync(userId, ct)).ToList();
         return await _db.Conversations.AsNoTracking()
             .Where(c => (c.UserLowId == userId || c.UserHighId == userId)
                 && !blocked.Contains(c.UserLowId == userId ? c.UserHighId : c.UserLowId)
-                && c.Messages.Any(m => m.SenderId != userId
+                && c.Messages.Any(m => m.SenderId != userId && m.DeletedAt == null
                     && !c.Members.Any(mm => mm.UserId == userId && mm.LastReadAt != null && mm.LastReadAt >= m.SentAt)))
             .CountAsync(ct);
     }
@@ -356,8 +405,9 @@ public class ChatService
 
     /// <summary>
     /// <c>POST conversations/{id}/messages</c>. Null = conversa inexistente, de outra conta ou bloqueio (404). 400 com texto
-    /// vazio/longo demais ou conta da outra pessoa inativa; 429 acima de 60 por hora. Avança o "lida até" de quem envia,
-    /// atualiza <c>LastMessageAt</c> e cuida da notificação (só com a conversa fechada do outro lado; uma não lida por conversa).
+    /// vazio/longo demais, conta da outra pessoa inativa ou conversa encerrada (M1, <see cref="ConversationClosedException"/>);
+    /// 429 acima de 60 por hora. Avança o "lida até" de quem envia, atualiza <c>LastMessageAt</c> e cuida da notificação
+    /// (só com a conversa fechada do outro lado; uma não lida por conversa).
     /// </summary>
     public async Task<SendMessageResult?> SendAsync(Guid userId, Guid conversationId, string? body, CancellationToken ct = default)
     {
@@ -375,10 +425,13 @@ public class ChatService
         var otherId = conversation.OtherOf(userId);
         if (await _friends.IsBlockedAsync(userId, otherId, ct))
             return null;
-        var otherActive = await _db.Users.AsNoTracking()
-            .AnyAsync(u => u.Id == otherId && u.IsActive && u.EmailConfirmedAt != null, ct);
-        if (!otherActive)
+        var other = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == otherId)
+            .Select(u => new { u.IsActive, u.EmailConfirmedAt, u.MessagesFrom, u.ProfileVisibility })
+            .FirstOrDefaultAsync(ct);
+        if (other is null || !other.IsActive || other.EmailConfirmedAt is null)
             throw new DomainException(InactiveRecipientMessage);
+        await EnsureStillOpenAsync(conversation, userId, otherId, other.MessagesFrom, other.ProfileVisibility, ct);
 
         await EnsureHourlyLimitAsync(userId, ct);
 
@@ -540,7 +593,7 @@ public class ChatService
                 .OrderByDescending(m => m.SentAt)
                 .Select(m => new LastMessageRow { Id = m.Id, SenderId = m.SenderId, Body = m.Body, SentAt = m.SentAt, DeletedAt = m.DeletedAt })
                 .FirstOrDefault(),
-            Unread = c.Messages.Count(m => m.SenderId != userId
+            Unread = c.Messages.Count(m => m.SenderId != userId && m.DeletedAt == null
                 && !c.Members.Any(mm => mm.UserId == userId && mm.LastReadAt != null && mm.LastReadAt >= m.SentAt)),
         });
 

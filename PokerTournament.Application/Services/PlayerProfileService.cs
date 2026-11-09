@@ -136,7 +136,8 @@ public class PlayerProfileService
             IsPreview = isOwner && previewAsStranger,
             IsPrivate = !canSeeFull,
         };
-        // A relação com quem vê (SPEC-20261108-1637) vem até no perfil privado; na pré-visualização não faz sentido
+        // A relação com quem vê (SPEC-20261108-1637) vem até no perfil privado — com o motivo genérico de "não pode pedir"
+        // quando o perfil é privado para ele (FriendshipService, B3); na pré-visualização não faz sentido
         if (!previewAsStranger)
             response.Friendship = await _friendships.GetRelationAsync(viewerId, user.Id, ct);
         if (!canSeeFull)
@@ -266,13 +267,18 @@ public class PlayerProfileService
     // ------------------------------------------------------------------ escrita (Meu perfil)
 
     /// <summary>
-    /// <c>PUT me/public-profile</c>: handle (normalizado e validado — formato, reservado e "já em uso" → 400), cidade
-    /// (até 100), UF (lista oficial) e bio (até 200). Trocar o handle NÃO redireciona o antigo.
+    /// <c>PUT me/public-profile</c>: handle (normalizado e validado — formato, reservado/prefixo reservado e "já em uso"
+    /// → 400), cidade (até 100), UF (lista oficial) e bio (até 200). Trocar o handle NÃO redireciona o antigo. Manter o
+    /// handle atual nunca falha na validação de reservados (uma palavra que virou reservada depois não trava a edição de
+    /// cidade/bio de quem já a tinha).
     /// </summary>
     public async Task<ProfileResponse> UpdatePublicProfileAsync(
         Guid userId, UpdatePublicProfileRequest request, string? ip, string? userAgent, CancellationToken ct = default)
     {
-        var handle = HandleGenerator.Normalize(request.Handle);
+        var user = await _auth.FindActiveUserAsync(userId, ct)
+            ?? throw new KeyNotFoundException(AuthService.UserNotFoundMessage);
+        var typed = (request.Handle ?? string.Empty).Trim().TrimStart('@').ToLowerInvariant();
+        var handle = typed == user.Handle ? user.Handle : HandleGenerator.Normalize(request.Handle);
         var city = NullIfBlank(request.City);
         if (city is { Length: > CityMaxLength })
             throw new DomainException(CityTooLongMessage);
@@ -286,9 +292,6 @@ public class PlayerProfileService
         var bio = NullIfBlank(request.Bio);
         if (bio is { Length: > BioMaxLength })
             throw new DomainException(BioTooLongMessage);
-
-        var user = await _auth.FindActiveUserAsync(userId, ct)
-            ?? throw new KeyNotFoundException(AuthService.UserNotFoundMessage);
 
         var changed = new List<string>();
         if (user.Handle != handle)

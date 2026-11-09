@@ -24,10 +24,18 @@ namespace PokerTournament.Application.Services;
 /// responde como se o perfil não existisse (null → 404). Se o OUTRO já tinha pedido, o pedido cruzado vira amizade.
 /// </para>
 /// <para>
-/// <b>Responder</b> só por quem recebeu; a recusa não avisa quem pediu e o pedido some para ele. <b>Bloquear</b>
-/// converte o registro do par em <c>Blocked</c> (apaga amizade/pedido) e só quem bloqueou desbloqueia; quem foi
-/// bloqueado não é avisado. <b>Notificações</b> (categoria Social): pedido recebido e pedido aceito, preparadas no
-/// mesmo <c>SaveChangesAsync</c> do fluxo e empurradas depois.
+/// <b>Responder</b> só por quem recebeu; a recusa não avisa quem pediu e o pedido some para ele. <b>Cancelar</b> deixa a
+/// linha <c>Cancelled</c> com <c>RespondedAt</c> (revisão da onda 2, M3): pedir de novo reaproveita a linha e, em menos de
+/// 24 h do cancelamento, NÃO gera nova notificação (o pedido aparece em "Pedidos" do mesmo jeito). <b>Bloquear</b>
+/// converte o registro do par em <c>Blocked</c> (apaga amizade/pedido) e só quem bloqueou desbloqueia (sem bloqueio meu
+/// → 404, como handle inexistente — M4); quem foi bloqueado não é avisado. <b>Notificações</b> (categoria Social): pedido
+/// recebido e pedido aceito, preparadas no mesmo <c>SaveChangesAsync</c> do fluxo e empurradas depois.
+/// </para>
+/// <para>
+/// <b>Privacidade nos cartões</b> (M2): cidade/UF saem só com <c>ProfileVisibility = Everyone</c>, ou <c>Friends</c> para
+/// quem é amigo daquela conta — <c>Nobody</c> nunca (<see cref="ShowsPlace"/>, usado também pelo "jogou com você").
+/// <b>Motivo genérico</b> (B3): quem não vê o perfil (Nobody, ou Friends sem amizade) recebe só "não recebe pedidos de
+/// amizade de você", nunca a preferência de pedidos de quem recebe.
 /// </para>
 /// </summary>
 public class FriendshipService : IFriendshipLookup
@@ -35,16 +43,19 @@ public class FriendshipService : IFriendshipLookup
     public const int MaxPendingSent = 20;
     public const int DeclineCooldownDays = 30;
     public const int MaxMutualFriends = 6;
+    /// <summary>M3: pedir de novo dentro deste prazo depois de cancelar não notifica quem recebe de novo.</summary>
+    public static readonly TimeSpan CancelNotificationWindow = TimeSpan.FromHours(24);
 
     public const string SelfRequestMessage = "Você não pode pedir amizade a si mesmo.";
     public const string AlreadyFriendsMessage = "Vocês já são amigos.";
     public const string AlreadyPendingMessage = "Você já pediu amizade a este jogador. Aguarde a resposta.";
     public const string RecipientAcceptsNobodyMessage = "Este jogador não recebe pedidos de amizade.";
     public const string RecipientAcceptsPlayedWithMessage = "Este jogador só aceita pedidos de amizade de quem já jogou um torneio com ele.";
+    /// <summary>B3: para quem não vê o perfil de quem recebe, sem revelar a preferência de pedidos dele.</summary>
+    public const string PrivateCannotRequestMessage = "Este jogador não recebe pedidos de amizade de você.";
     public const string TooManyPendingMessage = "Você já tem 20 pedidos de amizade aguardando resposta. Cancele algum ou espere uma resposta para pedir de novo.";
     public const string RequestNotFoundMessage = "Pedido de amizade não encontrado.";
     public const string FriendNotFoundMessage = "Vocês não são amigos.";
-    public const string NotBlockedMessage = "Este jogador não está bloqueado por você.";
     public const string RaceMessage = "Já existe um pedido entre vocês. Recarregue a página.";
 
     /// <summary>Caminho da aba Pedidos da lista de amigos (link da notificação de pedido recebido).</summary>
@@ -117,12 +128,12 @@ public class FriendshipService : IFriendshipLookup
 
         var target = await _db.Users.AsNoTracking()
             .Where(u => u.Id == targetId)
-            .Select(u => new { u.FriendRequestsFrom })
+            .Select(u => new RecipientPrefs(u.FriendRequestsFrom, u.ProfileVisibility))
             .FirstOrDefaultAsync(ct);
         if (target is null)
             return null;
 
-        return await RelationOfAsync(viewerId, targetId, pair, target.FriendRequestsFrom, ct);
+        return await RelationOfAsync(viewerId, targetId, pair, target, ct);
     }
 
     /// <summary>
@@ -144,8 +155,8 @@ public class FriendshipService : IFriendshipLookup
         var byOther = pairs.ToDictionary(p => p.OtherOf(viewerId));
         var prefs = await _db.Users.AsNoTracking()
             .Where(u => ids.Contains(u.Id))
-            .Select(u => new { u.Id, u.FriendRequestsFrom })
-            .ToDictionaryAsync(u => u.Id, u => u.FriendRequestsFrom, ct);
+            .Select(u => new { u.Id, Prefs = new RecipientPrefs(u.FriendRequestsFrom, u.ProfileVisibility) })
+            .ToDictionaryAsync(u => u.Id, u => u.Prefs, ct);
 
         foreach (var id in ids)
         {
@@ -159,8 +170,11 @@ public class FriendshipService : IFriendshipLookup
         return result;
     }
 
+    /// <summary>Quem recebe: de quem aceita pedidos e quem vê o perfil (B3 decide o motivo pela visibilidade).</summary>
+    private sealed record RecipientPrefs(string FriendRequestsFrom, string ProfileVisibility);
+
     private async Task<ProfileFriendshipResponse> RelationOfAsync(
-        Guid viewerId, Guid targetId, Friendship? pair, string recipientPreference, CancellationToken ct)
+        Guid viewerId, Guid targetId, Friendship? pair, RecipientPrefs recipient, CancellationToken ct)
     {
         var relation = new ProfileFriendshipResponse();
         switch (pair?.Status)
@@ -175,21 +189,39 @@ public class FriendshipService : IFriendshipLookup
         }
 
         relation.Status = FriendshipState.None;
-        var reason = await CannotRequestReasonAsync(viewerId, targetId, recipientPreference, ct);
+        var reason = await CannotRequestReasonAsync(viewerId, targetId, recipient, ct);
         relation.CanRequest = reason is null;
         relation.CannotRequestReason = reason;
         return relation;
     }
 
-    /// <summary>Null quando a privacidade de quem recebe deixa pedir; senão a mensagem do motivo.</summary>
-    private async Task<string?> CannotRequestReasonAsync(Guid requesterId, Guid recipientId, string preference, CancellationToken ct)
+    /// <summary>
+    /// Null quando a privacidade de quem recebe deixa pedir; senão a mensagem do motivo. Só é chamado sem amizade (a
+    /// relação é None), então quem recebe com <c>ProfileVisibility</c> diferente de Everyone está privado para quem vê: o
+    /// motivo sai genérico (B3), sem dizer se ele aceita de ninguém ou só de quem jogou com ele.
+    /// </summary>
+    private async Task<string?> CannotRequestReasonAsync(Guid requesterId, Guid recipientId, RecipientPrefs recipient, CancellationToken ct)
     {
-        if (preference == nameof(FriendRequestsFrom.Nobody))
-            return RecipientAcceptsNobodyMessage;
-        if (preference == nameof(FriendRequestsFrom.PlayedWith) && !await HavePlayedTogetherAsync(requesterId, recipientId, ct))
-            return RecipientAcceptsPlayedWithMessage;
-        return null;
+        string? reason = null;
+        if (recipient.FriendRequestsFrom == nameof(FriendRequestsFrom.Nobody))
+            reason = RecipientAcceptsNobodyMessage;
+        else if (recipient.FriendRequestsFrom == nameof(FriendRequestsFrom.PlayedWith) && !await HavePlayedTogetherAsync(requesterId, recipientId, ct))
+            reason = RecipientAcceptsPlayedWithMessage;
+        if (reason is null)
+            return null;
+        return recipient.ProfileVisibility == nameof(ProfileVisibility.Everyone) ? reason : PrivateCannotRequestMessage;
     }
+
+    /// <summary>
+    /// M2: cidade/UF de uma conta saem para quem vê só com <c>ProfileVisibility = Everyone</c>, ou <c>Friends</c> quando
+    /// quem vê é amigo dela; <c>Nobody</c> nunca (nem para amigos) — a mesma regra do perfil completo.
+    /// </summary>
+    public static bool ShowsPlace(string profileVisibility, bool viewerIsFriend) => profileVisibility switch
+    {
+        nameof(ProfileVisibility.Everyone) => true,
+        nameof(ProfileVisibility.Friends) => viewerIsFriend,
+        _ => false,
+    };
 
     /// <summary>
     /// As duas contas têm inscrição vinculada no MESMO torneio (não cancelado, não excluído, em clube não excluído) —
@@ -248,7 +280,7 @@ public class FriendshipService : IFriendshipLookup
             }
         }
 
-        var reason = await CannotRequestReasonAsync(requesterId, target.Id, target.FriendRequestsFrom, ct);
+        var reason = await CannotRequestReasonAsync(requesterId, target.Id, new RecipientPrefs(target.FriendRequestsFrom, target.ProfileVisibility), ct);
         if (reason is not null)
             throw new DomainException(reason);
 
@@ -257,27 +289,36 @@ public class FriendshipService : IFriendshipLookup
         if (pendingSent >= MaxPendingSent)
             throw new DomainException(TooManyPendingMessage);
 
+        // M3: cancelei há menos de 24 h e estou pedindo de novo → o pedido volta, mas quem recebe não é notificado outra vez
+        var recentlyCancelled = pair is { Status: nameof(FriendshipStatus.Cancelled) }
+            && pair.RequesterId == requesterId
+            && pair.RespondedAt is { } cancelledAt
+            && cancelledAt + CancelNotificationWindow > now;
+
         if (pair is null)
         {
             var (low, high) = Friendship.Order(requesterId, target.Id);
             pair = new Friendship { UserLowId = low, UserHighId = high };
             _db.Friendships.Add(pair);
         }
-        // Linha Declined (minha, já fora da carência, ou do outro que eu recusei) vira o pedido novo
+        // Linha Declined (minha, já fora da carência, ou do outro que eu recusei) ou Cancelled vira o pedido novo
         pair.RequesterId = requesterId;
         pair.Status = pending;
         pair.RequestedAt = now;
         pair.RespondedAt = null;
         pair.BlockedById = null;
 
-        var requesterName = await DisplayNameAsync(requesterId, ct);
-        await _notifications.StageAsync(
-            [target.Id],
-            NotificationKind.FriendRequestReceived,
-            "Pedido de amizade",
-            $"{requesterName} quer ser seu amigo no Poker da Galera.",
-            RequestsLink,
-            ct);
+        if (!recentlyCancelled)
+        {
+            var requesterName = await DisplayNameAsync(requesterId, ct);
+            await _notifications.StageAsync(
+                [target.Id],
+                NotificationKind.FriendRequestReceived,
+                "Pedido de amizade",
+                $"{requesterName} quer ser seu amigo no Poker da Galera.",
+                RequestsLink,
+                ct);
+        }
         try
         {
             await _db.SaveChangesAsync(ct);
@@ -329,7 +370,10 @@ public class FriendshipService : IFriendshipLookup
         return true;
     }
 
-    /// <summary>Quem pediu cancela o pedido pendente (apaga a linha). Falso = não existe ou não é dele (404).</summary>
+    /// <summary>
+    /// Quem pediu cancela o pedido pendente: a linha fica <c>Cancelled</c> com <c>RespondedAt</c> (M3 — pedir de novo em
+    /// menos de 24 h não notifica de novo). Invisível nas listas, como Declined. Falso = não existe ou não é dele (404).
+    /// </summary>
     public async Task<bool> CancelRequestAsync(Guid userId, Guid friendshipId, CancellationToken ct = default)
     {
         var pending = nameof(FriendshipStatus.Pending);
@@ -337,7 +381,8 @@ public class FriendshipService : IFriendshipLookup
             .FirstOrDefaultAsync(f => f.Id == friendshipId && f.Status == pending && f.RequesterId == userId, ct);
         if (pair is null)
             return false;
-        _db.Friendships.Remove(pair);
+        pair.Status = nameof(FriendshipStatus.Cancelled);
+        pair.RespondedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
         return true;
     }
@@ -425,21 +470,18 @@ public class FriendshipService : IFriendshipLookup
 
     /// <summary>
     /// <c>DELETE players/{handle}/block</c>: só quem bloqueou desbloqueia (apaga a linha: voltam a ser desconhecidos).
-    /// Null = handle inexistente; <see cref="DomainException"/> quando não há bloqueio meu sobre essa conta.
+    /// Null (404) = handle inexistente/inativo OU sem bloqueio meu sobre essa conta — a mesma resposta, para a rota não
+    /// servir de oráculo de quem existe ou de quem me bloqueou (M4).
     /// </summary>
     public async Task<bool?> UnblockAsync(Guid userId, string handle, CancellationToken ct = default)
     {
-        var key = NormalizeHandle(handle);
-        var targetId = await _db.Users.AsNoTracking()
-            .Where(u => u.Handle == key)
-            .Select(u => (Guid?)u.Id)
-            .FirstOrDefaultAsync(ct);
-        if (targetId is null)
+        var target = await FindActiveByHandleAsync(handle, ct);
+        if (target is null)
             return null;
 
-        var pair = await FindPairAsync(userId, targetId.Value, ct, track: true);
+        var pair = await FindPairAsync(userId, target.Id, ct, track: true);
         if (pair is null || pair.Status != nameof(FriendshipStatus.Blocked) || pair.BlockedById != userId)
-            throw new DomainException(NotBlockedMessage);
+            return null;
         _db.Friendships.Remove(pair);
         await _db.SaveChangesAsync(ct);
         return true;
@@ -459,7 +501,7 @@ public class FriendshipService : IFriendshipLookup
         return rows
             .Where(r => users.ContainsKey(r.OtherId))
             .OrderByDescending(r => r.RequestedAt)
-            .Select(r => Fill(new BlockedUserResponse { BlockedAt = r.RequestedAt }, users[r.OtherId]))
+            .Select(r => Fill(new BlockedUserResponse { BlockedAt = r.RequestedAt }, users[r.OtherId], viewerIsFriend: false))
             .ToList();
     }
 
@@ -520,7 +562,7 @@ public class FriendshipService : IFriendshipLookup
             .Where(r => users.ContainsKey(r.OtherId))
             .Select(r =>
             {
-                var friend = Fill(new FriendResponse { FriendsSince = r.Since }, users[r.OtherId]);
+                var friend = Fill(new FriendResponse { FriendsSince = r.Since }, users[r.OtherId], viewerIsFriend: true);
                 playing.TryGetValue(r.OtherId, out var now);
                 friend.PlayingNow = now;
                 return friend;
@@ -548,7 +590,8 @@ public class FriendshipService : IFriendshipLookup
         {
             if (!users.TryGetValue(r.OtherId, out var u))
                 continue;
-            var item = new FriendRequestResponse { Id = r.Id, RequestedAt = r.RequestedAt, User = Fill(new FriendUserResponse(), u) };
+            // Pedido pendente: ainda não são amigos, então cidade/UF só de quem tem o perfil aberto a todos (M2)
+            var item = new FriendRequestResponse { Id = r.Id, RequestedAt = r.RequestedAt, User = Fill(new FriendUserResponse(), u, viewerIsFriend: false) };
             (r.RequesterId == userId ? response.Sent : response.Received).Add(item);
         }
         return response;
@@ -585,8 +628,9 @@ public class FriendshipService : IFriendshipLookup
         if (common.Count == 0)
             return ([], 0);
         var users = await UsersAsync(common, activeOnly: true, ct);
+        // Amigos em comum são amigos de quem vê: cidade/UF com Everyone ou Friends (M2)
         var items = users.Values
-            .Select(u => Fill(new FriendUserResponse(), u))
+            .Select(u => Fill(new FriendUserResponse(), u, viewerIsFriend: true))
             .OrderBy(u => u.DisplayName, StringComparer.Create(PtBr, ignoreCase: true))
             .ThenBy(u => u.Handle, StringComparer.Ordinal)
             .ToList();
@@ -685,7 +729,8 @@ public class FriendshipService : IFriendshipLookup
 
     // ------------------------------------------------------------------ apoio
 
-    private sealed record UserRow(Guid Id, string Handle, string? Nickname, string FullName, string? PhotoUrl, string? City, string? State);
+    private sealed record UserRow(
+        Guid Id, string Handle, string? Nickname, string FullName, string? PhotoUrl, string? City, string? State, string ProfileVisibility);
 
     private async Task<Dictionary<Guid, UserRow>> UsersAsync(List<Guid> ids, bool activeOnly, CancellationToken ct)
     {
@@ -693,18 +738,20 @@ public class FriendshipService : IFriendshipLookup
         if (activeOnly)
             query = query.Where(u => u.IsActive && u.EmailConfirmedAt != null);
         return await query
-            .Select(u => new UserRow(u.Id, u.Handle, u.Nickname, u.FullName, u.PhotoUrl, u.City, u.State))
+            .Select(u => new UserRow(u.Id, u.Handle, u.Nickname, u.FullName, u.PhotoUrl, u.City, u.State, u.ProfileVisibility))
             .ToDictionaryAsync(u => u.Id, ct);
     }
 
-    private static T Fill<T>(T target, UserRow u) where T : FriendUserResponse
+    /// <summary>Cartão de uma conta para quem vê; cidade/UF conforme <see cref="ShowsPlace"/> (M2).</summary>
+    private static T Fill<T>(T target, UserRow u, bool viewerIsFriend) where T : FriendUserResponse
     {
+        var showsPlace = ShowsPlace(u.ProfileVisibility, viewerIsFriend);
         target.Id = u.Id;
         target.Handle = u.Handle;
         target.DisplayName = PlayerProfileService.DisplayNameOf(u.Nickname, u.FullName);
         target.PhotoUrl = u.PhotoUrl;
-        target.City = u.City;
-        target.State = u.State;
+        target.City = showsPlace ? u.City : null;
+        target.State = showsPlace ? u.State : null;
         return target;
     }
 
@@ -717,7 +764,7 @@ public class FriendshipService : IFriendshipLookup
         return PlayerProfileService.DisplayNameOf(u.Nickname, u.FullName);
     }
 
-    private sealed record TargetRow(Guid Id, string FriendRequestsFrom);
+    private sealed record TargetRow(Guid Id, string FriendRequestsFrom, string ProfileVisibility);
 
     /// <summary>Conta ativa e confirmada pelo handle (normalizado); null quando não existe.</summary>
     private async Task<TargetRow?> FindActiveByHandleAsync(string handle, CancellationToken ct)
@@ -727,7 +774,7 @@ public class FriendshipService : IFriendshipLookup
             return null;
         return await _db.Users.AsNoTracking()
             .Where(u => u.Handle == key && u.IsActive && u.EmailConfirmedAt != null)
-            .Select(u => new TargetRow(u.Id, u.FriendRequestsFrom))
+            .Select(u => new TargetRow(u.Id, u.FriendRequestsFrom, u.ProfileVisibility))
             .FirstOrDefaultAsync(ct);
     }
 

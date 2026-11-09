@@ -545,6 +545,10 @@ public partial class AuthService
     /// IsActive = false e o nome tirado dos AuditLogs e dos registros de uso de IA (ai_usages.actor_name) da própria
     /// conta; grava <c>AccountDeleted</c>. Os jogadores
     /// (Person) dos home games ficam (são dos organizadores), mas soltos da conta (Person.UserId = null — SPEC-20261029-1725).
+    /// Mensagens (SPEC-20261108-1638; revisão da onda 2, A2 — a política de privacidade promete): as mensagens que a
+    /// conta enviou ficam apagadas (<c>deleted_at</c> e texto vazio — o outro lado vê "mensagem apagada") e a conta sai
+    /// das conversas (<c>conversation_members</c>); as cópias nas denúncias ficam (retenção para abuso, também na política).
+    /// O handle vira <c>excluida-…</c> (<see cref="HandleGenerator.ForDeletedAccount"/>), conferindo colisão antes de gravar.
     /// Devolve a foto anterior (quem chama apaga o arquivo).
     /// </summary>
     public async Task<string?> DeleteAccountAsync(
@@ -596,6 +600,16 @@ public partial class AuthService
                     .SetProperty(u => u.ActorName, DeletedAccountName)
                     .SetProperty(u => u.UpdatedAt, now), ct);
 
+            // Mensagens (A2): o que a conta escreveu some ("mensagem apagada" para o outro lado; o texto não fica no banco)
+            // e ela deixa de ser membro das conversas — o outro membro continua vendo a conversa e as mensagens dele
+            await _db.Messages
+                .Where(m => m.SenderId == user.Id)
+                .ExecuteUpdateAsync(set => set
+                    .SetProperty(m => m.DeletedAt, m => (DateTimeOffset?)(m.DeletedAt ?? now))
+                    .SetProperty(m => m.Body, string.Empty)
+                    .SetProperty(m => m.UpdatedAt, now), ct);
+            await _db.ConversationMembers.Where(m => m.UserId == user.Id).ExecuteDeleteAsync(ct);
+
             // Os jogadores vinculados a ela (em qualquer home game) ficam sem conta (SPEC-20261029-1725): a foto que sai
             // daqui não continua aparecendo; eles voltam à foto do cadastro. No mesmo SaveChanges da anonimização.
             await PlayerLinkService.UnlinkUserAsync(_db, user.Id, ct);
@@ -603,8 +617,9 @@ public partial class AuthService
             user.Nickname = null;
             user.Whatsapp = null;
             user.PhotoUrl = null;
-            // Perfil público (SPEC-20261108-1636): o handle antigo fica livre e cidade/bio somem
-            user.Handle = HandleGenerator.ForDeletedAccount(user.Id);
+            // Perfil público (SPEC-20261108-1636): o handle antigo fica livre e cidade/bio somem. O prefixo "excluida-" é
+            // reservado desde a revisão da onda 2 (A1); a conferência cobre linhas anteriores a isso.
+            user.Handle = await FreeDeletedHandleAsync(user.Id, ct);
             user.City = null;
             user.State = null;
             user.Bio = null;
@@ -624,6 +639,20 @@ public partial class AuthService
             _homeGameDeletion.AfterCommit(primaryCleanup);
         _logger.LogInformation("Conta excluída (anonimizada) pelo perfil: usuário {UserId}", user.Id);
         return previousPhoto;
+    }
+
+    /// <summary>
+    /// O handle <c>excluida-…</c> que ainda não está em uso por outra conta (A1): a primeira forma e, em colisão com
+    /// uma linha antiga, as variantes <c>-2</c>, <c>-3</c>… O índice único é a rede de segurança.
+    /// </summary>
+    private async Task<string> FreeDeletedHandleAsync(Guid userId, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var candidate = HandleGenerator.ForDeletedAccount(userId, attempt);
+            if (!await _db.Users.AnyAsync(u => u.Handle == candidate && u.Id != userId, ct))
+                return candidate;
+        }
     }
 
     /// <summary>Senha da conta (errada conta no <see cref="LoginAttemptLimiter"/>, como no login; estourou → 429).</summary>
