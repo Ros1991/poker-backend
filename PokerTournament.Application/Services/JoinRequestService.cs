@@ -17,9 +17,12 @@ namespace PokerTournament.Application.Services;
 /// com nome, apelido e e-mail da conta, já vinculado (<c>Person.UserId</c>, regra da SPEC-20261029-1725), ou
 /// reaproveitado se a conta já tem jogador lá — sem inscrição nem transação; a reserva aparece na fila "Reservas" do
 /// painel e do terminal até o organizador inscrever (o <c>EntryService</c> grava <c>EntryId</c> ao inscrever o jogador
-/// reservado). Com as vagas (<c>MaxPlayers</c>) esgotadas, aprovar põe em espera e a primeira da fila sobe sozinha
-/// quando uma reserva sai (cancelada pelo interessado ou removida pelo organizador). Recusado não pede de novo; cancelado
-/// pode. Tudo notifica (SPEC-20261108-1635): <c>JoinRequestReceived</c> para quem gerencia; Approved/Declined/Waitlisted/
+/// reservado). Com as vagas (<c>MaxPlayers</c>) esgotadas, aprovar põe em espera; quem está na espera sobe em ordem
+/// quando cabe — uma reserva sai (cancelada pelo interessado ou removida pelo organizador), o organizador sobe ou tira
+/// o limite de vagas, ou ele toca "Aprovar agora" na fila (400 sem vaga). Recusado não pede de novo; cancelado pode.
+/// Contar vagas + decidir + gravar acontece dentro de uma transação com a MESMA trava da inscrição
+/// (<see cref="EntryService.LockSeatingAsync"/>): duas aprovações ao mesmo tempo não passam do limite (revisão da 1639).
+/// Tudo notifica (SPEC-20261108-1635): <c>JoinRequestReceived</c> para quem gerencia; Approved/Declined/Waitlisted/
 /// Promoted para o interessado.
 /// <para>
 /// É também a implementação real de <see cref="ITournamentRequestLookup"/> (a costura das mensagens, SPEC-20261108-1638):
@@ -42,6 +45,7 @@ public class JoinRequestService : ITournamentRequestLookup
     public const string NotPendingMessage = "Este pedido já foi decidido.";
     public const string NotReservationMessage = "Esta reserva não está mais na fila.";
     public const string InactiveAccountMessage = "A conta que pediu a vaga foi desativada ou excluída.";
+    public const string NoSpotMessage = "Sem vaga para aprovar agora: remova uma reserva ou aumente as vagas do torneio.";
 
     /// <summary>Torneio de hoje (ou das últimas horas) ainda conta como próximo.</summary>
     public const int UpcomingGraceHours = 12;
@@ -177,6 +181,14 @@ public class JoinRequestService : ITournamentRequestLookup
     /// </summary>
     public async Task<JoinRequestResponse> CancelAsync(Guid userId, Guid requestId, CancellationToken ct = default)
     {
+        var tournamentId = await _db.TournamentJoinRequests.AsNoTracking()
+            .Where(r => r.Id == requestId && r.UserId == userId)
+            .Select(r => (Guid?)r.TournamentId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException(RequestNotFoundMessage);
+        // A vaga que sai e a promoção da espera contam dentro da trava do torneio (a mesma da inscrição)
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, tournamentId, ct);
         var request = await Requests(track: true).FirstOrDefaultAsync(r => r.Id == requestId && r.UserId == userId, ct)
             ?? throw new KeyNotFoundException(RequestNotFoundMessage);
         if (request.Status == Cancelled)
@@ -196,9 +208,13 @@ public class JoinRequestService : ITournamentRequestLookup
         if (wasWaitlisted)
             await RenumberWaitlistAsync(request.TournamentId, ct);
         if (wasApproved)
-            await PromoteWaitlistAsync(request.TournamentId, ct);
+        {
+            var maxPlayers = await _db.Tournaments.AsNoTracking().Where(t => t.Id == tournamentId).Select(t => t.MaxPlayers).FirstOrDefaultAsync(ct);
+            await PromoteWaitlistAsync(tournamentId, maxPlayers, freed: 1, ct);
+        }
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         await _notifications.PushPendingAsync(ct);
         return Map(request);
     }
@@ -240,6 +256,8 @@ public class JoinRequestService : ITournamentRequestLookup
                 HomeGameIsPrimary = t.HomeGame.IsPrimary,
                 OwnerId = t.HomeGame.OwnerId,
                 OwnerName = t.HomeGame.Owner.FullName,
+                OwnerNickname = t.HomeGame.Owner.Nickname,
+                t.HomeGame.AddressVisibility,
                 t.HomeGame.Street, t.HomeGame.Number, t.HomeGame.Complement, t.HomeGame.District, t.HomeGame.City, t.HomeGame.State,
                 t.HomeGame.PostalCode, t.HomeGame.Latitude, t.HomeGame.Longitude, t.HomeGame.Location,
             })
@@ -265,13 +283,15 @@ public class JoinRequestService : ITournamentRequestLookup
                 Date = t.Date,
                 Status = t.Status,
                 HomeGameId = t.HomeGameId,
-                HomeGameLabel = HomeGamePrimary.LabelFor(t.HomeGameIsPrimary, ownerPlans[t.OwnerId], t.HomeGameName, t.OwnerName),
+                HomeGameLabel = HomeGamePrimary.PublicLabelFor(t.HomeGameIsPrimary, ownerPlans[t.OwnerId], t.HomeGameName, t.OwnerNickname, t.OwnerName),
                 BuyInAmount = t.BuyInAmount,
                 Registered = registered,
                 RequestId = req?.Id,
                 RequestStatus = req?.Status,
                 WaitlistPosition = req?.Status == Waitlisted ? req.WaitlistPosition : null,
-                LocationSummary = LocationSummary(t.District, t.City, t.State),
+                // Com o endereço liberado pelo dono (Public), a rua e o número já aparecem antes da aprovação (1634 + revisão)
+                AddressIsPublic = AddressIsPublic(t.AddressVisibility),
+                LocationSummary = VisibleLocation(t.AddressVisibility, t.Street, t.Number, t.District, t.City, t.State),
             };
             if (approved)
             {
@@ -309,8 +329,11 @@ public class JoinRequestService : ITournamentRequestLookup
         };
     }
 
-    /// <summary>A fila "Reservas" (aprovadas sem inscrição), para o terminal do dealer também.</summary>
-    public async Task<List<JoinRequestResponse>> ReservationsAsync(Guid tournamentId, CancellationToken ct = default)
+    /// <summary>
+    /// A fila "Reservas" (aprovadas sem inscrição), para a aba de inscrições e o terminal — também o membro comum e o dealer
+    /// por QR: DTO reduzido, sem o recado do interessado nem o handle da conta (revisão da 1639).
+    /// </summary>
+    public async Task<List<ReservationResponse>> ReservationsAsync(Guid tournamentId, CancellationToken ct = default)
     {
         if (!await _db.Tournaments.AnyAsync(t => t.Id == tournamentId, ct))
             throw new KeyNotFoundException();
@@ -318,7 +341,7 @@ public class JoinRequestService : ITournamentRequestLookup
             .Where(r => r.TournamentId == tournamentId && r.Status == Approved && r.EntryId == null)
             .OrderBy(r => r.DecidedAt)
             .ToListAsync(ct);
-        return rows.Select(Map).ToList();
+        return rows.Select(MapReservation).ToList();
     }
 
     /// <summary>
@@ -366,18 +389,23 @@ public class JoinRequestService : ITournamentRequestLookup
 
     /// <summary>
     /// Aprovar = reservar: garante o jogador da conta no clube (reaproveita o vinculado; senão cria com nome, apelido e
-    /// e-mail da conta, já vinculado) e marca Approved — ou Waitlisted, com posição, se as vagas acabaram. Nada de
-    /// inscrição nem transação. Notifica o interessado.
+    /// e-mail da conta, já vinculado) e marca Approved — ou Waitlisted, com posição, se as vagas acabaram. Quem já está na
+    /// espera ("Aprovar agora") sobe se houver vaga, senão 400 (<see cref="NoSpotMessage"/>). Nada de inscrição nem
+    /// transação. Contar as vagas e gravar acontece sob a trava do torneio (a mesma da inscrição): duas aprovações
+    /// simultâneas na última vaga dão uma reserva e uma espera, nunca duas reservas. Notifica o interessado.
     /// </summary>
     public async Task<JoinRequestResponse> ApproveAsync(Guid tournamentId, Guid requestId, Guid? actorId, CancellationToken ct = default)
     {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, tournamentId, ct);
+
         var tournament = await _db.Tournaments.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new KeyNotFoundException();
         var request = await Requests(track: true).FirstOrDefaultAsync(r => r.Id == requestId && r.TournamentId == tournamentId, ct)
             ?? throw new KeyNotFoundException(RequestNotFoundMessage);
-        if (request.Status == Approved || request.Status == Waitlisted)
+        if (request.Status == Approved)
             return Map(request); // toque duplo
-        if (request.Status != Pending)
+        if (request.Status != Pending && request.Status != Waitlisted)
             throw new DomainException(NotPendingMessage);
         if (tournament.Status == Finished || tournament.Status == CancelledTournament)
             throw new DomainException(OverMessage);
@@ -386,12 +414,14 @@ public class JoinRequestService : ITournamentRequestLookup
         if (user is null || !user.IsActive || user.Email.EndsWith(PlayerLinkService.DeletedAccountEmailSuffix, StringComparison.Ordinal))
             throw new DomainException(InactiveAccountMessage);
 
-        var now = DateTimeOffset.UtcNow;
-        request.DecidedAt = now;
-        request.DecidedBy = actorId;
-
         var (_, left) = await SpotsAsync(tournamentId, tournament.MaxPlayers, ct);
         var club = await ClubLabelAsync(tournament.HomeGameId, ct);
+        var fromWaitlist = request.Status == Waitlisted;
+        if (fromWaitlist && left is <= 0)
+            throw new DomainException(NoSpotMessage);
+
+        request.DecidedAt = DateTimeOffset.UtcNow;
+        request.DecidedBy = actorId;
         if (left is <= 0)
         {
             var position = (await _db.TournamentJoinRequests
@@ -411,18 +441,24 @@ public class JoinRequestService : ITournamentRequestLookup
         {
             var person = await EnsurePersonAsync(tournament.HomeGameId, user, ct);
             request.Status = Approved;
+            request.WaitlistPosition = null;
             request.PersonId = person.Id;
             request.Person = person;
+            if (fromWaitlist)
+                await RenumberWaitlistAsync(tournamentId, ct);
             await _notifications.StageAsync(
                 [user.Id],
-                NotificationKind.JoinRequestApproved,
-                $"Vaga reservada: {tournament.Name}",
-                $"Sua vaga em {club} está reservada. O endereço completo e o Como chegar estão em Meus torneios › Próximos.",
+                fromWaitlist ? NotificationKind.JoinRequestPromoted : NotificationKind.JoinRequestApproved,
+                fromWaitlist ? $"Sua vez: {tournament.Name}" : $"Vaga reservada: {tournament.Name}",
+                fromWaitlist
+                    ? $"Uma vaga abriu em {club} e a sua reserva está confirmada. O endereço e o Como chegar estão em Meus torneios › Próximos."
+                    : $"Sua vaga em {club} está reservada. O endereço completo e o Como chegar estão em Meus torneios › Próximos.",
                 UpcomingLink,
                 ct);
         }
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         await _notifications.PushPendingAsync(ct);
         return Map(request);
     }
@@ -461,34 +497,56 @@ public class JoinRequestService : ITournamentRequestLookup
     }
 
     /// <summary>
-    /// "Remover reserva" (organizador): a reserva ainda na fila vira Cancelled (a conta pode pedir de novo) e a primeira
-    /// da espera sobe. Reserva já inscrita não se remove por aqui (exclui-se a inscrição).
+    /// "Remover" (organizador): a reserva ainda na fila — ou quem está na lista de espera — vira Cancelled (a conta pode
+    /// pedir de novo); reserva removida faz a primeira da espera subir. Reserva já inscrita não se remove por aqui
+    /// (exclui-se a inscrição). Sob a trava do torneio.
     /// </summary>
     public async Task<JoinRequestResponse> RemoveReservationAsync(Guid tournamentId, Guid requestId, Guid? actorId, CancellationToken ct = default)
     {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, tournamentId, ct);
+
         var tournament = await _db.Tournaments.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tournamentId, ct)
             ?? throw new KeyNotFoundException();
         var request = await Requests(track: true).FirstOrDefaultAsync(r => r.Id == requestId && r.TournamentId == tournamentId, ct)
             ?? throw new KeyNotFoundException(RequestNotFoundMessage);
         if (request.Status == Cancelled)
             return Map(request);
-        if (request.Status != Approved || request.EntryId is not null)
+        var wasWaitlisted = request.Status == Waitlisted;
+        if (!wasWaitlisted && (request.Status != Approved || request.EntryId is not null))
             throw new DomainException(NotReservationMessage);
 
         request.Status = Cancelled;
+        request.WaitlistPosition = null;
         request.DecidedAt = DateTimeOffset.UtcNow;
         request.DecidedBy = actorId;
 
-        await _notifications.StageAsync(
-            [request.UserId],
-            NotificationKind.JoinRequestDeclined,
-            $"Reserva removida: {tournament.Name}",
-            "O organizador removeu a sua reserva neste torneio. Se quiser, peça a vaga de novo.",
-            tournament.IsPublic && tournament.PublicSlug is not null ? TournamentPublicity.PublicPath(tournament.PublicSlug) : null,
-            ct);
-        await PromoteWaitlistAsync(tournamentId, ct);
+        var link = tournament.IsPublic && tournament.PublicSlug is not null ? TournamentPublicity.PublicPath(tournament.PublicSlug) : null;
+        if (wasWaitlisted)
+        {
+            await RenumberWaitlistAsync(tournamentId, ct);
+            await _notifications.StageAsync(
+                [request.UserId],
+                NotificationKind.JoinRequestDeclined,
+                $"Fora da lista de espera: {tournament.Name}",
+                "O organizador tirou você da lista de espera deste torneio. Se quiser, peça a vaga de novo.",
+                link,
+                ct);
+        }
+        else
+        {
+            await _notifications.StageAsync(
+                [request.UserId],
+                NotificationKind.JoinRequestDeclined,
+                $"Reserva removida: {tournament.Name}",
+                "O organizador removeu a sua reserva neste torneio. Se quiser, peça a vaga de novo.",
+                link,
+                ct);
+            await PromoteWaitlistAsync(tournamentId, tournament.MaxPlayers, freed: 1, ct);
+        }
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         await _notifications.PushPendingAsync(ct);
         return Map(request);
     }
@@ -543,52 +601,77 @@ public class JoinRequestService : ITournamentRequestLookup
         return (taken, maxPlayers is { } max ? Math.Max(0, max - taken) : null);
     }
 
-    /// <summary>Uma reserva saiu: a primeira da espera vira reserva (jogador garantido no clube) e é avisada. Não salva.</summary>
-    private async Task PromoteWaitlistAsync(Guid tournamentId, CancellationToken ct)
+    /// <summary>
+    /// Sobe, em ordem, quem couber na lista de espera: cada um vira reserva (jogador garantido no clube) e é avisado
+    /// (<c>JoinRequestPromoted</c>); conta inativa sai da fila. Não salva — vai no SaveChanges de quem chama, que precisa
+    /// estar numa transação com a trava do torneio (<see cref="EntryService.LockSeatingAsync"/>). Chamado quando uma
+    /// reserva sai (<paramref name="freed"/> = 1: ela ainda está contada no banco) e quando o organizador sobe ou tira o
+    /// limite de vagas (<paramref name="maxPlayers"/> = o limite novo, que pode ainda não estar gravado; null = sem limite,
+    /// todos sobem).
+    /// </summary>
+    public async Task PromoteWaitlistAsync(Guid tournamentId, int? maxPlayers, int freed, CancellationToken ct)
     {
-        var tournament = await _db.Tournaments.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
-        if (tournament is null || tournament.MaxPlayers is null)
+        if (_db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("A promoção da lista de espera exige a transação com a trava do torneio.");
+        var tournament = await _db.Tournaments.AsNoTracking()
+            .Where(t => t.Id == tournamentId)
+            .Select(t => new { t.Id, t.Name, t.HomeGameId, t.Status })
+            .FirstOrDefaultAsync(ct);
+        if (tournament is null || tournament.Status == Finished || tournament.Status == CancelledTournament)
             return;
         // As contas da espera já estão rastreadas se vieram por este contexto; lê de novo com tracking para mudar
-        var next = await Requests(track: true)
+        var waiting = await Requests(track: true)
             .Where(r => r.TournamentId == tournamentId && r.Status == Waitlisted)
             .OrderBy(r => r.WaitlistPosition).ThenBy(r => r.RequestedAt)
-            .FirstOrDefaultAsync(ct);
-        if (next is null)
+            .ToListAsync(ct);
+        if (waiting.Count == 0)
             return;
-        // A vaga que abriu ainda está "ocupada" pela reserva cancelada no contexto (não salvo): conta com ela liberada
-        var (taken, _) = await SpotsAsync(tournamentId, tournament.MaxPlayers, ct);
-        if (taken - 1 >= tournament.MaxPlayers)
+        // As vagas que acabaram de abrir ainda estão "ocupadas" no banco (reserva cancelada neste contexto, não salva)
+        var (taken, _) = await SpotsAsync(tournamentId, maxPlayers, ct);
+        var available = maxPlayers is { } max ? max - (taken - freed) : int.MaxValue;
+        if (available <= 0)
             return;
 
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == next.UserId, ct);
-        if (user is null || !user.IsActive)
-        {
-            next.Status = Cancelled;
-            next.WaitlistPosition = null;
-            next.DecidedAt = DateTimeOffset.UtcNow;
-            await RenumberWaitlistAsync(tournamentId, ct);
-            return;
-        }
-        var person = await EnsurePersonAsync(tournament.HomeGameId, user, ct);
-        next.Status = Approved;
-        next.WaitlistPosition = null;
-        next.PersonId = person.Id;
-        next.Person = person;
-        next.DecidedAt = DateTimeOffset.UtcNow;
-        next.DecidedBy = null;
-        await RenumberWaitlistAsync(tournamentId, ct);
         var club = await ClubLabelAsync(tournament.HomeGameId, ct);
-        await _notifications.StageAsync(
-            [user.Id],
-            NotificationKind.JoinRequestPromoted,
-            $"Sua vez: {tournament.Name}",
-            $"Uma vaga abriu em {club} e a sua reserva está confirmada. O endereço e o Como chegar estão em Meus torneios › Próximos.",
-            UpcomingLink,
-            ct);
+        var changed = false;
+        foreach (var next in waiting)
+        {
+            if (available <= 0)
+                break;
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == next.UserId, ct);
+            if (user is null || !user.IsActive)
+            {
+                next.Status = Cancelled;
+                next.WaitlistPosition = null;
+                next.DecidedAt = DateTimeOffset.UtcNow;
+                changed = true;
+                continue;
+            }
+            var person = await EnsurePersonAsync(tournament.HomeGameId, user, ct);
+            next.Status = Approved;
+            next.WaitlistPosition = null;
+            next.PersonId = person.Id;
+            next.Person = person;
+            next.DecidedAt = DateTimeOffset.UtcNow;
+            next.DecidedBy = null;
+            available--;
+            changed = true;
+            await _notifications.StageAsync(
+                [user.Id],
+                NotificationKind.JoinRequestPromoted,
+                $"Sua vez: {tournament.Name}",
+                $"Uma vaga abriu em {club} e a sua reserva está confirmada. O endereço e o Como chegar estão em Meus torneios › Próximos.",
+                UpcomingLink,
+                ct);
+        }
+        if (changed)
+            await RenumberWaitlistAsync(tournamentId, ct);
     }
 
-    /// <summary>Posições 1..n da espera, pela ordem atual (posição, depois pedido). Não salva.</summary>
+    /// <summary>
+    /// Posições 1..n da espera, pela ordem atual (posição, depois pedido). Não salva. Quem acabou de sair da espera neste
+    /// contexto (ainda Waitlisted no banco, mas já Approved/Cancelled na instância rastreada) fica de fora.
+    /// </summary>
     private async Task RenumberWaitlistAsync(Guid tournamentId, CancellationToken ct)
     {
         var waiting = await Requests(track: true)
@@ -596,7 +679,7 @@ public class JoinRequestService : ITournamentRequestLookup
             .OrderBy(r => r.WaitlistPosition).ThenBy(r => r.RequestedAt)
             .ToListAsync(ct);
         var position = 1;
-        foreach (var w in waiting)
+        foreach (var w in waiting.Where(w => w.Status == Waitlisted))
             w.WaitlistPosition = position++;
     }
 
@@ -663,16 +746,17 @@ public class JoinRequestService : ITournamentRequestLookup
         return owner.Concat(admins).Distinct().ToList();
     }
 
+    /// <summary>Nome do clube nas notificações do interessado: o rótulo público (nunca o nome completo do dono).</summary>
     private async Task<string> ClubLabelAsync(Guid homeGameId, CancellationToken ct)
     {
         var hg = await _db.HomeGames.AsNoTracking()
             .Where(h => h.Id == homeGameId)
-            .Select(h => new { h.Name, h.IsPrimary, h.OwnerId, OwnerName = h.Owner.FullName })
+            .Select(h => new { h.Name, h.IsPrimary, h.OwnerId, OwnerName = h.Owner.FullName, OwnerNickname = h.Owner.Nickname })
             .FirstOrDefaultAsync(ct);
         if (hg is null)
             return "o clube";
         var plan = await _plans.GetUserEffectivePlanAsync(hg.OwnerId, ct);
-        return HomeGamePrimary.LabelFor(hg.IsPrimary, plan, hg.Name, hg.OwnerName);
+        return HomeGamePrimary.PublicLabelFor(hg.IsPrimary, plan, hg.Name, hg.OwnerNickname, hg.OwnerName);
     }
 
     private static bool IsUniqueViolation(DbUpdateException ex) =>
@@ -694,6 +778,25 @@ public class JoinRequestService : ITournamentRequestLookup
             .Where(s => !string.IsNullOrEmpty(s));
         var text = string.Join(", ", parts);
         return text.Length == 0 ? null : text;
+    }
+
+    /// <summary>O dono liberou o endereço completo do home game para quem vê o torneio (SPEC-20261108-1634, <c>Public</c>).</summary>
+    public static bool AddressIsPublic(string? addressVisibility) =>
+        string.Equals(addressVisibility, nameof(AddressVisibility.Public), StringComparison.Ordinal);
+
+    /// <summary>
+    /// O que quem NÃO foi aprovado vê do endereço: "Bairro, Cidade - UF"; com o endereço liberado pelo dono (Public),
+    /// "Rua X, 123 - Bairro, Cidade - UF" — nunca CEP, complemento nem coordenadas. Null sem nada.
+    /// </summary>
+    public static string? VisibleLocation(string? addressVisibility, string? street, string? number, string? district, string? city, string? state)
+    {
+        var summary = LocationSummary(district, city, state);
+        if (!AddressIsPublic(addressVisibility) || string.IsNullOrWhiteSpace(street))
+            return summary;
+        var line = street.Trim();
+        if (!string.IsNullOrWhiteSpace(number))
+            line += $", {number.Trim()}";
+        return summary is null ? line : $"{line} - {summary}";
     }
 
     /// <summary>"Rua X, 123 - apto 4 - Bairro, Cidade - UF, CEP 01310-100 (ponto de referência)"; null sem nada.</summary>
@@ -735,6 +838,19 @@ public class JoinRequestService : ITournamentRequestLookup
         Fill(response, request);
         return response;
     }
+
+    /// <summary>A fila "Reservas" reduzida: nome de exibição, foto, jogador e estado — sem recado nem handle.</summary>
+    private static ReservationResponse MapReservation(TournamentJoinRequest request) => new()
+    {
+        Id = request.Id,
+        TournamentId = request.TournamentId,
+        Status = request.Status,
+        WaitlistPosition = request.Status == Waitlisted ? request.WaitlistPosition : null,
+        PersonId = request.PersonId,
+        DisplayName = request.Person is null ? DisplayName(request.User.FullName, request.User.Nickname) : EntryService.PlayerDisplayName(request.Person),
+        PhotoUrl = request.Person is null ? request.User.PhotoUrl : PlayerPhoto.Of(request.Person.User?.PhotoUrl ?? request.User.PhotoUrl, request.Person.PhotoUrl),
+        HasEntry = request.EntryId is not null,
+    };
 
     private static void Fill(JoinRequestResponse target, TournamentJoinRequest request)
     {

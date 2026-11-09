@@ -3,15 +3,18 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Caching.Memory;
 using PokerTournament.Application.DTOs.Responses;
+using PokerTournament.Application.Geo;
 using PokerTournament.Application.Services;
 
 namespace PokerTournament.Api.Controllers;
 
 /// <summary>
-/// Página pública do torneio, sem login (SPEC-20261108-1639): <c>GET public/tournaments/{slug}?lat&amp;lng</c>. Mesma
-/// moldura do ranking público: rota sem {homeGameId}/{tournamentId} (o filtro de tenant não age), limite por IP
-/// (public-anon) e um cache curto da página montada; a distância do visitante é calculada por chamada e as coordenadas
-/// dele nunca são guardadas. Torneio privado, cancelado ou excluído → 404 "não disponível".
+/// Página pública do torneio, sem login (SPEC-20261108-1639): <c>GET public/tournaments/{slug}</c>. Mesma moldura do
+/// ranking público: rota sem {homeGameId}/{tournamentId} (o filtro de tenant não age), limite por IP (public-anon) e um
+/// cache curto da página montada — que o <c>TournamentService</c> apaga ao despublicar, cancelar ou excluir. A distância
+/// do visitante vem pelo cabeçalho <c>X-Visitor-Location: lat,lng</c> (nunca na query string, que fica em log e histórico),
+/// é calculada por chamada até o ponto público do clube e as coordenadas dele nunca são guardadas. Torneio privado,
+/// cancelado ou excluído → 404 "não disponível".
 /// </summary>
 [ApiController]
 [Route("api/v1/public/tournaments")]
@@ -32,19 +35,17 @@ public class PublicTournamentsController : ControllerBase
         _cache = cache;
     }
 
-    public static string CacheKey(string slug) => $"public-tournament:{slug}";
-
     [HttpGet("{slug}")]
     [ProducesResponseType(typeof(PublicTournamentResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PublicTournamentResponse>> GetBySlug(
-        string slug, [FromQuery] double? lat, [FromQuery] double? lng, CancellationToken ct)
+        string slug, [FromHeader(Name = GeoDistance.VisitorLocationHeader)] string? visitorLocation, CancellationToken ct)
     {
         var key = slug.Trim().ToLowerInvariant();
         if (key.Length == 0 || key.Length > MaxSlugLength)
             return NotFound(new { message = NotAvailableMessage });
 
-        var cacheKey = CacheKey(key);
+        var cacheKey = PublicTournamentService.CacheKey(key);
         if (!_cache.TryGetValue(cacheKey, out PublicTournamentData? data))
         {
             data = await _service.GetBySlugAsync(key, ct);
@@ -55,7 +56,7 @@ public class PublicTournamentsController : ControllerBase
         if (data is null)
             return NotFound(new { message = NotAvailableMessage });
 
-        var distance = PublicTournamentService.Distance(data, lat, lng);
+        var distance = PublicTournamentService.Distance(data, GeoDistance.ParseVisitorLocation(visitorLocation));
         if (distance is null)
         {
             Response.Headers.CacheControl = "public, max-age=10";
@@ -91,6 +92,7 @@ internal static class PublicTournamentResponseExtensions
             City = source.City,
             State = source.State,
             LocationSummary = source.LocationSummary,
+            AddressIsPublic = source.AddressIsPublic,
             DistanceKm = source.DistanceKm,
             BuyInAmount = source.BuyInAmount,
             RebuyAmount = source.RebuyAmount,

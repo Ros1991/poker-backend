@@ -33,6 +33,29 @@ public class JoinRequestResponse
     public bool HasEntry { get; set; }
 }
 
+/// <summary>
+/// Uma reserva na fila "Reservas" (<c>GET tournaments/{id}/join-requests/reservations</c>), como a aba de inscrições e o
+/// terminal — inclusive o dealer por QR e o membro comum — a veem: só o nome de exibição, a foto, o jogador e o estado.
+/// SEM o recado do interessado e sem o handle da conta (revisão da SPEC-20261108-1639): esses ficam na lista de pedidos de
+/// quem gerencia (<see cref="TournamentJoinOverviewResponse"/>).
+/// </summary>
+public class ReservationResponse
+{
+    public Guid Id { get; set; }
+    public Guid TournamentId { get; set; }
+    /// <summary>Approved (a fila "Reservas" só tem reservas; a espera fica na lista de quem gerencia).</summary>
+    public string Status { get; set; } = string.Empty;
+    /// <summary>Posição na lista de espera; null na reserva.</summary>
+    public int? WaitlistPosition { get; set; }
+    /// <summary>O jogador do clube criado/reaproveitado na aprovação.</summary>
+    public Guid? PersonId { get; set; }
+    /// <summary>Nome de exibição do jogador (apelido, senão o nome), ou o nome público da conta.</summary>
+    public string DisplayName { get; set; } = string.Empty;
+    public string? PhotoUrl { get; set; }
+    /// <summary>A reserva já virou inscrição (saiu da fila "Reservas").</summary>
+    public bool HasEntry { get; set; }
+}
+
 /// <summary><c>GET tournaments/{id}/join-requests</c> (quem gerencia): tudo do torneio de uma vez.</summary>
 public class TournamentJoinOverviewResponse
 {
@@ -96,8 +119,10 @@ public class MyUpcomingTournamentResponse
     /// <summary>Pending | Approved | Waitlisted (null sem pedido: inscrição direta).</summary>
     public string? RequestStatus { get; set; }
     public int? WaitlistPosition { get; set; }
-    /// <summary>"Bairro, Cidade - UF" (nunca a rua para quem não foi aprovado); null sem endereço.</summary>
+    /// <summary>"Bairro, Cidade - UF" (a rua e o número também, se o dono liberou o endereço do home game); null sem endereço.</summary>
     public string? LocationSummary { get; set; }
+    /// <summary>O dono liberou o endereço (AddressVisibility Public): a rua já está em LocationSummary mesmo sem aprovação.</summary>
+    public bool AddressIsPublic { get; set; }
     /// <summary>Endereço completo — só aprovado/inscrito; null nos demais.</summary>
     public string? FullAddress { get; set; }
     /// <summary>"Como chegar": link de mapa com as coordenadas (ou o endereço) — só aprovado/inscrito.</summary>

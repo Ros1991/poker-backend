@@ -13,9 +13,13 @@ public sealed record PublicTournamentData(PublicTournamentResponse Response, dou
 
 /// <summary>
 /// Página pública do torneio, <c>/t/{slug}</c> (SPEC-20261108-1639). Só torneio público, não cancelado, não excluído e de
-/// home game vivo; finalizado responde com <c>IsOver</c> (a página diz "já aconteceu"). Nunca rua/número/CEP (D6), nem
-/// e-mail, WhatsApp de jogador ou dinheiro de terceiros. O WhatsApp do organizador só com as duas portas (o torneio e o
+/// home game vivo; finalizado responde com <c>IsOver</c> (a página diz "já aconteceu"). Nunca CEP, coordenadas, e-mail,
+/// WhatsApp de jogador ou dinheiro de terceiros; a rua e o número só quando o dono liberou o endereço do home game
+/// (<c>AddressVisibility.Public</c>, SPEC-20261108-1634) — senão só bairro/cidade (D6). Nomes: o do clube, ou "Mesa de
+/// &lt;nome público do dono&gt;" no principal sem nome próprio; o organizador pelo nome público (apelido, senão primeiro
+/// nome e inicial) — nunca o nome completo em rota anônima. O WhatsApp do organizador só com as duas portas (o torneio e o
 /// opt-in da conta de quem responde — criador, senão dono — a mesma regra do <c>MePlayerService.OrganizerAsync</c>).
+/// A distância do visitante é medida até o PONTO PÚBLICO do clube (<see cref="GeoDistance.PublicPoint"/>), em km inteiros.
 /// </summary>
 public class PublicTournamentService
 {
@@ -30,6 +34,12 @@ public class PublicTournamentService
         _joins = joins;
     }
 
+    /// <summary>
+    /// Chave da página montada no <c>IMemoryCache</c> do controller (10 s). O <c>TournamentService</c> apaga a entrada ao
+    /// despublicar, mudar a divulgação, mudar o status (cancelar) ou excluir: o link cai na hora, sem esperar o cache.
+    /// </summary>
+    public static string CacheKey(string slug) => $"public-tournament:{slug.Trim().ToLowerInvariant()}";
+
     /// <summary>Null = não disponível (404): slug desconhecido, torneio privado, cancelado, excluído ou de home game excluído/inativo.</summary>
     public async Task<PublicTournamentData?> GetBySlugAsync(string slug, CancellationToken ct = default)
     {
@@ -43,7 +53,8 @@ public class PublicTournamentService
                 x.BlindStructureId, StructureName = x.BlindStructure != null ? x.BlindStructure.Name : null,
                 x.MaxPlayers, x.NetPrizePool, x.ShowOrganizerWhatsapp,
                 ClubName = x.HomeGame.Name, ClubIsPrimary = x.HomeGame.IsPrimary, ClubLogoUrl = x.HomeGame.LogoUrl,
-                OwnerId = x.HomeGame.OwnerId, OwnerName = x.HomeGame.Owner.FullName,
+                OwnerId = x.HomeGame.OwnerId, OwnerName = x.HomeGame.Owner.FullName, OwnerNickname = x.HomeGame.Owner.Nickname,
+                x.HomeGame.AddressVisibility, x.HomeGame.Street, x.HomeGame.Number,
                 x.HomeGame.District, x.HomeGame.City, x.HomeGame.State, x.HomeGame.Latitude, x.HomeGame.Longitude,
             })
             .FirstOrDefaultAsync(ct);
@@ -57,6 +68,7 @@ public class PublicTournamentService
         var organizer = await OrganizerAsync(t.OwnerId, t.CreatedBy, t.ShowOrganizerWhatsapp, ct);
 
         var estimated = Math.Max(t.NetPrizePool, t.BuyInAmount * taken);
+        var addressIsPublic = JoinRequestService.AddressIsPublic(t.AddressVisibility);
         var response = new PublicTournamentResponse
         {
             TournamentId = t.Id,
@@ -67,11 +79,12 @@ public class PublicTournamentService
             Status = t.Status,
             HasStarted = t.Status is nameof(TournamentStatus.InProgress) or nameof(TournamentStatus.BreakSettlement),
             IsOver = t.Status == nameof(TournamentStatus.Finished),
-            ClubName = HomeGamePrimary.LabelFor(t.ClubIsPrimary, ownerPlan, t.ClubName, t.OwnerName),
+            ClubName = HomeGamePrimary.PublicLabelFor(t.ClubIsPrimary, ownerPlan, t.ClubName, t.OwnerNickname, t.OwnerName),
             District = Clean(t.District),
             City = Clean(t.City),
             State = Clean(t.State),
-            LocationSummary = JoinRequestService.LocationSummary(t.District, t.City, t.State),
+            AddressIsPublic = addressIsPublic,
+            LocationSummary = JoinRequestService.VisibleLocation(t.AddressVisibility, t.Street, t.Number, t.District, t.City, t.State),
             BuyInAmount = t.BuyInAmount,
             RebuyAmount = t.RebuyAmount is > 0 ? t.RebuyAmount : null,
             AddonAmount = t.AddonAllowed && t.AddonAmount is > 0 ? t.AddonAmount : null,
@@ -108,14 +121,16 @@ public class PublicTournamentService
         return new PublicTournamentData(response, t.Latitude, t.Longitude);
     }
 
-    /// <summary>Distância do visitante (km, 1 casa) quando ele mandou a localização e o clube tem coordenadas.</summary>
-    public static double? Distance(PublicTournamentData data, double? lat, double? lng)
+    /// <summary>
+    /// Distância do visitante ao PONTO PÚBLICO do clube (km inteiros, mínimo 1) quando ele mandou a localização (cabeçalho
+    /// <see cref="GeoDistance.VisitorLocationHeader"/>) e o clube tem coordenadas. A coordenada exata fica só para quem
+    /// tem a vaga aprovada ("Como chegar").
+    /// </summary>
+    public static int? Distance(PublicTournamentData data, (double Lat, double Lng)? visitor)
     {
-        if (lat is not { } la || lng is not { } lo || data.Latitude is not { } hlat || data.Longitude is not { } hlng)
+        if (visitor is not { } v || data.Latitude is not { } hlat || data.Longitude is not { } hlng)
             return null;
-        if (la is < -90 or > 90 || lo is < -180 or > 180)
-            return null;
-        return Math.Round(GeoDistance.Kilometers(la, lo, hlat, hlng), 1);
+        return GeoDistance.PublicDistanceKm(GeoDistance.PublicKilometers(v.Lat, v.Lng, hlat, hlng));
     }
 
     private sealed record Level(int SmallBlind, int BigBlind, int Ante, int DurationMinutes, bool IsBreak);
@@ -151,7 +166,8 @@ public class PublicTournamentService
             .Select(u => new { u.Id, u.FullName, u.Nickname, u.PhotoUrl, u.Whatsapp, u.ShowWhatsappToPlayers })
             .ToListAsync(ct);
         var shown = ids.Select(id => users.FirstOrDefault(u => u.Id == id)).FirstOrDefault(u => u is not null);
-        var name = shown is null ? "Organizador" : string.IsNullOrWhiteSpace(shown.Nickname) ? shown.FullName : shown.Nickname;
+        // Nome público (apelido, senão "Primeiro S."): o nome completo nunca sai em rota anônima
+        var name = shown is null ? "Organizador" : RankingLeaderboardService.PublicName(shown.Nickname, shown.FullName);
         string? whatsapp = null;
         if (showWhatsapp)
         {

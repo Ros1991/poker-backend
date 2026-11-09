@@ -2,8 +2,9 @@ namespace PokerTournament.Application.DTOs.Responses;
 
 /// <summary>
 /// <c>GET me/tournaments/near</c> (SPEC-20261108-1639): torneios públicos futuros num raio da localização da conta — a do
-/// navegador (<c>?lat&amp;lng</c>, usada só nesta resposta) ou a cidade/UF do perfil geocodificada. Sem nenhuma das
-/// duas, <see cref="LocationSource"/> = "none" e a tela pede para completar o perfil.
+/// navegador (cabeçalho <c>X-Visitor-Location</c>, usada só nesta resposta) ou a cidade/UF do perfil geocodificada. Sem
+/// nenhuma das duas, <see cref="LocationSource"/> = "none" e a tela pede para completar o perfil. O raio e a distância
+/// são medidos até o PONTO PÚBLICO de cada clube (grade de 0,02°), em km inteiros.
 /// </summary>
 public class NearbyTournamentsResponse
 {
@@ -29,9 +30,10 @@ public class NearbyTournamentItem
     public string? District { get; set; }
     public string? City { get; set; }
     public string? State { get; set; }
-    /// <summary>"Bairro, Cidade - UF".</summary>
+    /// <summary>"Bairro, Cidade - UF" (com a rua e o número quando o dono liberou o endereço do home game).</summary>
     public string? LocationSummary { get; set; }
-    public double DistanceKm { get; set; }
+    /// <summary>Km inteiros (mínimo 1) até o ponto público do clube.</summary>
+    public int DistanceKm { get; set; }
     public DateTimeOffset Date { get; set; }
     public string Status { get; set; } = string.Empty;
     public decimal BuyInAmount { get; set; }

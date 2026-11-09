@@ -78,10 +78,13 @@ public class TournamentJoinController : ControllerBase
         return Ok(await _service.ListForTournamentAsync(tournamentId, ct));
     }
 
-    /// <summary>A fila "Reservas" (aprovadas sem inscrição): painel e terminal, inclusive o dealer por QR.</summary>
+    /// <summary>
+    /// A fila "Reservas" (aprovadas sem inscrição): aba de inscrições e terminal, inclusive o membro comum e o dealer por
+    /// QR — por isso o DTO reduzido, sem o recado do interessado nem o handle da conta (revisão da 1639).
+    /// </summary>
     [AllowTokenKind(TokenKinds.Dealer)]
     [HttpGet("api/v1/tournaments/{tournamentId:guid}/join-requests/reservations")]
-    public async Task<ActionResult<List<JoinRequestResponse>>> Reservations(Guid tournamentId, CancellationToken ct)
+    public async Task<ActionResult<List<ReservationResponse>>> Reservations(Guid tournamentId, CancellationToken ct)
     {
         return Ok(await _service.ReservationsAsync(tournamentId, ct));
     }

@@ -47,8 +47,9 @@ public class TournamentsController : ControllerBase
         Guid homeGameId, [FromBody] CreateTournamentRequest request, CancellationToken ct)
     {
         var userId = GetUserId();
-        // Limite de torneios do plano do dono (SPEC-20261023-1205) — o Admin do sistema também segue (SPEC-20261026-1126)
-        var result = await _tournamentService.CreateAsync(homeGameId, request, userId, ct);
+        // Limite de torneios do plano do dono (SPEC-20261023-1205) — o Admin do sistema também segue (SPEC-20261026-1126).
+        // Os campos de divulgação só valem se quem cria gerencia o home game (revisão da SPEC-20261108-1639)
+        var result = await _tournamentService.CreateAsync(homeGameId, request, userId, IsAdmin, ct);
         return CreatedAtAction(nameof(GetById), new { homeGameId, id = result.Id }, result);
     }
 
@@ -57,7 +58,8 @@ public class TournamentsController : ControllerBase
         Guid homeGameId, Guid id, [FromBody] CreateTournamentRequest request, CancellationToken ct)
     {
         await _tournamentService.EnsureInHomeGameAsync(homeGameId, id, ct);
-        var result = await _tournamentService.UpdateAsync(id, request, GetUserId(), ct);
+        // Membro comum edita o torneio, mas os campos de divulgação do corpo são ignorados (revisão da SPEC-20261108-1639)
+        var result = await _tournamentService.UpdateAsync(id, request, GetUserId(), IsAdmin, ct);
         // Torneio iniciado também se edita (SPEC-20261103-1927): o terminal e as outras telas releem o torneio e o devido
         // dos jogadores (que muda com os valores). Melhor esforço: a edição já foi gravada
         try
@@ -118,6 +120,8 @@ public class TournamentsController : ControllerBase
             ?? User.FindFirst("sub");
         return Guid.Parse(claim!.Value);
     }
+
+    private bool IsAdmin => User.FindFirst(ClaimTypes.Role)?.Value == "Admin";
 }
 
 public class UpdateStatusRequest

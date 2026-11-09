@@ -31,11 +31,15 @@ public sealed class NearbyQuery
 
 /// <summary>
 /// "Torneios perto de mim" (SPEC-20261108-1639, D4): torneios PÚBLICOS, de hoje em diante, não cancelados/finalizados, de
-/// clubes ativos e geocodificados, dentro do raio (30 km; 100 com um toque) pelo <see cref="GeoDistance.Nearby"/>,
-/// ordenados por data. A localização é a do navegador (quando a pessoa permitiu, só nesta chamada) ou a cidade/UF do
-/// perfil, geocodificada pelo mesmo <see cref="IGeocoder"/> com cache em <c>geocode_cache</c>. Sem nenhuma das duas, a
-/// resposta pede para completar o perfil. Filtros: buy-in máximo, dia da semana e formato. Os torneios dos clubes que a
-/// conta acessa vêm marcados "seu clube"; o pedido aberto dela e a inscrição também.
+/// clubes ativos e geocodificados, dentro do raio (30 km; 100 com um toque), ordenados por data. O raio e a distância
+/// são medidos até o PONTO PÚBLICO de cada clube (<see cref="GeoDistance.PublicPoint"/>, grade de 0,02°; km inteiros):
+/// o banco corta pela caixa/raio com folga (<see cref="GeoDistance.Nearby"/> com <see cref="GeoDistance.PublicPointMarginKm"/>)
+/// e o filtro final é em memória, pelo ponto público — a coordenada exata do clube nunca influencia a resposta (revisão
+/// da 1639: a distância fina permitia trilaterar a casa). A localização é a do navegador (quando a pessoa permitiu, só
+/// nesta chamada) ou a cidade/UF do perfil, geocodificada pelo mesmo <see cref="IGeocoder"/> com cache em
+/// <c>geocode_cache</c>. Sem nenhuma das duas, a resposta pede para completar o perfil. Filtros: buy-in máximo, dia da
+/// semana e formato. Os torneios dos clubes que a conta acessa vêm marcados "seu clube"; o pedido aberto dela e a
+/// inscrição também. Nomes pelo rótulo público (<see cref="HomeGamePrimary.PublicLabelFor"/>): nunca o nome completo do dono.
 /// </summary>
 public class NearbyTournamentsService
 {
@@ -90,13 +94,18 @@ public class NearbyTournamentsService
             (lat, lng) = point.Value;
         }
 
-        // 2. Clubes no raio (distância calculada no banco) e os torneios públicos futuros deles
-        var nearby = await GeoDistance.Nearby(_db.HomeGames.AsNoTracking().Where(h => h.IsActive), lat, lng, radius)
-            .Select(x => new { x.HomeGame.Id, x.DistanceKm })
+        // 2. Clubes no raio: o banco corta pela caixa e pelo raio com folga; o filtro que vale é pelo PONTO PÚBLICO do clube,
+        //    em memória (a coordenada exata não decide quem entra nem a distância que sai)
+        var candidates = await GeoDistance.Nearby(_db.HomeGames.AsNoTracking().Where(h => h.IsActive), lat, lng, radius + GeoDistance.PublicPointMarginKm)
+            .Select(x => new { x.HomeGame.Id, x.HomeGame.Latitude, x.HomeGame.Longitude })
             .ToListAsync(ct);
-        if (nearby.Count == 0)
+        var distances = candidates
+            .Where(x => x.Latitude is not null && x.Longitude is not null)
+            .Select(x => new { x.Id, Km = GeoDistance.PublicKilometers(lat, lng, x.Latitude!.Value, x.Longitude!.Value) })
+            .Where(x => x.Km <= radius)
+            .ToDictionary(x => x.Id, x => x.Km);
+        if (distances.Count == 0)
             return response;
-        var distances = nearby.ToDictionary(x => x.Id, x => x.DistanceKm);
         var homeGameIds = distances.Keys.ToList();
 
         var brtNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(-3));
@@ -121,7 +130,9 @@ public class NearbyTournamentsService
             {
                 t.Id, t.PublicSlug, t.Name, t.Date, t.Status, t.BuyInAmount, t.RebuyAmount, t.AddonAmount, t.AddonAllowed,
                 t.KnockoutType, t.MaxPlayers, t.HomeGameId,
-                ClubName = t.HomeGame.Name, ClubIsPrimary = t.HomeGame.IsPrimary, OwnerId = t.HomeGame.OwnerId, OwnerName = t.HomeGame.Owner.FullName,
+                ClubName = t.HomeGame.Name, ClubIsPrimary = t.HomeGame.IsPrimary, OwnerId = t.HomeGame.OwnerId,
+                OwnerName = t.HomeGame.Owner.FullName, OwnerNickname = t.HomeGame.Owner.Nickname,
+                t.HomeGame.AddressVisibility, t.HomeGame.Street, t.HomeGame.Number,
                 t.HomeGame.District, t.HomeGame.City, t.HomeGame.State,
             })
             .ToListAsync(ct);
@@ -170,12 +181,12 @@ public class NearbyTournamentsService
                 TournamentId = t.Id,
                 Slug = t.PublicSlug!,
                 Name = t.Name,
-                ClubName = HomeGamePrimary.LabelFor(t.ClubIsPrimary, ownerPlans[t.OwnerId], t.ClubName, t.OwnerName),
+                ClubName = HomeGamePrimary.PublicLabelFor(t.ClubIsPrimary, ownerPlans[t.OwnerId], t.ClubName, t.OwnerNickname, t.OwnerName),
                 District = Clean(t.District),
                 City = Clean(t.City),
                 State = Clean(t.State),
-                LocationSummary = JoinRequestService.LocationSummary(t.District, t.City, t.State),
-                DistanceKm = Math.Round(distances[t.HomeGameId], 1),
+                LocationSummary = JoinRequestService.VisibleLocation(t.AddressVisibility, t.Street, t.Number, t.District, t.City, t.State),
+                DistanceKm = GeoDistance.PublicDistanceKm(distances[t.HomeGameId]),
                 Date = t.Date,
                 Status = t.Status,
                 BuyInAmount = t.BuyInAmount,

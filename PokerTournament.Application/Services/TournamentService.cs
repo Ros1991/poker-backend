@@ -1,6 +1,7 @@
 using System.Globalization;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using PokerTournament.Application.Addons;
 using PokerTournament.Application.Timebank;
 using PokerTournament.Application.Common;
@@ -23,6 +24,8 @@ public class TournamentService
     private readonly IMapper _mapper;
     private readonly PlanService _plans;
     private readonly TournamentNotifier _notifier;
+    private readonly JoinRequestService _joinRequests;
+    private readonly IMemoryCache _cache;
 
     /// <summary>Quantidade de dealers aceita na criação (CP17 da SPEC-20261023-1215).</summary>
     public const int MaxDealerCount = 20;
@@ -35,12 +38,63 @@ public class TournamentService
         NumberDecimalDigits = 2
     };
 
-    public TournamentService(IAppDbContext db, IMapper mapper, PlanService plans, TournamentNotifier notifier)
+    public TournamentService(
+        IAppDbContext db, IMapper mapper, PlanService plans, TournamentNotifier notifier, JoinRequestService joinRequests, IMemoryCache cache)
     {
         _db = db;
         _mapper = mapper;
         _plans = plans;
         _notifier = notifier;
+        _joinRequests = joinRequests;
+        _cache = cache;
+    }
+
+    /// <summary>
+    /// A página pública montada (<c>PublicTournamentsController</c>, cache de 10 s) cai na hora que a divulgação, o status
+    /// ou a existência do torneio mudam: despublicar, cancelar ou excluir dá 404 já na próxima leitura (revisão da 1639).
+    /// Chamar DEPOIS do SaveChanges/commit (antes, uma leitura no meio recolocaria a página velha no cache).
+    /// </summary>
+    private void ForgetPublicPage(Tournament tournament)
+    {
+        if (!string.IsNullOrEmpty(tournament.PublicSlug))
+            _cache.Remove(PublicTournamentService.CacheKey(tournament.PublicSlug));
+    }
+
+    /// <summary>
+    /// Os quatro campos de divulgação só valem para quem GERENCIA o home game (dono, membro administrador ou Admin do
+    /// sistema): no PUT do torneio e na criação por membro comum eles são ignorados, sem erro (revisão da 1639 — antes
+    /// qualquer membro tornava o torneio público e ligava o WhatsApp do organizador).
+    /// </summary>
+    private async Task<bool> ManagesAsync(Guid homeGameId, Guid? userId, bool isAdmin, CancellationToken ct) =>
+        userId is { } uid && await HomeGameAccess.CanManageAsync(_db, homeGameId, uid, isAdmin, ct);
+
+    /// <summary>
+    /// Nome do clube que entra no slug público (<c>/t/clube-do-ze-sexta-2026-11-21</c>): o rótulo público do home game —
+    /// o nome dele, ou "Mesa de &lt;nome público do dono&gt;" no principal sem nome próprio. O nome completo do dono nunca
+    /// entra na URL pública (revisão da 1639, achado 4: o padrão "Clube de &lt;nome completo&gt;" virava slug).
+    /// </summary>
+    private async Task<string> SlugClubNameAsync(Guid homeGameId, CancellationToken ct)
+    {
+        var hg = await _db.HomeGames.AsNoTracking()
+            .Where(h => h.Id == homeGameId)
+            .Select(h => new { h.Name, h.IsPrimary, h.OwnerId, OwnerName = h.Owner.FullName, OwnerNickname = h.Owner.Nickname })
+            .FirstOrDefaultAsync(ct);
+        if (hg is null)
+            return string.Empty;
+        var plan = await _plans.GetUserEffectivePlanAsync(hg.OwnerId, ct);
+        return HomeGamePrimary.PublicLabelFor(hg.IsPrimary, plan, hg.Name, hg.OwnerNickname, hg.OwnerName);
+    }
+
+    /// <summary>
+    /// Vagas subiram ou o limite saiu: quem couber na lista de espera sobe, em ordem (com <c>JoinRequestPromoted</c>). Exige
+    /// a transação com a trava do torneio já aberta; o <paramref name="newMax"/> pode ainda não estar gravado.
+    /// </summary>
+    private async Task PromoteWaitlistIfRoomAsync(Tournament tournament, int? oldMax, int? newMax, CancellationToken ct)
+    {
+        if (newMax == oldMax)
+            return;
+        if (newMax is null || (oldMax is { } old && newMax > old))
+            await _joinRequests.PromoteWaitlistAsync(tournament.Id, newMax, freed: 0, ct);
     }
 
     /// <summary>
@@ -168,6 +222,8 @@ public class TournamentService
         // remove o torneio de QUALQUER query, inclusive os leaderboards de ranking.
         _db.Tournaments.Remove(tournament);
         await _db.SaveChangesAsync(ct);
+        // O link público dá 404 na hora, sem esperar o cache de 10 s
+        ForgetPublicPage(tournament);
     }
 
     /// <summary>
@@ -183,7 +239,7 @@ public class TournamentService
     /// (sem estrutura: Normal). Knockout vale em todos os planos (o Mesa não perde o formato).
     /// </summary>
     public async Task<TournamentResponse> CreateAsync(
-        Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null, CancellationToken ct = default)
+        Guid homeGameId, CreateTournamentRequest request, Guid? createdBy = null, bool createdByIsAdmin = false, CancellationToken ct = default)
     {
         var homeGame = await _db.HomeGames
             .FirstOrDefaultAsync(h => h.Id == homeGameId, ct)
@@ -296,9 +352,10 @@ public class TournamentService
         tournament.TotalCosts = tournament.CostExtras.Sum(c => c.Amount);
         KnockoutRules.ApplyNet(tournament);
 
-        // Divulgação (SPEC-20261108-1639): nasce privado; público já na criação ganha o slug da página /t/{slug}
-        if (TournamentPublicity.Apply(tournament, request))
-            await TournamentPublicity.EnsureSlugAsync(_db, tournament, homeGame.Name, ct);
+        // Divulgação (SPEC-20261108-1639): nasce privado; público já na criação ganha o slug da página /t/{slug}. Só quem
+        // gerencia o home game divulga (membro comum: os campos são ignorados)
+        if (await ManagesAsync(homeGameId, createdBy, createdByIsAdmin, ct) && TournamentPublicity.Apply(tournament, request))
+            await TournamentPublicity.EnsureSlugAsync(_db, tournament, await SlugClubNameAsync(homeGameId, ct), ct);
 
         _db.Tournaments.Add(tournament);
         await _db.SaveChangesAsync(ct);
@@ -310,11 +367,16 @@ public class TournamentService
     /// <summary>
     /// Atalho "Divulgar" do painel (SPEC-20261108-1639): só a divulgação — público, descrição, vagas e a porta do WhatsApp
     /// do organizador. Vale em qualquer status menos cancelado (finalizado pode continuar público: a página diz "já
-    /// aconteceu"). Ao ficar público pela primeira vez o slug nasce e nunca mais muda.
+    /// aconteceu"). Ao ficar público pela primeira vez o slug nasce e nunca mais muda. Quem gerencia é conferido pelo
+    /// controller (403). Subir ou tirar o limite de vagas promove quem couber na lista de espera, sob a trava do torneio;
+    /// a página pública em cache cai na hora.
     /// </summary>
     public async Task<TournamentResponse> UpdatePublicityAsync(
         Guid id, UpdateTournamentPublicityRequest request, CancellationToken ct = default)
     {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await EntryService.LockSeatingAsync(_db, id, ct);
+
         var tournament = await _db.Tournaments
             .Include(t => t.HomeGame)
             .FirstOrDefaultAsync(t => t.Id == id, ct)
@@ -322,10 +384,15 @@ public class TournamentService
         if (tournament.Status == nameof(TournamentStatus.Cancelled))
             throw new DomainException(CancelledCannotBeEditedMessage);
 
+        var oldMax = tournament.MaxPlayers;
         if (TournamentPublicity.Apply(tournament, request))
-            await TournamentPublicity.EnsureSlugAsync(_db, tournament, tournament.HomeGame.Name, ct);
+            await TournamentPublicity.EnsureSlugAsync(_db, tournament, await SlugClubNameAsync(tournament.HomeGameId, ct), ct);
+        await PromoteWaitlistIfRoomAsync(tournament, oldMax, tournament.MaxPlayers, ct);
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        ForgetPublicPage(tournament);
+        await _notifier.PushPendingAsync(ct);
         return await ToResponseAsync(tournament, ct);
     }
 
@@ -375,7 +442,7 @@ public class TournamentService
     /// mudar valor é recusado. Os pagamentos já registrados não mudam.
     /// </summary>
     public async Task<TournamentResponse> UpdateAsync(
-        Guid id, CreateTournamentRequest request, Guid? updatedBy = null, CancellationToken ct = default)
+        Guid id, CreateTournamentRequest request, Guid? updatedBy = null, bool updatedByIsAdmin = false, CancellationToken ct = default)
     {
         // Uma transação com a trava do torneio (a mesma da inscrição): inscrição simultânea espera o recálculo, e rebuy,
         // add-on ou pagamento simultâneos caem no xmin (409) em vez de deixar o total desencontrado
@@ -525,15 +592,13 @@ public class TournamentService
         // conferido acima).
         var changedKnockout = await ApplyKnockoutOnUpdateAsync(tournament, request, keptKnockout, ct);
 
-        // Divulgação (SPEC-20261108-1639): campo ausente = manter; ao ficar público pela primeira vez o slug nasce
-        if (TournamentPublicity.Apply(tournament, request))
-        {
-            var clubName = await _db.HomeGames.AsNoTracking()
-                .Where(h => h.Id == tournament.HomeGameId)
-                .Select(h => h.Name)
-                .FirstOrDefaultAsync(ct) ?? string.Empty;
-            await TournamentPublicity.EnsureSlugAsync(_db, tournament, clubName, ct);
-        }
+        // Divulgação (SPEC-20261108-1639): campo ausente = manter; ao ficar público pela primeira vez o slug nasce. Só para
+        // quem gerencia o home game — membro comum edita o resto e os campos de divulgação do corpo são ignorados. Subir ou
+        // tirar o limite de vagas promove quem couber na lista de espera (a trava do torneio já está tomada acima)
+        var oldMax = tournament.MaxPlayers;
+        if (await ManagesAsync(tournament.HomeGameId, updatedBy, updatedByIsAdmin, ct) && TournamentPublicity.Apply(tournament, request))
+            await TournamentPublicity.EnsureSlugAsync(_db, tournament, await SlugClubNameAsync(tournament.HomeGameId, ct), ct);
+        await PromoteWaitlistIfRoomAsync(tournament, oldMax, tournament.MaxPlayers, ct);
 
         var after = MoneyValues.Of(tournament);
         var moneyChanged = !before.SameMoney(after);
@@ -558,6 +623,10 @@ public class TournamentService
 
         await _db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+        // A página pública mostra nome, data, valores e vagas: a edição derruba a cópia em cache; as promoções da espera
+        // (se houve) saem agora
+        ForgetPublicPage(tournament);
+        await _notifier.PushPendingAsync(ct);
 
         return await ToResponseAsync(tournament, ct);
     }
@@ -980,6 +1049,8 @@ public class TournamentService
         await ApplyStatusTransitionAsync(tournament, newStatus, userId, ct);
 
         await _db.SaveChangesAsync(ct);
+        // A página pública mostra o status (cancelado dá 404 na hora): derruba a cópia em cache
+        ForgetPublicPage(tournament);
         // "Começou" / resultado para as contas vinculadas (SPEC-20261108-1635), já gravados junto com o status
         await _notifier.PushPendingAsync(ct);
         return await ToResponseAsync(tournament, ct);

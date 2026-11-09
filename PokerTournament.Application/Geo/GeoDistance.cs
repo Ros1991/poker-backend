@@ -1,3 +1,4 @@
+using System.Globalization;
 using PokerTournament.Domain.Entities;
 
 namespace PokerTournament.Application.Geo;
@@ -21,6 +22,22 @@ public static class GeoDistance
 
     /// <summary>Raio padrão da busca "perto de mim".</summary>
     public const double DefaultRadiusKm = 30;
+
+    /// <summary>
+    /// Passo da grade do PONTO PÚBLICO do clube (graus): ~2,2 km de latitude e ~2 km de longitude no Brasil. A página
+    /// pública e o "perto de mim" medem a distância até esse ponto, nunca até a coordenada exata (revisão da
+    /// SPEC-20261108-1639: com a distância fina, cinco consultas de pontos diferentes trilateravam a casa).
+    /// </summary>
+    public const double PublicPointStepDegrees = 0.02;
+
+    /// <summary>
+    /// Quanto o ponto público pode se afastar do exato (meia diagonal da célula ≈ 1,6 km), com folga: a busca por raio
+    /// no banco usa o raio + esta margem e o filtro final, em memória, é pela distância ao ponto público.
+    /// </summary>
+    public const double PublicPointMarginKm = 2;
+
+    /// <summary>Nome do cabeçalho com a localização do visitante ("lat,lng", ponto decimal), nos dois endpoints.</summary>
+    public const string VisitorLocationHeader = "X-Visitor-Location";
 
     /// <summary>Distância em km entre dois pontos (Haversine), em memória.</summary>
     public static double Kilometers(double lat1, double lng1, double lat2, double lng2)
@@ -66,6 +83,39 @@ public static class GeoDistance
             })
             .Where(x => x.DistanceKm <= radiusKm)
             .OrderBy(x => x.DistanceKm);
+    }
+
+    /// <summary>O ponto público do clube: a coordenada arredondada à grade de <see cref="PublicPointStepDegrees"/>.</summary>
+    public static (double Latitude, double Longitude) PublicPoint(double latitude, double longitude) =>
+        (Math.Round(latitude / PublicPointStepDegrees, MidpointRounding.AwayFromZero) * PublicPointStepDegrees,
+         Math.Round(longitude / PublicPointStepDegrees, MidpointRounding.AwayFromZero) * PublicPointStepDegrees);
+
+    /// <summary>Distância (km, sem arredondar) do visitante ao PONTO PÚBLICO do clube — é ela que o filtro do raio usa.</summary>
+    public static double PublicKilometers(double visitorLat, double visitorLng, double clubLat, double clubLng)
+    {
+        var (lat, lng) = PublicPoint(clubLat, clubLng);
+        return Kilometers(visitorLat, visitorLng, lat, lng);
+    }
+
+    /// <summary>A distância como sai nas respostas: inteiro de km, mínimo 1 ("a cerca de X km").</summary>
+    public static int PublicDistanceKm(double km) => Math.Max(1, (int)Math.Round(km, MidpointRounding.AwayFromZero));
+
+    /// <summary>
+    /// Lê o cabeçalho <see cref="VisitorLocationHeader"/> ("-23.55,-46.63"). Null quando ausente, fora de formato ou fora
+    /// das faixas. As coordenadas servem só à resposta: nunca vão para o banco nem para o log.
+    /// </summary>
+    public static (double Lat, double Lng)? ParseVisitorLocation(string? header)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+            return null;
+        var parts = header.Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 2
+            || !double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var lat)
+            || !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var lng))
+            return null;
+        if (double.IsNaN(lat) || double.IsNaN(lng) || lat is < -90 or > 90 || lng is < -180 or > 180)
+            return null;
+        return (lat, lng);
     }
 
     private static double ToRadians(double degrees) => degrees * Math.PI / 180;

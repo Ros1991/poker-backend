@@ -67,6 +67,24 @@ public static class HomeGamePrimary
         DisplayNameFor(isPrimary, ownerEffectivePlan, name)
         ?? (string.IsNullOrWhiteSpace(ownerName) ? name : ownerName.Trim());
 
+    /// <summary>Começo do rótulo público do principal sem nome próprio: "Mesa de " + nome público do dono.</summary>
+    public const string PublicOwnerLabelPrefix = "Mesa de ";
+
+    /// <summary>
+    /// Rótulo do home game para quem NÃO é do clube — página pública do torneio, "perto de mim", Próximos e as
+    /// notificações do interessado (revisão da SPEC-20261108-1639): o nome do home game quando ele não é o principal ou
+    /// quando o dono deu um nome a ele; no principal de dono Mesa (sem nome de clube) e no principal que ainda tem o nome
+    /// padrão "Clube de &lt;nome completo&gt;", "Mesa de &lt;nome público do dono&gt;" (apelido, senão "Primeiro S.") —
+    /// o nome completo do dono nunca sai por aqui.
+    /// </summary>
+    public static string PublicLabelFor(bool isPrimary, string ownerEffectivePlan, string name, string? ownerNickname, string? ownerFullName)
+    {
+        var display = DisplayNameFor(isPrimary, ownerEffectivePlan, name);
+        if (display is not null && !(isPrimary && IsDefaultName(name, ownerFullName)))
+            return display;
+        return PublicOwnerLabelPrefix + Services.RankingLeaderboardService.PublicName(ownerNickname, ownerFullName ?? string.Empty);
+    }
+
     /// <summary>
     /// Preenche <c>displayName</c> e <c>isNameDefault</c> das respostas. Chamar DEPOIS do
     /// <see cref="Services.PlanService.ApplyOwnerPlanAsync(IEnumerable{HomeGameResponse}, CancellationToken)"/> (usa o

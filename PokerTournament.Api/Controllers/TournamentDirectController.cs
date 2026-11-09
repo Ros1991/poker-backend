@@ -1,9 +1,12 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using PokerTournament.Api.Authorization;
 using PokerTournament.Application.Common;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using PokerTournament.Application.DTOs.Requests;
 using PokerTournament.Application.DTOs.Responses;
+using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Services;
 using PokerTournament.Api.Filters;
 using PokerTournament.Application.Plans;
@@ -21,11 +24,15 @@ namespace PokerTournament.Api.Controllers;
 [Authorize]
 public class TournamentDirectController : ControllerBase
 {
-    private readonly TournamentService _tournamentService;
+    public const string PublicityForbiddenMessage = "Só quem gerencia o home game (dono ou administrador) muda a divulgação do torneio.";
 
-    public TournamentDirectController(TournamentService tournamentService)
+    private readonly TournamentService _tournamentService;
+    private readonly IAppDbContext _db;
+
+    public TournamentDirectController(TournamentService tournamentService, IAppDbContext db)
     {
         _tournamentService = tournamentService;
+        _db = db;
     }
 
     [AllowTokenKind(TokenKinds.Dealer)]
@@ -53,13 +60,23 @@ public class TournamentDirectController : ControllerBase
 
     /// <summary>
     /// Divulgação do torneio (SPEC-20261108-1639): o atalho "Divulgar" do painel — público, descrição para quem é de fora,
-    /// vagas e a porta do WhatsApp do organizador. Campo ausente = manter. Quem acessa o torneio (filtro de tenant); sem
-    /// [AllowTokenKind]: o dealer por QR não divulga (403).
+    /// vagas e a porta do WhatsApp do organizador. Campo ausente = manter. Só quem GERENCIA o home game (dono, membro
+    /// administrador ou Admin do sistema; o filtro de tenant deixa passar qualquer membro, por isso a conferência extra —
+    /// revisão da 1639: membro comum não torna o torneio público nem liga o WhatsApp). Sem [AllowTokenKind]: o dealer por QR
+    /// não divulga (403).
     /// </summary>
     [HttpPut("{tournamentId:guid}/publicity")]
     public async Task<ActionResult<TournamentResponse>> UpdatePublicity(
         Guid tournamentId, [FromBody] UpdateTournamentPublicityRequest request, CancellationToken ct)
     {
+        var homeGameId = await _db.Tournaments.Where(t => t.Id == tournamentId).Select(t => (Guid?)t.HomeGameId).FirstOrDefaultAsync(ct);
+        if (homeGameId is null)
+            return NotFound(new { message = "Torneio não encontrado." });
+        var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
+        var isAdmin = User.FindFirst(ClaimTypes.Role)?.Value == "Admin";
+        if (!Guid.TryParse(claim?.Value, out var userId)
+            || !await HomeGameAccess.CanManageAsync(_db, homeGameId.Value, userId, isAdmin, ct))
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = PublicityForbiddenMessage });
         var result = await _tournamentService.UpdatePublicityAsync(tournamentId, request, ct);
         return Ok(result);
     }

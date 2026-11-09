@@ -2,8 +2,9 @@ namespace PokerTournament.Application.DTOs.Responses;
 
 /// <summary>
 /// Página pública do torneio, <c>GET public/tournaments/{slug}</c> (SPEC-20261108-1639, anônima). Só o que um estranho
-/// pode ver: nada de rua/número/CEP (D6), coordenadas, e-mail, WhatsApp de jogador nem dinheiro de terceiros. A
-/// distância vem só quando o visitante manda <c>?lat&amp;lng</c> (nunca guardados).
+/// pode ver: nada de CEP, coordenadas, e-mail, WhatsApp de jogador nem dinheiro de terceiros; rua e número só quando o
+/// dono liberou o endereço (<see cref="AddressIsPublic"/>), senão só bairro/cidade (D6). A distância vem só quando o
+/// visitante manda o cabeçalho <c>X-Visitor-Location</c> (nunca guardado) — em km inteiros até o ponto público do clube.
 /// </summary>
 public class PublicTournamentResponse
 {
@@ -25,10 +26,12 @@ public class PublicTournamentResponse
     public string? District { get; set; }
     public string? City { get; set; }
     public string? State { get; set; }
-    /// <summary>"Bairro, Cidade - UF" (ou o que houver); null sem endereço.</summary>
+    /// <summary>"Bairro, Cidade - UF" (ou "Rua, 123 - Bairro, Cidade - UF" com o endereço liberado); null sem endereço.</summary>
     public string? LocationSummary { get; set; }
-    /// <summary>Distância do visitante ao clube (km), só com ?lat&amp;lng e clube geocodificado.</summary>
-    public double? DistanceKm { get; set; }
+    /// <summary>O dono liberou o endereço do home game (AddressVisibility Public): a rua já está em LocationSummary.</summary>
+    public bool AddressIsPublic { get; set; }
+    /// <summary>Distância do visitante ao ponto público do clube (km inteiros, mínimo 1), só com o cabeçalho e clube geocodificado.</summary>
+    public int? DistanceKm { get; set; }
 
     // Valores e regras
     public decimal BuyInAmount { get; set; }
