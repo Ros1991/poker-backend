@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using PokerTournament.Application.Publicity;
 
 namespace PokerTournament.Application.DTOs.Requests;
 
-public class CreateTournamentRequest
+public class CreateTournamentRequest : ITournamentPublicityInput
 {
     public string Name { get; set; } = string.Empty;
     public DateTimeOffset Date { get; set; }
@@ -49,6 +50,16 @@ public class CreateTournamentRequest
     public int? TimebankCount { get; set; }
     public int? TimebankSeconds { get; set; }
 
+    // SPEC-20261108-1639 — divulgação (torneio público). Os quatro guardam se vieram no corpo (Sent): na edição, ausente =
+    // manter o gravado (um cliente antigo não despublica nada); na criação, ausente = privado, sem descrição/vagas/WhatsApp.
+    // IsPublic liga a página /t/{slug} e o "perto de mim" (o slug nasce na primeira vez e não muda). PublicDescription até
+    // 1.000 caracteres (vazio → null). MaxPlayers: null/0 = sem limite de vagas; 2 a 999. ShowOrganizerWhatsapp: a porta do
+    // torneio para o WhatsApp do organizador na página pública (a conta dele também precisa ter o opt-in).
+    public bool? IsPublic { get => _isPublic; set { _isPublic = value; Sent.Add(nameof(IsPublic)); } }
+    public string? PublicDescription { get => _publicDescription; set { _publicDescription = value; Sent.Add(nameof(PublicDescription)); } }
+    public int? MaxPlayers { get => _maxPlayers; set { _maxPlayers = value; Sent.Add(nameof(MaxPlayers)); } }
+    public bool? ShowOrganizerWhatsapp { get => _showOrganizerWhatsapp; set { _showOrganizerWhatsapp = value; Sent.Add(nameof(ShowOrganizerWhatsapp)); } }
+
     /// <summary>
     /// Quais de RankingId, RankingContribMode, RankingContribValue, StaffAmount e ResponsiblePixKey vieram no corpo (com valor
     /// ou null). O System.Text.Json só chama o setter do que está no JSON, então o campo ausente não entra aqui
@@ -58,9 +69,16 @@ public class CreateTournamentRequest
     [JsonIgnore]
     public HashSet<string> Sent { get; } = [];
 
+    /// <summary>O campo veio no corpo (divulgação — SPEC-20261108-1639).</summary>
+    public bool Has(string field) => Sent.Contains(field);
+
     private Guid? _rankingId;
     private string? _responsiblePixKey;
     private decimal? _staffAmount;
     private string? _rankingContribMode;
     private decimal? _rankingContribValue;
+    private bool? _isPublic;
+    private string? _publicDescription;
+    private int? _maxPlayers;
+    private bool? _showOrganizerWhatsapp;
 }

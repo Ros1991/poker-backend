@@ -115,6 +115,13 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         builder.Property(t => t.IsActive).HasColumnName("is_active").HasDefaultValue(true);
         builder.Property(t => t.CreatedBy).HasColumnName("created_by");
 
+        // Torneio público (SPEC-20261108-1639)
+        builder.Property(t => t.IsPublic).HasColumnName("is_public").HasDefaultValue(false);
+        builder.Property(t => t.PublicSlug).HasColumnName("public_slug").HasMaxLength(80);
+        builder.Property(t => t.PublicDescription).HasColumnName("public_description").HasMaxLength(1000);
+        builder.Property(t => t.MaxPlayers).HasColumnName("max_players");
+        builder.Property(t => t.ShowOrganizerWhatsapp).HasColumnName("show_organizer_whatsapp").HasDefaultValue(false);
+
         // Relations
         builder.HasOne(t => t.HomeGame)
             .WithMany(h => h.Tournaments)
@@ -161,6 +168,16 @@ public class TournamentConfiguration : IEntityTypeConfiguration<Tournament>
         builder.HasIndex(t => t.RankingId).HasDatabaseName("ix_tournaments_ranking_id");
         builder.HasIndex(t => t.Status).HasDatabaseName("ix_tournaments_status");
         builder.HasIndex(t => t.Date).HasDatabaseName("ix_tournaments_date");
+        // O slug público é a chave da página /t/{slug}: único entre TODOS os torneios (inclusive excluídos — um link
+        // antigo nunca passa a abrir outro torneio); nulo para quem nunca foi público
+        builder.HasIndex(t => t.PublicSlug)
+            .IsUnique()
+            .HasFilter("public_slug IS NOT NULL")
+            .HasDatabaseName("ux_tournaments_public_slug");
+        // A lista "perto de mim" lê os públicos futuros por home game
+        builder.HasIndex(t => new { t.IsPublic, t.Date })
+            .HasFilter("is_public")
+            .HasDatabaseName("ix_tournaments_public_date");
 
         builder.HasIndex(t => t.DeletedAt)
             .HasFilter("deleted_at IS NULL")

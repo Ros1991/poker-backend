@@ -97,6 +97,18 @@ public class Tournament : SoftDeletableEntity
     public bool IsActive { get; set; } = true;
     public Guid? CreatedBy { get; set; }
 
+    // Torneio público (SPEC-20261108-1639). IsPublic liga a página /t/{PublicSlug} (sem login) e a lista "perto de mim";
+    // o slug nasce UMA vez, ao tornar público pela primeira vez (clube + torneio + data, sufixo em colisão), e não muda
+    // mais — o link divulgado continua valendo mesmo que o nome mude ou o torneio volte a ser privado e depois público.
+    // PublicDescription é o texto para quem é de fora (até 1.000); MaxPlayers (opcional) dá as vagas (reservas aprovadas
+    // + inscrições); ShowOrganizerWhatsapp é a porta do torneio para o WhatsApp do organizador na página pública (a outra
+    // porta é o opt-in da conta, User.ShowWhatsappToPlayers).
+    public bool IsPublic { get; set; }
+    public string? PublicSlug { get; set; }
+    public string? PublicDescription { get; set; }
+    public int? MaxPlayers { get; set; }
+    public bool ShowOrganizerWhatsapp { get; set; }
+
     // Navigation
     public HomeGame HomeGame { get; set; } = null!;
     public Ranking? Ranking { get; set; }

@@ -79,7 +79,14 @@ public class MappingProfile : Profile
             // Timebank (SPEC-20261029-1722): resolvido no TournamentService (0 = desligado, null = herdar/manter); o Map
             // gravaria o 0 e apagaria o valor na edição sem o campo
             .ForMember(d => d.TimebankCount, o => o.Ignore())
-            .ForMember(d => d.TimebankSeconds, o => o.Ignore());
+            .ForMember(d => d.TimebankSeconds, o => o.Ignore())
+            // Divulgação (SPEC-20261108-1639): resolvida no TournamentService (TournamentPublicity.Apply — ausente = manter,
+            // slug gerado uma vez); o Map gravaria false/null por cima do que já estava
+            .ForMember(d => d.IsPublic, o => o.Ignore())
+            .ForMember(d => d.PublicSlug, o => o.Ignore())
+            .ForMember(d => d.PublicDescription, o => o.Ignore())
+            .ForMember(d => d.MaxPlayers, o => o.Ignore())
+            .ForMember(d => d.ShowOrganizerWhatsapp, o => o.Ignore());
 
         // TournamentEntry
         CreateMap<TournamentEntry, EntryResponse>()

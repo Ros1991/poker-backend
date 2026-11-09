@@ -10,6 +10,7 @@ using PokerTournament.Application.Interfaces;
 using PokerTournament.Application.Knockout;
 using PokerTournament.Application.Pix;
 using PokerTournament.Application.Plans;
+using PokerTournament.Application.Publicity;
 using PokerTournament.Domain.Entities;
 using PokerTournament.Domain.Enums;
 using PokerTournament.Domain.Exceptions;
@@ -295,10 +296,36 @@ public class TournamentService
         tournament.TotalCosts = tournament.CostExtras.Sum(c => c.Amount);
         KnockoutRules.ApplyNet(tournament);
 
+        // Divulgação (SPEC-20261108-1639): nasce privado; público já na criação ganha o slug da página /t/{slug}
+        if (TournamentPublicity.Apply(tournament, request))
+            await TournamentPublicity.EnsureSlugAsync(_db, tournament, homeGame.Name, ct);
+
         _db.Tournaments.Add(tournament);
         await _db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
 
+        return await ToResponseAsync(tournament, ct);
+    }
+
+    /// <summary>
+    /// Atalho "Divulgar" do painel (SPEC-20261108-1639): só a divulgação — público, descrição, vagas e a porta do WhatsApp
+    /// do organizador. Vale em qualquer status menos cancelado (finalizado pode continuar público: a página diz "já
+    /// aconteceu"). Ao ficar público pela primeira vez o slug nasce e nunca mais muda.
+    /// </summary>
+    public async Task<TournamentResponse> UpdatePublicityAsync(
+        Guid id, UpdateTournamentPublicityRequest request, CancellationToken ct = default)
+    {
+        var tournament = await _db.Tournaments
+            .Include(t => t.HomeGame)
+            .FirstOrDefaultAsync(t => t.Id == id, ct)
+            ?? throw new DomainException("Torneio não encontrado.");
+        if (tournament.Status == nameof(TournamentStatus.Cancelled))
+            throw new DomainException(CancelledCannotBeEditedMessage);
+
+        if (TournamentPublicity.Apply(tournament, request))
+            await TournamentPublicity.EnsureSlugAsync(_db, tournament, tournament.HomeGame.Name, ct);
+
+        await _db.SaveChangesAsync(ct);
         return await ToResponseAsync(tournament, ct);
     }
 
@@ -497,6 +524,16 @@ public class TournamentService
         // (a transferência já feita ficaria com o valor velho). Depois de começar, só o valor pode mudar (o tipo foi
         // conferido acima).
         var changedKnockout = await ApplyKnockoutOnUpdateAsync(tournament, request, keptKnockout, ct);
+
+        // Divulgação (SPEC-20261108-1639): campo ausente = manter; ao ficar público pela primeira vez o slug nasce
+        if (TournamentPublicity.Apply(tournament, request))
+        {
+            var clubName = await _db.HomeGames.AsNoTracking()
+                .Where(h => h.Id == tournament.HomeGameId)
+                .Select(h => h.Name)
+                .FirstOrDefaultAsync(ct) ?? string.Empty;
+            await TournamentPublicity.EnsureSlugAsync(_db, tournament, clubName, ct);
+        }
 
         var after = MoneyValues.Of(tournament);
         var moneyChanged = !before.SameMoney(after);

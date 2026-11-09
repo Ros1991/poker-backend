@@ -69,6 +69,14 @@ public class TournamentResponse
     public bool IsActive { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
+    // Torneio público (SPEC-20261108-1639): a página /t/{publicSlug} e o "perto de mim". O slug nasce ao tornar público
+    // pela primeira vez e é estável; null = nunca foi público.
+    public bool IsPublic { get; set; }
+    public string? PublicSlug { get; set; }
+    public string? PublicDescription { get; set; }
+    public int? MaxPlayers { get; set; }
+    public bool ShowOrganizerWhatsapp { get; set; }
+
     // Plano EFETIVO do dono do home game (SPEC-20261023-1205) e os recursos liberados neste torneio
     // (cadeados das abas, terminal do dealer). Preenchidos pelo TournamentService depois do Map.
     public string OwnerPlan { get; set; } = "Mesa";

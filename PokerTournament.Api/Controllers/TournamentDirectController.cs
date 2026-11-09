@@ -51,6 +51,19 @@ public class TournamentDirectController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Divulgação do torneio (SPEC-20261108-1639): o atalho "Divulgar" do painel — público, descrição para quem é de fora,
+    /// vagas e a porta do WhatsApp do organizador. Campo ausente = manter. Quem acessa o torneio (filtro de tenant); sem
+    /// [AllowTokenKind]: o dealer por QR não divulga (403).
+    /// </summary>
+    [HttpPut("{tournamentId:guid}/publicity")]
+    public async Task<ActionResult<TournamentResponse>> UpdatePublicity(
+        Guid tournamentId, [FromBody] UpdateTournamentPublicityRequest request, CancellationToken ct)
+    {
+        var result = await _tournamentService.UpdatePublicityAsync(tournamentId, request, ct);
+        return Ok(result);
+    }
+
     [HttpPut("{tournamentId:guid}/punctuality-bonus")]
     public async Task<ActionResult<TournamentResponse>> UpdatePunctualityBonus(
         Guid tournamentId, [FromBody] UpdatePunctualityBonusRequest request, CancellationToken ct)
