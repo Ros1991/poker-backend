@@ -51,6 +51,11 @@ public class AppDbContext : DbContext, IAppDbContext
     public DbSet<PlayerLinkRequest> PlayerLinkRequests => Set<PlayerLinkRequest>();
     // Amigos, pedidos e bloqueios (SPEC-20261108-1637)
     public DbSet<Friendship> Friendships => Set<Friendship>();
+    // Mensagens 1 para 1 e denúncias (SPEC-20261108-1638)
+    public DbSet<Conversation> Conversations => Set<Conversation>();
+    public DbSet<ConversationMember> ConversationMembers => Set<ConversationMember>();
+    public DbSet<ChatMessage> Messages => Set<ChatMessage>();
+    public DbSet<Report> Reports => Set<Report>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

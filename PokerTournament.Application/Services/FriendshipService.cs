@@ -90,6 +90,16 @@ public class FriendshipService : IFriendshipLookup
         return _db.Friendships.AnyAsync(f => f.UserLowId == low && f.UserHighId == high && f.Status == blocked, ct);
     }
 
+    public async Task<HashSet<Guid>> BlockedUserIdsAsync(Guid userId, CancellationToken ct = default)
+    {
+        var blocked = nameof(FriendshipStatus.Blocked);
+        var ids = await _db.Friendships.AsNoTracking()
+            .Where(f => f.Status == blocked && (f.UserLowId == userId || f.UserHighId == userId))
+            .Select(f => f.UserLowId == userId ? f.UserHighId : f.UserLowId)
+            .ToListAsync(ct);
+        return [.. ids];
+    }
+
     // ------------------------------------------------------------------ relação (perfil e cartões)
 
     /// <summary>

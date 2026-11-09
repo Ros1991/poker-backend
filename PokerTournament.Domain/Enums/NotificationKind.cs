@@ -25,6 +25,12 @@ public enum NotificationKind
     FriendRequestReceived,
     /// <summary>Quem você pediu aceitou (SPEC-20261108-1637; link para o perfil dele). Categoria Social. A recusa NÃO notifica.</summary>
     FriendRequestAccepted,
+    /// <summary>
+    /// Mensagem nova numa conversa (SPEC-20261108-1638; link /mensagens/{conversationId}). Categoria Social. Criada só
+    /// quando a conversa não está aberta em nenhuma conexão de quem recebe; no máximo uma não lida por conversa (a existente
+    /// é atualizada em vez de nascer outra).
+    /// </summary>
+    MessageReceived,
 }
 
 /// <summary>Categoria de preferência do Meu perfil: cada tipo cai numa delas (NotifyTournament, NotifyRequests, NotifySocial).</summary>

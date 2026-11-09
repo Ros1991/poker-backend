@@ -224,6 +224,10 @@ builder.Services.AddSignalR()
 // Notificações da conta (SPEC-20261108-1635): o sino recebe em tempo real pelo grupo user_{id} do mesmo hub (toda
 // conexão com token de usuário entra nele ao conectar); a camada Application só conhece o INotificationPusher
 builder.Services.AddSingleton<INotificationPusher, SignalRNotificationPusher>();
+// Mensagens 1 para 1 (SPEC-20261108-1638): hub próprio (/hubs/chat) e o registro de "quem está com qual conversa aberta"
+// (a notificação de mensagem só nasce com a conversa fechada) — a camada Application só conhece o IChatPresence
+builder.Services.AddSingleton<ChatConnectionRegistry>();
+builder.Services.AddSingleton<IChatPresence>(sp => sp.GetRequiredService<ChatConnectionRegistry>());
 
 // Swagger
 builder.Services.AddSwaggerGen(options =>
@@ -387,6 +391,11 @@ builder.Services.AddScoped<IFriendshipLookup>(sp => sp.GetRequiredService<Friend
 // "jogou com você" (me/played-with)
 builder.Services.AddScoped<PlayerProfileService>();
 builder.Services.AddScoped<PlayedWithService>();
+// Mensagens 1 para 1 e denúncias (SPEC-20261108-1638). A costura ITournamentRequestLookup (conversa organizador ↔
+// interessado pelo pedido de vaga) nasce NULA: a SPEC-20261108-1639 troca pela implementação real
+builder.Services.AddScoped<ChatService>();
+builder.Services.AddScoped<ReportService>();
+builder.Services.AddSingleton<ITournamentRequestLookup, NullTournamentRequestLookup>();
 builder.Services.AddScoped<MePlayerService>(); // SPEC-20261029-1726: área do jogador (me/player, me/tournaments)
 builder.Services.AddScoped<DisplayService>();
 builder.Services.AddScoped<TournamentService>();
@@ -610,5 +619,7 @@ if (app.Environment.IsDevelopment())
     app.MapDevelopmentNotificationEndpoints();
 // Conexão aberta cai quando o JWT vence (o token de dealer dura no máximo 24h)
 app.MapHub<TournamentHub>("/hubs/tournament", o => o.CloseOnAuthenticationExpiration = true);
+// Mensagens (SPEC-20261108-1638): mesma regra; sem [AllowTokenKind] no hub, o token de dealer é barrado no negotiate
+app.MapHub<ChatHub>("/hubs/chat", o => o.CloseOnAuthenticationExpiration = true);
 
 app.Run();

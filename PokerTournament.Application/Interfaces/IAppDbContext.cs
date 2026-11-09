@@ -49,6 +49,11 @@ public interface IAppDbContext
     DbSet<PlayerLinkRequest> PlayerLinkRequests { get; }
     // Amigos, pedidos e bloqueios (SPEC-20261108-1637)
     DbSet<Friendship> Friendships { get; }
+    // Mensagens 1 para 1 e denúncias (SPEC-20261108-1638)
+    DbSet<Conversation> Conversations { get; }
+    DbSet<ConversationMember> ConversationMembers { get; }
+    DbSet<ChatMessage> Messages { get; }
+    DbSet<Report> Reports { get; }
 
     DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
