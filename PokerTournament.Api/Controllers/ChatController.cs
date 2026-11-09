@@ -125,8 +125,10 @@ public class ChatController : ControllerBase
     }
 
     /// <summary>
-    /// Envia uma mensagem (texto puro, até 2.000). 404 se a conversa não é da conta ou há bloqueio; 429 acima de 60 por
-    /// hora. Depois de gravar, <c>MessageReceived</c> vai aos dois membros (com as conversas não lidas de cada um).
+    /// Envia uma mensagem (texto puro, até 2.000). 404 se a conversa não é da conta ou há bloqueio; 400 com
+    /// <c>code: conversation_closed</c> quando a regra de quem pode deixou de valer (amizade desfeita, <c>MessagesFrom</c>
+    /// mudou, pedido de vaga fechado — revisão da onda 2, M1); 429 acima de 60 por hora. Depois de gravar,
+    /// <c>MessageReceived</c> vai aos dois membros (com as conversas não lidas de cada um).
     /// </summary>
     [HttpPost("conversations/{id:guid}/messages")]
     [ProducesResponseType(typeof(MessageResponse), StatusCodes.Status200OK)]

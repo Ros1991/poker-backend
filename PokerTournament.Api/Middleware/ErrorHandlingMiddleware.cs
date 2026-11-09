@@ -82,6 +82,8 @@ public class ErrorHandlingMiddleware
         {
             EmailNotConfirmedException enc => enc.Code,
             AccountDisabledException ad => ad.Code,
+            // Conversa encerrada (amizade desfeita, MessagesFrom mudou, pedido de vaga fechado): a tela desabilita o envio
+            ConversationClosedException closed => closed.Code,
             _ => null
         };
         object response = exception is ExternalLoginLinkRequiredException link

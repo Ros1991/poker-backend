@@ -44,3 +44,27 @@ public sealed class TooManyConversationsException : TooManyRequestsException
         return $"Você abriu muitas conversas novas hoje. Espere {wait} para começar outra; as conversas que já existem continuam normais.";
     }
 }
+
+/// <summary>
+/// Denúncias demais (revisão da onda 2, B2): a mesma mensagem ou a mesma conversa denunciada de novo pela mesma conta
+/// em menos de 24 h, ou mais de 10 denúncias no dia. HTTP 429 <c>{ code: "too_many_reports" }</c>.
+/// </summary>
+public sealed class TooManyReportsException : TooManyRequestsException
+{
+    public const string ErrorCode = "too_many_reports";
+    public const string DuplicateMessage = "Você já denunciou isso hoje. A Administração vai analisar a denúncia que já existe.";
+
+    public override string Code => ErrorCode;
+
+    public TooManyReportsException(int retryAfterSeconds, bool duplicate)
+        : base(duplicate ? DuplicateMessage : BuildMessage(retryAfterSeconds), retryAfterSeconds)
+    {
+    }
+
+    private static string BuildMessage(int seconds)
+    {
+        var hours = Math.Max(1, (int)Math.Ceiling(seconds / 3600.0));
+        var wait = hours == 1 ? "1 hora" : $"{hours} horas";
+        return $"Você fez muitas denúncias hoje. Espere {wait} para denunciar de novo.";
+    }
+}

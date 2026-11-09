@@ -141,10 +141,12 @@ public class FriendsController : ControllerBase
         return result is null ? NotFound(new { message = PlayerProfileService.ProfileNotFoundMessage }) : NoContent();
     }
 
-    /// <summary>Desbloqueia <c>{handle}</c> (só quem bloqueou). 400 quando não há bloqueio seu sobre a conta; 404 handle inexistente.</summary>
+    /// <summary>
+    /// Desbloqueia <c>{handle}</c> (só quem bloqueou). 404 para handle inexistente/inativo E quando não há bloqueio seu
+    /// sobre a conta (revisão da onda 2, M4: a resposta não diz se a conta existe nem se ela bloqueou você).
+    /// </summary>
     [HttpDelete("players/{handle}/block")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Unblock(string handle, CancellationToken ct)
     {

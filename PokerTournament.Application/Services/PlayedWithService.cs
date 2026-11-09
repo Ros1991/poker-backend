@@ -11,8 +11,9 @@ namespace PokerTournament.Application.Services;
 /// mesma, só quando os DOIS lados estão com <c>ShowInPlayedWith</c> ligado — com a própria opção desligada a lista
 /// vem vazia (o Início esconde o bloco). Bloqueados (<see cref="IFriendshipLookup"/>) saem. Por conta: quantos
 /// torneios em comum e a data do mais recente; ordem por vezes e depois por data. Só foto, apelido/primeiro nome,
-/// handle e cidade — nada de nome completo, e-mail ou dinheiro. Cada cartão traz a relação com quem vê
-/// (<c>friendshipStatus</c>, <c>canRequestFriendship</c> — SPEC-20261108-1637) para o botão "Adicionar".
+/// handle e cidade — nada de nome completo, e-mail ou dinheiro. Cidade/UF só conforme a visibilidade do perfil
+/// daquela conta para quem vê (<see cref="FriendshipService.ShowsPlace"/> — revisão da onda 2, M2). Cada cartão traz a
+/// relação com quem vê (<c>friendshipStatus</c>, <c>canRequestFriendship</c> — SPEC-20261108-1637) para o botão "Adicionar".
 /// </summary>
 public class PlayedWithService
 {
@@ -76,7 +77,7 @@ public class PlayedWithService
         var ids = ranked.Select(r => r.UserId).ToList();
         var users = await _db.Users.AsNoTracking()
             .Where(u => ids.Contains(u.Id))
-            .Select(u => new { u.Id, u.Handle, u.Nickname, u.FullName, u.PhotoUrl, u.City, u.State })
+            .Select(u => new { u.Id, u.Handle, u.Nickname, u.FullName, u.PhotoUrl, u.City, u.State, u.ProfileVisibility })
             .ToDictionaryAsync(u => u.Id, ct);
 
         // A relação com quem vê (SPEC-20261108-1637), de uma vez para todos os candidatos
@@ -92,14 +93,15 @@ public class PlayedWithService
             if (await _friends.IsBlockedAsync(userId, r.UserId, ct))
                 continue;
             relations.TryGetValue(r.UserId, out var relation);
+            var showsPlace = FriendshipService.ShowsPlace(u.ProfileVisibility, relation?.Status == FriendshipState.Friends);
             result.Add(new PlayedWithResponse
             {
                 Id = u.Id,
                 Handle = u.Handle,
                 DisplayName = PlayerProfileService.DisplayNameOf(u.Nickname, u.FullName),
                 PhotoUrl = u.PhotoUrl,
-                City = u.City,
-                State = u.State,
+                City = showsPlace ? u.City : null,
+                State = showsPlace ? u.State : null,
                 TimesPlayed = r.Times,
                 LastPlayedAt = r.Last,
                 FriendshipStatus = relation?.Status ?? FriendshipState.None,
